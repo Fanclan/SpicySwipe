@@ -74,6 +74,13 @@
   try{
    const status=await refreshDevices();if(!setupCurrent(setup)||!status)return;
    const online=status.devices.filter(d=>d.state==='device');
+   // The main process may already own a running session before this tab is visited.
+   // Adopt that connection without reselecting the device or issuing manual app input.
+   if(status.selectedSerial&&online.some(d=>d.id===status.selectedSerial)){
+    const snapshot=await request('mobile:request',{platform:setup.platform,action:'status'});if(!setupCurrent(setup))return;
+    selected=true;rememberedSerial=status.selectedSerial;deviceEpoch++;$('#device-label').textContent=rememberedSerial;
+    sessionStates[setup.platform]=snapshot;layout();mobileAutomation.handleState(snapshot);return;
+   }
    const avdName=status.preferredAvd||dedicatedAvds[setup.platform];
    const boot=await request('android:boot',{avd:avdName,platform:setup.platform});if(!setupCurrent(setup))return;
    const verifiedSerial=boot?.phase==='ready'?boot.serial:null;

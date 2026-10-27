@@ -1,3 +1,7 @@
+# 3.0.2 — Unreleased
+
+- Preserve active Hinge and Bumble sessions when first visiting their tabs by reusing the already selected device connection.
+
 # 3.0.1 — Public preview
 
 - Align clipped Hinge photos in the correct direction, with bounded finishing adjustments when a photo is reached at the review limit.

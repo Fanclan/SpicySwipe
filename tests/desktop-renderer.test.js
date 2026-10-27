@@ -24,6 +24,7 @@ async function fixture(t, options = {}) {
   w.spicyDesktop = { subscribe(fn) { receive = fn; }, request: async (action, data) => {
     calls.push({ action, data });
     if(action==='platform')selectedPlatform=data.platform;
+    if(action==='mobile:request'&&data.action==='status'&&options.mobileStatus)return options.mobileStatus(data.platform);
     if(action==='mobile:request'&&data.action==='context')return options.context?options.context():{platform:selectedPlatform,screen:{kind:'profile',name:'Ready example',identity:'ready-profile',context:{bio:'Ready context'},controls:{}},session:{status:'idle'}};
     if (action === 'android:sdk') return options.sdk?options.sdk():{};
     if (action === 'android:status') return status();
@@ -354,4 +355,34 @@ test('canceling SDK replacement preserves all connected platform caches',async t
 
 test('Bumble empty queue completes setup immediately without loading retries',async t=>{
  let attempts=0;const f=await fixture(t,{seamless:true,platform:'bumble',status:()=>automaticStatus(),inspect:()=>installedInspect('emulator-5556'),context:()=>{attempts++;return {platform:'bumble',screen:{kind:'empty',reason:'No more profiles within your Bumble filters.',context:{},controls:{}},session:{status:'idle'}}}});assert.equal(attempts,1);assert.equal([...f.timers.values()].some(timer=>timer.ms===700),false);assert.equal(f.w.document.querySelector('#notice').textContent.includes('Read screen'),false);
+});
+
+for(const platform of ['hinge','bumble'])test('first visit to a running '+platform+' device adopts its connection without interrupting automation',async t=>{
+ const snapshot={platform,session:{status:'running',count:17,limit:1000,endsAt:Date.now()+60000},screen:{kind:'profile',context:{},controls:{}}};
+ const f=await fixture(t,{platform,seamless:true,status:()=>automaticStatus({selectedSerial:'emulator-5556'}),inspect:()=>installedInspect('emulator-5556'),mobileStatus:()=>snapshot});
+ assert.equal(f.calls.some(c=>['android:select','android:open','android:start'].includes(c.action)),false,'visiting an already selected device must not mutate its session');
+ assert.equal(f.calls.some(c=>c.action==='mobile:request'&&c.data.action==='context'),false,'do not queue another screen read behind an active review');
+ assert.equal(f.w.document.querySelector('#device-label').textContent,'emulator-5556');
+ assert.match(f.w.document.querySelector('[data-mobile="session"]').textContent,/17/);
+ await f.runTimer();assert.equal(f.image.hidden,false);
+ await f.click('[data-platform="tinder"]');await f.click('[data-platform="'+platform+'"]');
+ assert.equal(f.calls.some(c=>['android:select','android:open'].includes(c.action)),false);
+});
+test('changing tabs while adopting a backend connection discards its stale status',async t=>{
+ const gate=deferred(),f=await fixture(t,{seamless:true,status:()=>automaticStatus({selectedSerial:'emulator-5556'}),mobileStatus:()=>gate.promise});
+ await f.click('[data-platform="tinder"]');gate.resolve({platform:'hinge',session:{status:'running',count:8},screen:{context:{}}});await tick();
+ assert.equal(f.w.document.querySelector('#android-area').hidden,true);
+ assert.equal(f.calls.some(c=>['android:select','android:open'].includes(c.action)),false);
+});
+test('an offline backend selection still follows normal verified connection setup',async t=>{
+ const f=await fixture(t,{seamless:true,status:()=>automaticStatus({selectedSerial:'offline-phone'}),inspect:()=>installedInspect('emulator-5556')});
+ assert.equal(f.calls.find(c=>c.action==='android:select')?.data.serial,'emulator-5556');
+ assert.equal(f.calls.filter(c=>c.action==='android:open').length,1);
+});
+
+test('adopting a connected session restores its context and unsent draft',async t=>{
+ const f=await fixture(t,{seamless:true,status:()=>automaticStatus({selectedSerial:'emulator-5556'}),mobileStatus:()=>({platform:'hinge',session:{status:'paused',count:17},screen:{kind:'profile',name:'Example',identity:'profile-a',context:{bio:'Existing review'},controls:{}},draft:{identity:'profile-a',text:'Unsent draft'}})});
+ assert.match(f.w.document.querySelector('[data-mobile="context"]').textContent,/Existing review/);
+ assert.equal(f.w.document.querySelector('#mobile-automation [name="draft"]').value,'Unsent draft');
+ assert.equal(f.calls.some(c=>['android:select','android:open'].includes(c.action)),false);
 });
