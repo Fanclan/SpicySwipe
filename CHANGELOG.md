@@ -1,3 +1,10 @@
+# 3.0.1 — Public preview
+
+- Align clipped Hinge photos in the correct direction, with bounded finishing adjustments when a photo is reached at the review limit.
+- Confirm consecutive same-name Bumble profiles using independently changed name-and-age evidence and two stable reads; retain guards for ambiguous outcomes.
+- Add a prominent account-ban and use-at-your-own-risk warning with links to platform terms.
+- Update reviewed GitHub Actions and electron-builder maintenance dependencies.
+
 # 3.0.0 — Public preview
 
 - Add the Electron workspace for Tinder, Hinge, and Bumble with independent session controls.

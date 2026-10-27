@@ -14,6 +14,11 @@
 
 ---
 
+> [!WARNING]
+> **Account bans — use at your own risk.** Tinder, Hinge, and Bumble prohibit bots and unauthorized automation under their terms and platform rules. Using SpicySwipe to automate activity may result in account suspension or permanent bans. Timing controls and randomized browsing do not make automation permitted or guarantee protection from detection. You are responsible for your use of this software.
+>
+> Read the current [Tinder Terms](https://policies.tinder.com/terms/intl/en/), [Hinge Terms](https://hinge.co/terms), and [Bumble Terms](https://bumble.com/en-us/terms/) and [automation rules](https://bumble.com/en/guidelines).
+
 **Public preview.** Windows is the primary tested platform. macOS and Linux build targets are included; see the support table below. Dating apps change frequently, so an unrecognized screen can require a compatibility update.
 
 **License status:** this repository is publicly available under the original [SpicySwipe Personal Use License](License). It permits personal, educational, and non-commercial use and requires attribution. It is **source-available, not an OSI-approved open-source license**. Commercial use requires permission from the original rights holder. See [attribution](ATTRIBUTION.md).
@@ -29,15 +34,15 @@
 
 ## Download the public preview
 
-[**Get SpicySwipe 3.0.0 preview**](https://github.com/Fanclan/SpicySwipe/releases/tag/v3.0.0-preview.1)
+[**Get SpicySwipe 3.0.1 preview**](https://github.com/Fanclan/SpicySwipe/releases/tag/v3.0.1-preview.1)
 
 | Platform | Download |
 | --- | --- |
-| Windows x64 | [Setup installer](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.0-preview.1/SpicySwipe.Setup.3.0.0.exe) |
-| macOS Apple Silicon | [ARM64 DMG](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.0-preview.1/SpicySwipe-3.0.0-arm64.dmg) |
-| macOS Intel | [Intel DMG](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.0-preview.1/SpicySwipe-3.0.0.dmg) |
-| Linux x64 | [AppImage](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.0-preview.1/SpicySwipe-3.0.0.AppImage) |
-| Chrome extension | [Extension ZIP](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.0-preview.1/spicyswipe-3.0.0.zip) |
+| Windows x64 | [Setup installer](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.1-preview.1/SpicySwipe.Setup.3.0.1.exe) |
+| macOS Apple Silicon | [ARM64 DMG](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.1-preview.1/SpicySwipe-3.0.1-arm64.dmg) |
+| macOS Intel | [Intel DMG](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.1-preview.1/SpicySwipe-3.0.1.dmg) |
+| Linux x64 | [AppImage](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.1-preview.1/SpicySwipe-3.0.1.AppImage) |
+| Chrome extension | [Extension ZIP](https://github.com/Fanclan/SpicySwipe/releases/download/v3.0.1-preview.1/spicyswipe-3.0.1.zip) |
 
 Installers do not require Node.js. They are **unsigned previews**; Mac builds are not notarized. Read the [platform notes](docs/SETUP.md) before installing. Android tools and your own app sign-ins are still needed for Hinge/Bumble. The release includes a SHA-256 checksum manifest.
 

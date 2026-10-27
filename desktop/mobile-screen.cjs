@@ -63,6 +63,17 @@ function fullyVisible(node) {
  }
  return true;
 }
+function photoRevealDirection(photo) {
+ const b=bounds(photo);if(!b)return null;
+ for(let p=photo.parent;p;p=p.parent){
+  const viewport=bounds(p);if(p.a.scrollable!=='true'||!viewport||viewport.height<=viewport.width||viewport.height<b.width)continue;
+  const cropped=b.height<b.width-3;
+  const top=b.y<viewport.y||(cropped&&Math.abs(b.y-viewport.y)<=3);
+  const bottom=b.y+b.height>viewport.y+viewport.height||(cropped&&Math.abs(b.y+b.height-viewport.y-viewport.height)<=3);
+  return top===bottom?null:top?'down':'up';
+ }
+ return null;
+}
 function sharesPhotoCard(photo, button) {
  const box = bounds(photo);
  for (let p = photo.parent; p; p = p.parent) {
@@ -162,7 +173,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const likes = [...find('Like photo'),...find('Like photo prompt')];
  result.photos = pictures.map(n => {
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });
-  return { key: hash(['photo', label(n), b]), bounds: b, like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
+  return { key: hash(['photo', label(n), b]), bounds: b, revealDirection: photoRevealDirection(n), like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
  });
  result.controls.skip = result.identity ? control(skips[0]) : null;
  result.controls.like = result.photos.find(photo => photo.like)?.like || null;

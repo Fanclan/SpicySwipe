@@ -284,3 +284,59 @@ function twoPhotoHinge(){
 test('Hinge selecting the second photo cannot change fallback identity on an unchanged screen',async()=>{const x=twoPhotoHinge();await x.c.request('config',{scrollMin:0,scrollMax:0});const prepared=await x.c.review(x.c.token());assert.equal(prepared.photos.length,2);assert.equal(x.c.selectedPhoto.key,prepared.photos[1].key);const fresh=await x.c.fresh(prepared,x.c.token());assert.equal(fresh.identity,prepared.identity);assert.equal(fresh.screenKey,prepared.screenKey);assert.ok(x.c.reviewContext);assert.equal(x.calls.filter(v=>v==='tap').length,0);});
 test('Hinge still rejects a changed selected photo even when its identity anchor is unchanged',async()=>{const x=twoPhotoHinge();await x.c.request('config',{scrollMin:0,scrollMax:0});const prepared=await x.c.review(x.c.token());x.setHashes(['0123456789abcdef','aaaaaaaaaaaaaaaa']);await assert.rejects(x.c.fresh(prepared,x.c.token()),/Screen changed/);assert.equal(x.c.screen.identity,prepared.identity);assert.notEqual(x.c.screen.screenKey,prepared.screenKey);assert.equal(x.calls.filter(v=>v==='tap').length,0);});
 test('Hinge still rejects changed fallback identity evidence before any photo tap',async()=>{const x=twoPhotoHinge();await x.c.request('config',{scrollMin:0,scrollMax:0});const prepared=await x.c.review(x.c.token());x.setHashes(['bbbbbbbbbbbbbbbb','fedcba9876543210']);await assert.rejects(x.c.fresh(prepared,x.c.token()),/Screen changed/);assert.notEqual(x.c.screen.identity,prepared.identity);assert.equal(x.calls.filter(v=>v==='tap').length,0);});
+
+test('Hinge reveals a top-clipped photo by moving down instead of searching past it',async()=>{
+ const partial=screen({photos:[{key:'partial',bounds:box,like:null,revealDirection:'down'}],controls:{}});
+ const x=setup(partial,{scroll:()=>{if(x.calls.at(-1).direction==='down')x.set(screen())}});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');
+ assert.deepEqual(x.calls.filter(v=>v?.fraction).map(v=>v.direction),['down']);
+ assert.equal(x.c.selectedPhoto.key,'photo-one');assert.equal(x.calls.includes('tap'),false);
+});
+test('Hinge finishes aligning a clipped photo reached on the last search step',async()=>{
+ const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{
+  const count=x.calls.filter(v=>v?.fraction).length;
+  x.set(count<6?screen({photos:[],screenKey:'text-'+count}):count===6?screen({screenKey:'edge',photos:[{key:'partial',bounds:box,like:null,revealDirection:'up'}]}):screen());
+ }});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');
+ assert.equal(x.calls.filter(v=>v?.fraction).length,7);assert.equal(x.c.selectedPhoto.key,'photo-one');
+ assert.equal(x.calls.includes('tap'),false);
+});
+test('Hinge alignment remains bounded when a clipped photo cannot be revealed',async()=>{
+ const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{
+  const count=x.calls.filter(v=>v?.fraction).length;
+  x.set(count<6?screen({photos:[],screenKey:'text-'+count}):screen({screenKey:'edge-'+count,photos:[{key:'partial',bounds:box,like:null,revealDirection:'up'}]}));
+ }});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});
+ await assert.rejects(x.c.request('review'),/No fully visible photo/);
+ assert.equal(x.calls.filter(v=>v?.fraction).length,8);assert.equal(x.c.selectedPhoto,null);
+});
+test('Hinge stopping during final photo alignment prevents selection and any Like',async()=>{
+ const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{
+  const count=x.calls.filter(v=>v?.fraction).length;
+  if(count===7)x.c.invalidate('Stop during alignment',{stop:true});
+  else x.set(count<6?screen({photos:[],screenKey:'text-'+count}):screen({screenKey:'edge',photos:[{key:'partial',bounds:box,like:null,revealDirection:'up'}]}));
+ }});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});
+ await assert.rejects(x.c.request('review'),/canceled|changed/);
+ assert.equal(x.calls.filter(v=>v?.fraction).length,7);assert.equal(x.calls.includes('tap'),false);assert.equal(x.c.selectedPhoto,null);
+});
+test('Bumble can leave an old uncertain guard only with independently different stable static evidence',async()=>{
+ const x=setup(bumble({identity:'new-photo',profileDiscriminator:'name-age-31'}),{platform:'bumble'});
+ x.c.lastAction={name:'Example',identity:'old-photo',profileDiscriminator:'name-age-29'};
+ let swipes=0;x.android.swipeProfile=async(d,b,v,issued)=>{assert.ok(v());swipes++;issued();x.set(bumble({name:'Next',identity:'next',screenKey:'next'}))};
+ await x.c.act('like',x.c.token());assert.equal(swipes,1);assert.equal(x.c.lastAction,null);
+});
+test('Bumble preserves historical uncertain guards that lack static evidence',async()=>{
+ const x=setup(bumble({identity:'new-photo',profileDiscriminator:'name-age-31'}),{platform:'bumble'});
+ x.c.lastAction={name:'Example',identity:'old-photo'};
+ x.android.swipeProfile=async()=>assert.fail('must not swipe');
+ await assert.rejects(x.c.act('like',x.c.token()),/already|uncertain/);assert.ok(x.c.lastAction);
+});
+
+test('Bumble late-transition guard stays set if static evidence changes during revalidation',async()=>{
+ const initial=bumble({identity:'new-photo',profileDiscriminator:'name-age-31'});
+ const x=setup(initial,{platform:'bumble'});x.c.lastAction={name:'Example',identity:'old-photo',profileDiscriminator:'name-age-29'};
+ let reads=0;x.android.hierarchy=async()=>({xml:++reads===1?initial:{...initial,profileDiscriminator:'name-age-29'}});
+ x.android.swipeProfile=async()=>assert.fail('must not swipe');
+ await assert.rejects(x.c.act('like',x.c.token()),/uncertain|changed/);assert.ok(x.c.lastAction);
+});

@@ -3,6 +3,8 @@ const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
 const delay=(ms,signal)=>new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve()};const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done()});
 const hashDistance=(a,b)=>{if(!a||!b||a.length!==b.length)return Infinity;let n=0;for(let i=0;i<a.length;i++){let x=parseInt(a[i],16)^parseInt(b[i],16);while(x){n+=x&1;x>>=1}}return n};
+// Pixel changes alone cannot establish a new same-name Bumble profile.
+const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(after.identity)&&after.identity!==before.identity&&after.name===before.name&&Boolean(before.profileDiscriminator)&&Boolean(after.profileDiscriminator)&&after.profileDiscriminator!==before.profileDiscriminator&&after.controls?.like?.direction==='right';
 class MobileController{
  constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
@@ -68,7 +70,7 @@ class MobileController{
   if(this.config.mode!=='like')throw Error('Bumble Compliment/comment automation is not verified. Choose plain Likes.');
   this.supported(s,['profile']);const control=kind==='like'?s.controls.like:s.controls.skip,direction=kind==='like'?'right':'left';
   if(control?.direction!==direction)throw Error('The Bumble swipe card is not verified.');
-  await this.fresh(s,t,valid);this.lastAction={identity:s.identity,name:s.name};let issuedCount=0,confirmed=false,empty=false;
+  await this.fresh(s,t,valid);this.lastAction={identity:s.identity,name:s.name,profileDiscriminator:s.profileDiscriminator||null};let issuedCount=0,confirmed=false,empty=false;
   const same=after=>after.kind===s.kind&&after.name===s.name&&after.identity===s.identity&&after.screenKey===s.screenKey;
   const budget=()=>this.session.status==='running'&&this.session.count+issuedCount<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
   try{
@@ -76,11 +78,15 @@ class MobileController{
     let issued=false;
     const onIssued=()=>{if(!issued){issued=true;issuedCount++}};
     await this.android.swipeProfile(direction,control.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
-    let stable=0,retrySafe=true;
+    let stable=0,retrySafe=true,candidate=null,candidateReads=0;
     for(let i=0;i<5;i++){
      await this.wait(700,t.signal);this.assert(t,valid);const after=await this.read(t);this.assert(t,valid);
      if(after.kind==='swipeConfirm'&&after.swipeDirection===direction&&!confirmed){confirmed=true;retrySafe=false;await this.tap(after,after.controls.confirm,t,valid);continue;}
      if(after.kind==='profile'&&after.identity&&after.identity!==s.identity&&after.name!==s.name){this.lastAction=null;return this.snapshot()}
+     if(distinctBumbleProfile(s,after)){
+      const key=JSON.stringify([after.identity,after.profileDiscriminator]);candidateReads=key===candidate?candidateReads+1:1;candidate=key;retrySafe=false;
+      if(candidateReads>=2){this.lastAction=null;return this.snapshot()}
+     }else{candidate=null;candidateReads=0}
      if(after.kind==='empty'){empty=true;this.lastAction=null;return this.snapshot()}
      if(after.kind==='blocked')throw Error('Bumble action transition requires attention. '+after.reason);
      if(same(after))stable++;else{stable=0;retrySafe=false}
@@ -110,7 +116,10 @@ class MobileController{
   // Random depth selects a different part of the profile; small bounded adjustments expose a full photo.
   let candidates=(s.photos||[]).filter(p=>p.like);
   let direction='up';
-  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,direction);candidates=(s.photos||[]).filter(p=>p.like);if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
+  const reveal=()=>s.photos?.find(p=>['up','down'].includes(p.revealDirection))?.revealDirection;
+  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,reveal()||direction);candidates=(s.photos||[]).filter(p=>p.like);if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
+  // Reaching a photo at the search boundary still permits two small alignment moves.
+  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<2&&reveal();i++){await move(.2,reveal());candidates=(s.photos||[]).filter(p=>p.like);}
   if(!candidates.length)throw Error('No fully visible photo found within the review limit. Scroll manually and read again.');
   this.selectedPhoto=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
@@ -140,7 +149,11 @@ class MobileController{
  }
  async act(kind,t,valid=()=>true,commit=()=>{},prepared){
   if(!['like','pass'].includes(kind))throw Error('Unknown mobile action.');await this.load(t);await this.consent(t);let s=prepared||await this.read(t);this.supported(s,kind==='like'?['profile','like','likeOffer']:['profile','like']);
-  if(this.lastAction&&(this.lastAction.identity===s.identity||this.lastAction.name===s.name||(s.kind==='likeOffer'&&this.lastAction.offerKey===s.screenKey)))throw Error('An action was already attempted on this profile. Its result is uncertain; change profiles manually before continuing.');
+  if(this.lastAction&&(this.lastAction.identity===s.identity||this.lastAction.name===s.name||(s.kind==='likeOffer'&&this.lastAction.offerKey===s.screenKey))){
+   if(this.platform!=='bumble'||!distinctBumbleProfile(this.lastAction,s))throw Error('An action was already attempted on this profile. Its result is uncertain; change profiles manually before continuing.');
+   // A late transition must be independently re-read before releasing its guard.
+   s=await this.fresh(s,t,valid);if(!distinctBumbleProfile(this.lastAction,s))throw Error('Profile evidence changed; the previous action remains uncertain.');this.lastAction=null;
+  }
   if(this.platform==='bumble')return this.swipeBumble(kind,s,t,valid,commit);
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;

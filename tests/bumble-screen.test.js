@@ -22,3 +22,48 @@ test('Bumble verifies photo-to-video and video-to-photo transitions without dupl
 test('Bumble video profile survives scroll review and verifies identity again at the top',async()=>{const x=videoController(feed(videoCard()));let moves=0;x.c.config.scrollMin=1;x.c.config.scrollMax=1;x.c.android.scrollProfile=async({direction},valid)=>{assert.ok(valid());moves++;assert.equal(direction,moves===1?'up':'down');x.set(moves===1?feed(node('drawing-order="2"',node('resource-id="com.bumble.app:id/profile_root_container"',node('resource-id="com.bumble.app:id/encountersGridProfile_list"',node('text="Profile details"'))))):feed(videoCard()));};const s=await x.c.reviewBumble(x.c.token());assert.equal(s.name,'Video Sample');assert.equal(moves,2);assert.equal(x.swipes(),0);});
 
 test('Bumble video identity ignores playback text inside the native player',()=>{const base=feed(videoCard());const xml=base.replace('resource-id="com.bumble.app:id/videoView_videoContainer" />','resource-id="com.bumble.app:id/videoView_videoContainer">'+node('text="Changing subtitle"').replace('class="android.view.View"','class="android.widget.TextView"')+'</node>');assert.equal(read(xml).identity,read(base).identity);assert.equal(read(xml.replace('Changing subtitle','Different subtitle')).identity,read(base).identity);});
+
+const staticHeader=(text,attrs='')=>node('text="'+text+'" '+attrs).replace('class="android.view.View"','class="android.widget.TextView"');
+const evidenceCard=(name='Sample',age=28,order=2,header=staticHeader(name+', '+age),outside='')=>node('drawing-order="'+order+'"',node('resource-id="com.bumble.app:id/profile_root_container"',node('resource-id="com.bumble.app:id/encountersGridProfile_list"',node('',node('content-desc="'+name+'’s main photo"')+header)+outside)));
+test('Bumble exposes independent static name and age evidence for photos and videos',()=>{
+ const photo=read(feed(evidenceCard())),video=read(feed(videoCard('Sample')));
+ assert.match(photo.profileDiscriminator,/^[a-f0-9]{64}$/);
+ assert.equal(video.profileDiscriminator,photo.profileDiscriminator);
+ assert.equal(read(feed(evidenceCard()),{photoIdentity:'fedcba9876543210'}).profileDiscriminator,photo.profileDiscriminator);
+ assert.equal(read(feed(videoCard('Sample',2,'Different detail'))).profileDiscriminator,photo.profileDiscriminator);
+ assert.notEqual(read(feed(evidenceCard('Sample',29))).profileDiscriminator,photo.profileDiscriminator);
+ assert.notEqual(read(feed(evidenceCard('Other',28))).profileDiscriminator,photo.profileDiscriminator);
+ assert.equal(read(feed(evidenceCard()),{photoIdentity:undefined}).controls.like,null);
+});
+test('Bumble static evidence validates the full header name and adult age',()=>{
+ for(const text of ['Other, 28','Sample, 17','Sample, 121','Sample, 028','Sample, 2','Sample, twenty eight','Sample, 28 extra','Sample, 28, 29','Sample,28','Sample, 28\nExtra'])assert.equal(read(feed(evidenceCard('Sample',28,2,staticHeader(text)))).profileDiscriminator,null,text);
+ for(const age of [18,99,120])assert.ok(read(feed(evidenceCard('Sample',age))).profileDiscriminator);
+});
+test('Bumble static evidence ignores preloaded and hidden headers',()=>{
+ const expected=read(feed(evidenceCard())).profileDiscriminator;assert.ok(expected);
+ for(const cards of [evidenceCard('Queued',40,1)+evidenceCard(),evidenceCard()+evidenceCard('Queued',40,1)])assert.equal(read(feed(cards)).profileDiscriminator,expected);
+ assert.equal(read(feed(evidenceCard('Sample',28,2,staticHeader('Sample, 28')+staticHeader('Sample, 29','visible-to-user="false"')))).profileDiscriminator,expected);
+ assert.equal(read(feed(evidenceCard('Sample',28,2,staticHeader('Sample, 28','visible-to-user="false"')))).profileDiscriminator,null);
+});
+test('Bumble static evidence rejects duplicate or conflicting native headers',()=>{
+ for(const extra of ['Sample, 28','Sample, 29','Other, 28'])assert.equal(read(feed(evidenceCard('Sample',28,2,staticHeader('Sample, 28')+staticHeader(extra)))).profileDiscriminator,null);
+});
+test('Bumble static evidence rejects fake headers and headers outside main media',()=>{
+ for(const xml of [feed(card()),feed(evidenceCard('Sample',28,2,node('text="Sample, 28"'))),feed(evidenceCard('Sample',28,2,'',staticHeader('Sample, 28'))),feed(evidenceCard('Sample',28,2,staticHeader('Sample, 28').replace('text="Sample, 28"','content-desc="Sample, 28"'))),feed(evidenceCard('Sample',28,2,staticHeader('Sample, 28').replace('text="Sample, 28"','text="Sample, 28" content-desc="Other, 28"')))])assert.equal(read(xml).profileDiscriminator,null);
+});
+test('Bumble static evidence requires fully visible enabled headers and main media',()=>{
+ const header=staticHeader('Sample, 28');
+ for(const replacement of [header.replace('[21,231][1059,2162]','[21,200][1059,2162]'),header.replace('enabled="true"','enabled="false"'),node('visible-to-user="false"',header)])assert.equal(read(feed(evidenceCard('Sample',28,2,replacement))).profileDiscriminator,null);
+ const xml=feed(evidenceCard());
+ assert.equal(read(xml.replace('bounds="[21,231][1059,2162]" content-desc="Sample’s main photo"','bounds="[21,231][1059,2000]" content-desc="Sample’s main photo"')).profileDiscriminator,null);
+ assert.equal(read(xml.replace('content-desc="Sample’s main photo"','content-desc="Sample’s main photo" visible-to-user="false"')).profileDiscriminator,null);
+});
+test('Bumble static video evidence excludes native player text and needs supported player layout',()=>{
+ const base=feed(videoCard('Sample')),expected=read(base).profileDiscriminator;assert.ok(expected);
+ const withPlayer=base.replace('resource-id="com.bumble.app:id/videoView_videoContainer" />','resource-id="com.bumble.app:id/videoView_videoContainer">'+staticHeader('Sample, 29')+'</node>');
+ assert.equal(read(withPlayer).profileDiscriminator,expected);
+ assert.equal(read(withPlayer.replace('text="Sample, 28"','text="Details only"')).profileDiscriminator,null);
+ assert.equal(read(base.replace('resource-id="com.bumble.app:id/videoView_videoContainer"','resource-id="unsupported"')).profileDiscriminator,null);
+ assert.equal(read(feed()).profileDiscriminator,null);
+ assert.equal(read('<hierarchy/>').profileDiscriminator,null);
+});

@@ -2,7 +2,7 @@
 
 ## Install a preview build
 
-Download the matching installer from the [public preview release](https://github.com/Fanclan/SpicySwipe/releases/tag/v3.0.0-preview.1). Installers do not require Node.js or Git. They are unsigned, and macOS builds are not notarized; read the platform notes below. Android setup and app sign-in remain separate.
+Download the matching installer from the [public preview release](https://github.com/Fanclan/SpicySwipe/releases/tag/v3.0.1-preview.1). Installers do not require Node.js or Git. They are unsigned, and macOS builds are not notarized; read the platform notes below. Android setup and app sign-in remain separate.
 
 ## Source-build requirements
 

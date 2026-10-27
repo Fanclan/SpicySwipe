@@ -3,6 +3,7 @@
 // drawing order distinguish the foreground card from the preloaded next card.
 module.exports=function readBumble(xml,options,h){
  const {parse,bounds,fullyVisible,label,control,hash,result,block}=h;
+ result.profileDiscriminator=null;
  if(options.foreground!=='com.bumble.app')return block('Bumble must be the selected device foreground app.');
  let nodes;try{nodes=parse(xml)}catch(error){return block(error.message)}
  result.screenKey=hash(nodes.map(n=>n.a));
@@ -39,6 +40,18 @@ module.exports=function readBumble(xml,options,h){
  const mainMedia=media[0],isVideo=mainMedia&&/[’']s main video$/.test(label(mainMedia));
  result.kind='profile';result.name=mainMedia?label(mainMedia).replace(/[’']s main (?:photo|video)$/,''):'';result.context.name=result.name;
  result.context.bio=cardNodes.filter(n=>fullyVisible(n)&&n.a.text).map(n=>n.a.text).join('\n').slice(0,12000);
+ // Static evidence is separate from photo fingerprints: pixels may change on
+ // the same person. Only the complete main-media card's unique name/age header
+ // can distinguish same-name profiles; missing/unsupported layouts stay null.
+ if(mainMedia&&mainMedia.enabled&&fullyVisible(mainMedia)){
+  const parent=mainMedia.parent,b=bounds(mainMedia),p=parent&&bounds(parent);
+  const players=cardNodes.filter(n=>n.a['resource-id']==='com.bumble.app:id/videoView_videoContainer'&&within(n,parent));
+  if(parent?.a.class==='android.view.View'&&p&&p.x===b.x&&p.y===b.y&&p.width===b.width&&p.height===b.height&&fullyVisible(parent)&&(!isVideo||(players.length===1&&players[0].a.class==='android.widget.FrameLayout'))){
+   const headers=cardNodes.filter(n=>within(n,parent)&&!within(n,mainMedia)&&!players.some(player=>within(n,player))&&n.a.class==='android.widget.TextView'&&/^.+, \d+$/.test(n.a.text||''));
+   const header=headers[0],match=header&&/^(.+), ([1-9]\d{1,2})$/.exec(header.a.text);
+   if(headers.length===1&&header.enabled&&fullyVisible(header)&&(!header.a['content-desc']||header.a['content-desc']===header.a.text)&&match&&match[1]===result.name&&Number(match[2])>=18&&Number(match[2])<=120)result.profileDiscriminator=hash(['bumble-static-profile',match[1],Number(match[2])]);
+  }
+ }
  if(isVideo){
   // Video pixels change during playback. Bind to the fully visible native video
   // card's name/age and additional static text, never to a sampled video frame.

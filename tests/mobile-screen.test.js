@@ -162,3 +162,13 @@ test('Hinge Like confirmation ignores known profile buttons only below the confi
 test('caption visibility controls never interrupt a profile or become Like targets',()=>{for(const label of ['Show caption','Hide caption']){const xml=profile.replace('</hierarchy>','<node class="android.widget.Button" package="co.hinge.app" content-desc="'+label+'" enabled="true" clickable="true" bounds="[64,1554][190,1680]" /></hierarchy>');const before=read(profile),s=read(xml);assert.equal(s.kind,'profile',label);assert.equal(s.identity,before.identity);assert.deepEqual(s.controls,before.controls);assert.deepEqual(s.photos,before.photos);const bad=read(xml.replace(label,'Purchase caption'));assert.equal(bad.kind,'blocked');assert.match(bad.reason,/Purchase caption/);}});
 
 test('caption controls inside the selected confirmation photo are harmless but cannot overlap its comment or send controls',()=>{for(const label of ['Show caption','Hide caption']){const extra='<node package="co.hinge.app" class="android.widget.Button" content-desc="'+label+'" enabled="true" clickable="true" bounds="[105,202][220,318]" />';const xml=like.replace('</hierarchy>',extra+'</hierarchy>'),s=read(xml,{commentText:''});assert.equal(s.kind,'like');assert.equal(s.controls.sendLike.label,'Send priority like');assert.equal(s.controls.like,null);for(const b of ['[105,1000][220,1100]','[0,202][220,318]','[105,20][220,136]'])assert.equal(read(xml.replace('[105,202][220,318]',b),{commentText:''}).kind,'blocked');assert.equal(read(xml.replace(label,'Buy caption'),{commentText:''}).kind,'blocked');}});
+
+test('clipped Hinge photos expose a scroll hint without authorizing a Like',()=>{
+ const top=read(profile.replaceAll('[53,642][1027,1616]','[53,642][1027,1200]'));
+ assert.equal(top.photos[0].revealDirection,'down');assert.equal(top.photos[0].like,null);
+ const bottom=read(profile.replaceAll('[53,642][1027,1616]','[53,1312][1027,2179]'));
+ assert.equal(bottom.photos[0].revealDirection,'up');assert.equal(bottom.photos[0].like,null);
+ assert.equal(read(profile).photos[0].revealDirection,null);
+ const interior=read(profile.replaceAll('[53,642][1027,1616]','[53,850][1027,1400]'));
+ assert.equal(interior.photos[0].revealDirection,null);assert.equal(interior.photos[0].like,null);
+});
