@@ -130,6 +130,8 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const skips = visible.filter(n => /^Skip .+/.test(label(n)));
  if (skips.length !== 1) return block('A single current profile could not be identified.');
  result.name = label(skips[0]).slice(5); result.context.name = result.name;
+ // This native prompt action is recognized only for the current profile; it is never a photo target.
+ const friendTake=n=>n.a.class==='android.widget.Button'&&label(n)==="Like "+result.name+"'s Friend's Take";
  const pictures = visible.filter(n => label(n) === result.name + "'s photo" && n.a.class === 'android.widget.ImageView' && bounds(n));
  const prompts = [...new Set(visible.map(label).filter(text => /^Prompt: .+\. Answer: .+/.test(text)))];
  const detailLabels = new Set(['Age', 'Gender', 'Sexuality', 'Height', 'Religion', 'Politics', 'Languages Spoken', 'Dating Intentions']);
@@ -152,7 +154,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const knownButtons=new Set(['Info','More','Send a Rose','Send a Rose with message','Send priority like','Send priority like with message','Send like','Send like with message']);
   const formBounds=[comment[0],...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')].map(bounds);
   const formBottom=formBounds.length&&formBounds.every(Boolean)?Math.max(...formBounds.map(b=>b.y+b.height)):Infinity;
-  const backgroundControl=n=>n.a.class==='android.widget.Button'&&profileContentLabels.has(label(n))&&bounds(n)?.y>=formBottom;
+  const backgroundControl=n=>n.a.class==='android.widget.Button'&&(profileContentLabels.has(label(n))||friendTake(n))&&bounds(n)?.y>=formBottom;
   if(visible.some(n=>n.enabled && /Button$/.test(n.a.class||'') && (label(n)||n.a.clickable==='true') && !knownButtons.has(label(n)) && n!==skips[0]&&!backgroundControl(n)&&!photoCaptionControl(n)))return block('An unfamiliar Like control requires user attention.');
   result.kind = 'like'; result.controls.comment = control(comment[0], true);
   // HingeX automatically gives ordinary Likes priority. Roses are never selected.
@@ -167,7 +169,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   return result;
  }
  const allowedLabels = new Set([...profileContentLabels, 'Undo last skip', 'More', 'Selfie Verified', 'Dating Preferences']);
- const unknownControl=visible.find(n => n.enabled && n.a.clickable === 'true' && /Button$/.test(n.a.class || '') && !allowedLabels.has(label(n)) && n !== skips[0]);
+ const unknownControl=visible.find(n => n.enabled && n.a.clickable === 'true' && /Button$/.test(n.a.class || '') && !allowedLabels.has(label(n)) && !friendTake(n) && n !== skips[0]);
  if (unknownControl) return block('Unrecognized profile control: '+(label(unknownControl).slice(0,80)||'(unlabeled)')+'.');
  result.kind = 'profile';
  const likes = [...find('Like photo'),...find('Like photo prompt')];

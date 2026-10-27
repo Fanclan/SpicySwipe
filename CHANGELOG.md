@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Recognize Hinge Friend's Take cards during profile review while keeping automated Likes limited to verified photos.
+
 - Preserve active Hinge and Bumble sessions when first visiting their tabs by reusing the already selected device connection.
 
 # 3.0.1 — Public preview

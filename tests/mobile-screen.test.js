@@ -172,3 +172,23 @@ test('clipped Hinge photos expose a scroll hint without authorizing a Like',()=>
  const interior=read(profile.replaceAll('[53,642][1027,1616]','[53,850][1027,1400]'));
  assert.equal(interior.photos[0].revealDirection,null);assert.equal(interior.photos[0].like,null);
 });
+
+const friendTakeButton='<node class="android.widget.Button" package="co.hinge.app" content-desc="Like Sample&apos;s Friend&apos;s Take" clickable="true" enabled="true" bounds="[875,1969][1001,2095]" />';
+test('Friends Take Like is recognized as content but only a photo can be targeted',()=>{
+ const xml=profile.replace('</hierarchy>',friendTakeButton+'</hierarchy>'),s=read(xml);
+ assert.equal(s.kind,'profile');assert.equal(s.controls.like.label,'Like photo');
+ assert.equal(s.photos.length,read(profile).photos.length);
+ const withoutPhoto=xml.replace(/<node[^>]*content-desc="Like photo"[^>]*\/>/,'');
+ assert.equal(read(withoutPhoto).kind,'profile');assert.equal(read(withoutPhoto).controls.like,null);
+});
+test('Friends Take labels must match the current profile and native button exactly',()=>{
+ for(const button of [friendTakeButton.replace('Like Sample','Like SomeoneElse'),friendTakeButton.replace('Take"','Take Premium"'),friendTakeButton.replace('android.widget.Button','custom.Button')]){
+  assert.equal(read(profile.replace('</hierarchy>',button+'</hierarchy>')).kind,'blocked');
+ }
+});
+test('Friends Take background button is ignored only below the Like confirmation form',()=>{
+ const xml=like.replace('</hierarchy>',friendTakeButton+'</hierarchy>');
+ const s=read(xml,{commentText:''});assert.equal(s.kind,'like');assert.ok(s.controls.sendLike);assert.equal(s.controls.like,null);
+ assert.equal(read(xml.replace('[875,1969][1001,2095]','[875,500][1001,626]'),{commentText:''}).kind,'blocked');
+ assert.equal(read(xml.replace('Like Sample','Like SomeoneElse'),{commentText:''}).kind,'blocked');
+});
