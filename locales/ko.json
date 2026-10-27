@@ -1,0 +1,199 @@
+{
+  "extension": {
+    "name": "SpicySwipe",
+    "description": "향상된 AI 톤 맞춤화, 프롬프트 로직, 모든 톤 스타일을 위한 향상된 메시지 생성 기능을 갖춘 Tinder AI 확장 프로그램입니다."
+  },
+  "sidebar": {
+    "tabs": {
+      "status": "상태",
+      "ai": "AI",
+      "swiping": "스와이핑",
+      "analytics": "분석"
+    },
+    "toggle": {
+      "show": "▶",
+      "hide": "◀"
+    },
+    "theme": {
+      "light": "☀️",
+      "dark": "🌙",
+      "toggle": "테마 전환"
+    },
+    "language": {
+      "label": "언어",
+      "en": "영어",
+      "fr": "프랑스어",
+      "es": "스페인어",
+      "de": "독일어",
+      "it": "이탈리아어",
+      "pt": "포르투갈어",
+      "ar": "아랍어",
+      "zh": "중국어",
+      "ko": "한국어",
+      "ja": "일본어"
+    }
+  },
+  "status": {
+    "title": "상태",
+    "enabled": "활성화됨",
+    "disabled": "비활성화됨",
+    "active": "활성",
+    "inactive": "비활성",
+    "connected": "연결됨",
+    "disconnected": "연결 끊김",
+    "running": "실행 중",
+    "stopped": "중지됨",
+    "paused": "일시 중지됨",
+    "error": "오류",
+    "success": "성공",
+    "warning": "경고",
+    "info": "정보"
+  },
+  "ai": {
+    "title": "AI 설정",
+    "model": "AI 모델",
+    "apiKey": "API 키",
+    "tone": "톤",
+    "save": "저장",
+    "remove": "제거",
+    "saved": "API 키가 성공적으로 저장되었습니다!",
+    "removed": "API 키가 제거되었습니다.",
+    "error": "설정을 저장하는 중 오류가 발생했습니다. 다시 시도해 주세요.",
+    "settingsSaved": "AI 설정과 API 키가 성공적으로 저장되었습니다!",
+    "messaging": {
+      "title": "메시징 설정",
+      "tone": "톤",
+      "language": "언어",
+      "autoSend": "자동 전송",
+      "multiTurn": "다중 턴 대화",
+      "autoMessageOnMatch": "매치 시 자동 메시지"
+    },
+    "languagePreferences": {
+      "title": "언어 기본 설정",
+      "selected": "선택됨",
+      "selectAll": "모두 선택",
+      "clearAll": "모두 지우기",
+      "count": "언어 선택됨"
+    }
+  },
+  "swiping": {
+    "title": "스와이핑 설정",
+    "autoSwipe": "자동 스와이프",
+    "likeRatio": "좋아요 비율",
+    "swipeDelay": "스와이프 지연",
+    "maxSwipes": "최대 스와이프",
+    "stealthMode": "스텔스 모드",
+    "stealthModeDesc": "무작위 지연과 인간적인 행동을 추가하여 감지 위험을 줄입니다",
+    "startSwiping": "시작",
+    "stopSwiping": "중지",
+    "settingsSaved": "스와이핑 설정이 성공적으로 저장되었습니다!"
+  },
+  "analytics": {
+    "title": "분석",
+    "today": "오늘의 통계",
+    "allTime": "전체 통계",
+    "swipes": "총 스와이프",
+    "likes": "총 좋아요",
+    "nopes": "총 싫어요",
+    "matches": "총 매치",
+    "messages": "총 메시지",
+    "efficiency": "효율성 점수",
+    "responseTime": "평균 응답 시간",
+    "matchRate": "매치율",
+    "successRate": "성공률",
+    "totalResponses": "총 응답",
+    "successful": "성공",
+    "failed": "실패",
+    "avgRating": "평균 평점",
+    "rateLimited": "비율 제한됨",
+    "performanceMetrics": "성능 지표",
+    "failureCount": "실패 횟수",
+    "swipeSpeed": "스와이프 속도",
+    "sessionActive": "세션 활성",
+    "currentAI": "현재 AI",
+    "apiKeyStatus": "API 키 상태",
+    "yes": "예",
+    "no": "아니오"
+  },
+  "popup": {
+    "sidebarAvailable": "SpicySwipe가 활성화되었습니다!",
+    "sidebarInstructions": "Tinder에서 사이드바를 열어 AI 기능에 액세스하세요",
+    "openTinder": "SpicySwipe를 사용하려면 Tinder를 열어주세요",
+    "openTinderButton": "Tinder 열기",
+    "supportDevelopment": "개발 지원하기"
+  },
+  "notifications": {
+    "error": "오류",
+    "success": "성공",
+    "warning": "경고",
+    "info": "정보",
+    "languageChanged": "언어가 성공적으로 변경되었습니다!"
+  },
+  "buttons": {
+    "save": "저장",
+    "cancel": "취소",
+    "close": "닫기",
+    "retry": "재시도",
+    "regenerate": "재생성",
+    "send": "전송",
+    "approve": "승인",
+    "reject": "거부",
+    "like": "좋아요",
+    "nope": "싫어요"
+  },
+  "messages": {
+    "loading": "로딩 중...",
+    "processing": "처리 중...",
+    "generating": "생성 중...",
+    "sending": "전송 중...",
+    "error": "오류가 발생했습니다",
+    "success": "작업이 성공적으로 완료되었습니다",
+    "noData": "사용 가능한 데이터가 없습니다"
+  },
+  "approvalBox": {
+    "title": "AI 제안",
+    "dragToMove": "(이동하려면 드래그)",
+    "use": "사용",
+    "regenerate": "재생성",
+    "translate": "번역",
+    "cancel": "취소",
+    "changeTone": "메시지 톤 변경",
+    "loading": "로딩 중..."
+  },
+  "errors": {
+    "title": "AI 생성 실패",
+    "forMatch": "대상",
+    "rateLimitTitle": "⏳ 사용 한도 도달",
+    "rateLimitMessage": "AI 제공업체의 사용 한도에 도달했습니다. 30-60초 후에 다시 시도하거나 설정에서 다른 AI 모델로 전환하세요.",
+    "missingKeyTitle": "🔑 API 키 누락",
+    "missingKeyMessage": "선택한 AI 모델의 API 키를 찾을 수 없습니다. 설정의 AI 탭으로 이동하여 API 키를 입력하세요.",
+    "extensionErrorTitle": "🔄 확장 프로그램 오류",
+    "extensionErrorMessage": "확장 프로그램을 다시 로드해야 합니다. 이 페이지를 새로고침하세요.",
+    "networkErrorTitle": "🌐 네트워크 오류",
+    "networkErrorMessage": "AI 서비스에 연결할 수 없습니다. 인터넷 연결을 확인하고 다시 시도하세요.",
+    "retryButton": "🔄 재시도",
+    "settingsButton": "⚙️ 설정"
+  },
+  "consent": {
+    "title": "동의 관리",
+    "description": "데이터 처리 및 스토리지에 대한 동의를 관리합니다",
+    "dataProcessing": "데이터 처리",
+    "localStorage": "로컬 스토리지",
+    "automation": "자동화",
+    "analytics": "분석",
+    "resetConsent": "동의 재설정",
+    "resetConsentDesc": "모든 동의를 재설정하고 확장 프로그램 데이터를 지웁니다",
+    "resetConfirmation": "정말로 동의를 재설정하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "consentReset": "동의가 성공적으로 재설정되었습니다."
+  },
+  "consentOverlay": {
+    "title": "SpicySwipe에 오신 것을 환영합니다",
+    "description": "SpicySwipe 기능을 사용하려면 AI 기반 기능으로 Tinder 경험을 향상시키기 위한 귀하의 동의가 필요합니다.",
+    "features": [
+      "Tinder에 AI 기능 추가",
+      "프로필 정보 분석",
+      "메시징 경험 향상"
+    ],
+    "acceptButton": "동의합니다"
+  }
+}

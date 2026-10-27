@@ -1,0 +1,187 @@
+{
+  "extension": {
+    "name": "SpicySwipe",
+    "description": "امتداد تيندر الذكي مع تحسين تخصيص نبرة الذكاء الاصطناعي ومنطق الاقتراحات وتحسين توليد الرسائل لجميع أنماط النبرة."
+  },
+  "sidebar": {
+    "tabs": {
+      "status": "الحالة",
+      "ai": "الذكاء الاصطناعي",
+      "swiping": "التمرير",
+      "analytics": "التحليلات"
+    },
+    "toggle": {
+      "show": "▶",
+      "hide": "◀"
+    },
+    "theme": {
+      "light": "☀️",
+      "dark": "🌙",
+      "toggle": "تبديل المظهر"
+    },
+    "language": {
+      "label": "اللغة",
+      "en": "الإنجليزية",
+      "fr": "الفرنسية",
+      "es": "الإسبانية",
+      "de": "الألمانية",
+      "it": "الإيطالية",
+      "pt": "البرتغالية",
+      "ar": "العربية",
+      "zh": "الصينية",
+      "ko": "الكورية",
+      "ja": "اليابانية"
+    }
+  },
+  "status": {
+    "title": "الحالة",
+    "enabled": "مفعل",
+    "disabled": "معطل",
+    "active": "نشط",
+    "inactive": "غير نشط",
+    "connected": "متصل",
+    "disconnected": "غير متصل",
+    "running": "قيد التشغيل",
+    "stopped": "متوقف",
+    "paused": "متوقف مؤقتاً",
+    "error": "خطأ",
+    "success": "نجح",
+    "warning": "تحذير",
+    "info": "معلومات"
+  },
+  "ai": {
+    "title": "إعدادات الذكاء الاصطناعي",
+    "model": "نموذج الذكاء الاصطناعي",
+    "apiKey": "مفتاح API",
+    "tone": "النبرة",
+    "save": "حفظ",
+    "remove": "إزالة",
+    "saved": "تم حفظ مفتاح API بنجاح!",
+    "removed": "تم إزالة مفتاح API.",
+    "error": "خطأ في حفظ الإعدادات. يرجى المحاولة مرة أخرى.",
+    "settingsSaved": "تم حفظ إعدادات الذكاء الاصطناعي ومفتاح API بنجاح!",
+    "messaging": {
+      "title": "إعدادات الرسائل",
+      "tone": "النبرة",
+      "language": "اللغة",
+      "autoSend": "إرسال تلقائي",
+      "multiTurn": "محادثات متعددة الجولات",
+      "autoMessageOnMatch": "رسالة تلقائية عند المطابقة"
+    },
+    "languagePreferences": {
+      "title": "تفضيلات اللغة",
+      "selected": "محدد",
+      "selectAll": "تحديد الكل",
+      "clearAll": "مسح الكل",
+      "count": "لغات محددة"
+    }
+  },
+  "swiping": {
+    "title": "إعدادات التمرير",
+    "autoSwipe": "تمرير تلقائي",
+    "likeRatio": "نسبة الإعجاب",
+    "swipeDelay": "تأخير التمرير",
+    "maxSwipes": "الحد الأقصى للتمرير",
+    "stealthMode": "الوضع الخفي",
+    "stealthModeDesc": "يقلل من خطر الاكتشاف بإضافة تأخيرات عشوائية وسلوك شبيه بالإنسان",
+    "startSwiping": "ابدأ",
+    "stopSwiping": "توقف",
+    "settingsSaved": "تم حفظ إعدادات التمرير بنجاح!"
+  },
+  "analytics": {
+    "title": "التحليلات",
+    "today": "إحصائيات اليوم",
+    "allTime": "الإحصائيات الإجمالية",
+    "swipes": "إجمالي التمرير",
+    "likes": "إجمالي الإعجاب",
+    "nopes": "إجمالي الرفض",
+    "matches": "إجمالي المطابقات",
+    "messages": "إجمالي الرسائل",
+    "efficiency": "معدل الكفاءة",
+    "responseTime": "متوسط وقت الاستجابة",
+    "matchRate": "معدل المطابقة",
+    "successRate": "معدل النجاح",
+    "totalResponses": "إجمالي الاستجابات",
+    "successful": "ناجح",
+    "failed": "فشل",
+    "avgRating": "متوسط التقييم",
+    "rateLimited": "محدود المعدل",
+    "performanceMetrics": "مقاييس الأداء",
+    "failureCount": "عدد الفشل",
+    "swipeSpeed": "سرعة التمرير",
+    "sessionActive": "الجلسة نشطة",
+    "currentAI": "الذكاء الاصطناعي الحالي",
+    "apiKeyStatus": "حالة مفتاح API",
+    "yes": "نعم",
+    "no": "لا"
+  },
+  "popup": {
+    "sidebarAvailable": "SpicySwipe نشط!",
+    "sidebarInstructions": "افتح الشريط الجانبي في Tinder للوصول إلى ميزات الذكاء الاصطناعي",
+    "openTinder": "افتح Tinder لاستخدام SpicySwipe",
+    "openTinderButton": "افتح Tinder",
+    "supportDevelopment": "دعم التطوير"
+  },
+  "notifications": {
+    "error": "خطأ",
+    "success": "نجح",
+    "warning": "تحذير",
+    "info": "معلومات",
+    "languageChanged": "تم تغيير اللغة بنجاح!"
+  },
+  "buttons": {
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "close": "إغلاق",
+    "retry": "إعادة المحاولة",
+    "regenerate": "إعادة توليد",
+    "send": "إرسال",
+    "approve": "موافقة",
+    "reject": "رفض",
+    "like": "إعجاب",
+    "nope": "رفض"
+  },
+  "messages": {
+    "loading": "جاري التحميل...",
+    "processing": "جاري المعالجة...",
+    "generating": "جاري التوليد...",
+    "sending": "جاري الإرسال...",
+    "error": "حدث خطأ",
+    "success": "تم إكمال العملية بنجاح",
+    "noData": "لا توجد بيانات متاحة"
+  },
+  "approvalBox": {
+    "title": "اقتراح الذكاء الاصطناعي",
+    "dragToMove": "(اسحب للتحريك)",
+    "use": "استخدام",
+    "regenerate": "إعادة توليد",
+    "translate": "ترجمة",
+    "cancel": "إلغاء",
+    "changeTone": "تغيير نغمة الرسالة",
+    "loading": "جارٍ التحميل..."
+  },
+  "errors": {
+    "title": "فشل توليد الذكاء الاصطناعي",
+    "forMatch": "لـ",
+    "rateLimitTitle": "⏳ تم الوصول إلى حد الاستخدام",
+    "rateLimitMessage": "وصل مزود الذكاء الاصطناعي إلى حده. يرجى الانتظار 30-60 ثانية والمحاولة مرة أخرى، أو التبديل إلى نموذج ذكاء اصطناعي آخر في الإعدادات.",
+    "missingKeyTitle": "🔑 مفتاح API مفقود",
+    "missingKeyMessage": "لم يتم العثور على مفتاح API للنموذج المحدد. انتقل إلى علامة تبويب الذكاء الاصطناعي في الإعدادات وأدخل مفتاح API الخاص بك.",
+    "extensionErrorTitle": "🔄 خطأ في الإضافة",
+    "extensionErrorMessage": "يجب إعادة تحميل الإضافة. يرجى تحديث هذه الصفحة.",
+    "networkErrorTitle": "🌐 خطأ في الشبكة",
+    "networkErrorMessage": "تعذر الاتصال بخدمة الذكاء الاصطناعي. تحقق من اتصالك بالإنترنت وحاول مرة أخرى.",
+    "retryButton": "🔄 إعادة المحاولة",
+    "settingsButton": "⚙️ الإعدادات"
+  },
+  "consentOverlay": {
+    "title": "مرحباً بك في SpicySwipe",
+    "description": "لاستخدام ميزات SpicySwipe، نحتاج إلى موافقتك لتحسين تجربتك على Tinder باستخدام الميزات المدعومة بالذكاء الاصطناعي.",
+    "features": [
+      "إضافة ميزات الذكاء الاصطناعي إلى Tinder",
+      "تحليل معلومات الملف الشخصي",
+      "تحسين تجربتك في الرسائل"
+    ],
+    "acceptButton": "أوافق"
+  }
+}

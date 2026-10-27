@@ -1,0 +1,41 @@
+appId: com.spicyswipe.desktop
+productName: SpicySwipe
+copyright: Copyright © SpicySwipe contributors
+asar: true
+asarUnpack:
+  - desktop/windows-ocr.ps1
+icon: desktop/icon.png
+directories:
+  output: release
+files:
+  - desktop/**
+  - '!desktop/tinder-preload-source.cjs'
+  - shared/core.js
+  - shared/ai.js
+  - shared/session.js
+  - ui/workspace.js
+  - ui/styles.css
+  - ui/icons.js
+  - assets/icon*.png
+  - License
+  - package.json
+mac:
+  identity: "-"
+  category: public.app-category.social-networking
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  extendInfo:
+    NSLocationUsageDescription: Tinder can use your location to show nearby profiles when you allow access.
+    NSLocalNetworkUsageDescription: SpicySwipe connects to your chosen Ollama server on your local network.
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+linux:
+  category: Network
+  target:
+    - AppImage

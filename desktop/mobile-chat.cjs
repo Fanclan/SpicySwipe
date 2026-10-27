@@ -1,0 +1,77 @@
+'use strict';
+const IDS = 'co.hinge.app:id/';
+const timestampPattern = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?:[1-9]|[12]\d|3[01]) (?:[1-9]|1[012]):[0-5]\d(?:AM|PM)$/;
+function within(node, ancestor) { for (let p = node; p; p = p.parent) if (p === ancestor) return true; return false; }
+function readChat({ nodes, visible, find, label, bounds, fullyVisible, control, hash, result, block }) {
+  const composers = nodes.filter(n => n.a['resource-id'] === IDS + 'messageComposition');
+  if (!composers.length) return null;
+  const fail = reason => block('Hinge chat: ' + reason);
+  if (composers.length !== 1) return fail('the message composer is ambiguous.');
+  const composer = composers[0];
+  if (!composer.visible || !composer.enabled || composer.a.class !== 'android.widget.EditText' || composer.a.clickable !== 'true' || composer.a.hint !== 'Send a message' || !fullyVisible(composer)) return fail('the native message composer is unavailable.');
+  const resource = id => visible.filter(n => n.a['resource-id'] === IDS + id);
+  const headers = resource('header'), pagers = resource('viewPager'), containers = resource('messageCompositionContainer');
+  if (headers.length !== 1 || pagers.length !== 1 || containers.length !== 1 || composer.parent !== containers[0] || !headers[0].enabled || !pagers[0].enabled || !containers[0].enabled) return fail('the conversation layout is not verified.');
+  const header = headers[0], pager = pagers[0];
+  const tabs = find('Chat').filter(n => within(n, header) && n.a.class === 'android.widget.TextView');
+  if (tabs.length !== 1 || tabs[0].parent?.a.selected !== 'true') return fail('open the Chat tab before drafting or sending.');
+  const verified = visible.filter(n => within(n, header) && n.a.class === 'android.view.View' && /^.+, Verified$/.test(label(n)));
+  if (verified.length !== 1) return fail('the verified conversation header is ambiguous.');
+  const name = label(verified[0]).slice(0, -10);
+  const headerNames = visible.filter(n => n.parent === verified[0].parent && n.a.class === 'android.widget.TextView' && n.a.text === name);
+  const badges = visible.filter(n => n.parent === verified[0].parent && label(n) === 'Verified');
+  if (!name || name.length > 120 || headerNames.length !== 1 || badges.length !== 1 || !fullyVisible(headerNames[0])) return fail('the header name does not match its verification label.');
+  const starts = find('Start the chat with ' + name).filter(n => within(n, pager) && n.a.class === 'android.widget.TextView');
+  const captions = find('You liked ' + name + "'s photo.").filter(n => within(n, pager) && n.a.class === 'android.widget.TextView');
+  if (starts.length !== 1 || captions.length !== 1) return fail('existing messages or missing opener evidence are not supported.');
+  const start = starts[0], chatRegion = start.parent?.parent;
+  if (!chatRegion || !within(chatRegion, pager) || captions[0].parent !== chatRegion || !fullyVisible(start)) return fail('the initial match event is not fully visible.');
+  const wrappers = nodes.filter(n => n.parent === chatRegion);
+  const position = wrappers.indexOf(start.parent), preceding = position > 0 ? wrappers[position - 1] : null;
+  const matchDates = visible.filter(n => n.parent === preceding && n.a.class === 'android.widget.TextView' && timestampPattern.test(n.a.text || ''));
+  if (!preceding || matchDates.length !== 1 || !fullyVisible(matchDates[0]) || visible.filter(n => n.parent === preceding && label(n)).length !== 1) return fail('the timestamp immediately preceding this match is unavailable.');
+  const matchTimestamp = matchDates[0].a.text;
+  const pictures = visible.filter(n => within(n, pager) && n.a.class === 'android.widget.ImageView');
+  if (pictures.length !== 1 || label(pictures[0]) !== name + "'s photo" || !within(pictures[0], chatRegion) || !bounds(pictures[0])) return fail('the liked-photo evidence is ambiguous.');
+  const dates = visible.filter(n => within(n, pager) && timestampPattern.test(n.a.text || ''));
+  if (dates.length < 1 || dates.length > 2 || dates.some(n => n.a.class !== 'android.widget.TextView' || n.parent?.parent !== chatRegion || visible.filter(s => s.parent === n.parent && label(s)).length !== 1)) return fail('unrecognized conversation events require review.');
+  const known = new Set([start, captions[0], pictures[0], ...dates]);
+  const tutorials = find('Double tap to like a message').filter(n => within(n, pager) && n.a.class === 'android.widget.TextView');
+  if (tutorials.length !== 1) return fail('the initial chat layout is not verified.');
+  known.add(tutorials[0]);
+  if (visible.some(n => within(n, pager) && ((label(n) && !known.has(n)) || (n.a.clickable === 'true' && n.enabled) || (/EditText$/.test(n.a.class || ''))))) return fail('existing or unknown message content requires manual review.');
+  const sends = resource('sendMessageButton'), microphones = resource('microphoneButton');
+  if (sends.length > 1 || microphones.length > 1 || (sends.length && microphones.length) || (!sends.length && !microphones.length)) return fail('the composer send state is ambiguous.');
+  const buttonContainers = resource('sendChatButtonContainer');
+  if (buttonContainers.length !== 1 || buttonContainers[0].parent !== containers[0]) return fail('the composer action container is not verified.');
+  const rawText = composer.a.text || '';
+  let send = null, composerText;
+  if (microphones.length) {
+    const mic = microphones[0];
+    if (mic.parent !== buttonContainers[0] || mic.a.class !== 'android.widget.ImageButton' || label(mic) !== 'Record voice note' || !mic.enabled || mic.a.clickable !== 'true' || !fullyVisible(mic) || rawText !== composer.a.hint) return fail('preserve the current composer and review its contents.');
+    composerText = '';
+  } else {
+    const button = sends[0];
+    if (button.parent !== buttonContainers[0] || button.a.class !== 'android.widget.Button' || label(button) !== 'Send message' || !rawText || !button.enabled || button.a.clickable !== 'true') return fail('the Send message control is unavailable.');
+    send = control(button);
+    if (!send) return fail('the Send message bounds are not verified.');
+    composerText = rawText;
+  }
+  const composerControl = control(composer, true);
+  if (!composerControl) return fail('the current composer bounds are not verified.');
+  const allowedClicks = new Set([composer, ...sends, ...microphones]);
+  const backs = find('Back').filter(n => within(n, header) && n.a.class === 'android.widget.Button');
+  const mores = find('More').filter(n => within(n, header) && n.a.class === 'android.widget.Button');
+  for (const n of [...backs, ...mores]) allowedClicks.add(n);
+  for (const n of find('Profile').filter(n => within(n, header))) allowedClicks.add(n.parent);
+  if (visible.some(n => n.enabled && n.a.clickable === 'true' && !allowedClicks.has(n))) return fail('an unfamiliar control or overlay requires attention.');
+  result.kind = 'conversation'; result.name = name;
+  result.identity = hash(['hinge-initial-chat', name, matchTimestamp, captions[0].a.text]);
+  result.context = { name, bio: '', history: [matchTimestamp, start.a.text, captions[0].a.text].join('\n') };
+  result.photos = pictures.map(n => ({ key: hash(['chat-photo', name]), bounds: bounds(n), like: null }));
+  result.controls.composer = composerControl; result.controls.sendMessage = send;
+  result.composerText = composerText; result.composerTextVerified = true;
+  result.emptyConversation = true; result.reason = '';
+  return result;
+}
+module.exports = { readChat };

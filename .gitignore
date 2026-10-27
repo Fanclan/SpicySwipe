@@ -1,0 +1,47 @@
+# Dependencies and generated output
+node_modules/
+dist/
+release/
+desktop/generated/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Credentials and machine configuration
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+settings.json
+android-preferences.json
+
+# Browser/device state and private development artifacts
+.local/
+.private/
+.runtime/
+.android/
+*.avd/
+*.qcow2
+*.img
+*.db
+*.db-*
+*.sqlite*
+*.har
+*.dmp
+*.log
+logs/
+tmp/
+temp/
+docs/superpowers/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~

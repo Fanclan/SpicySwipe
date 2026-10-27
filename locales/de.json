@@ -1,0 +1,187 @@
+{
+  "extension": {
+    "name": "SpicySwipe",
+    "description": "Tinder AI-Erweiterung mit verbesserter KI-Ton-Anpassung, Prompt-Logik und verbesserter Nachrichtengenerierung für alle Tonstile."
+  },
+  "sidebar": {
+    "tabs": {
+      "status": "Status",
+      "ai": "KI",
+      "swiping": "Wischen",
+      "analytics": "Analysen"
+    },
+    "toggle": {
+      "show": "▶",
+      "hide": "◀"
+    },
+    "theme": {
+      "light": "☀️",
+      "dark": "🌙",
+      "toggle": "Theme umschalten"
+    },
+    "language": {
+      "label": "Sprache",
+      "en": "Englisch",
+      "fr": "Französisch",
+      "es": "Spanisch",
+      "de": "Deutsch",
+      "it": "Italienisch",
+      "pt": "Portugiesisch",
+      "ar": "Arabisch",
+      "zh": "Chinesisch",
+      "ko": "Koreanisch",
+      "ja": "Japanisch"
+    }
+  },
+  "status": {
+    "title": "Status",
+    "enabled": "Aktiviert",
+    "disabled": "Deaktiviert",
+    "active": "Aktiv",
+    "inactive": "Inaktiv",
+    "connected": "Verbunden",
+    "disconnected": "Getrennt",
+    "running": "Läuft",
+    "stopped": "Gestoppt",
+    "paused": "Pausiert",
+    "error": "Fehler",
+    "success": "Erfolg",
+    "warning": "Warnung",
+    "info": "Info"
+  },
+  "ai": {
+    "title": "KI-Einstellungen",
+    "model": "KI-Modell",
+    "apiKey": "API-Schlüssel",
+    "tone": "Ton",
+    "save": "Speichern",
+    "remove": "Entfernen",
+    "saved": "API-Schlüssel erfolgreich gespeichert!",
+    "removed": "API-Schlüssel entfernt.",
+    "error": "Fehler beim Speichern der Einstellungen. Bitte versuchen Sie es erneut.",
+    "settingsSaved": "KI-Einstellungen und API-Schlüssel erfolgreich gespeichert!",
+    "messaging": {
+      "title": "Nachrichteneinstellungen",
+      "tone": "Ton",
+      "language": "Sprache",
+      "autoSend": "Automatisch senden",
+      "multiTurn": "Mehrfach-Gespräche",
+      "autoMessageOnMatch": "Automatische Nachricht bei Match"
+    },
+    "languagePreferences": {
+      "title": "Sprachpräferenzen",
+      "selected": "Ausgewählt",
+      "selectAll": "Alle auswählen",
+      "clearAll": "Alle löschen",
+      "count": "Sprachen ausgewählt"
+    }
+  },
+  "swiping": {
+    "title": "Wisch-Einstellungen",
+    "autoSwipe": "Automatisches Wischen",
+    "likeRatio": "Like-Verhältnis",
+    "swipeDelay": "Wisch-Verzögerung",
+    "maxSwipes": "Max. Wischs",
+    "stealthMode": "Stealth-Modus",
+    "stealthModeDesc": "Reduziert das Erkennungsrisiko durch zufällige Verzögerungen und menschliches Verhalten",
+    "startSwiping": "Starten",
+    "stopSwiping": "Stoppen",
+    "settingsSaved": "Wisch-Einstellungen erfolgreich gespeichert!"
+  },
+  "analytics": {
+    "title": "Analysen",
+    "today": "Heutige Statistiken",
+    "allTime": "Gesamtstatistiken",
+    "swipes": "Gesamte Wischs",
+    "likes": "Gesamte Likes",
+    "nopes": "Gesamte Nopes",
+    "matches": "Gesamte Matches",
+    "messages": "Gesamte Nachrichten",
+    "efficiency": "Effizienz-Score",
+    "responseTime": "Durchschn. Antwortzeit",
+    "matchRate": "Match-Rate",
+    "successRate": "Erfolgsrate",
+    "totalResponses": "Gesamte Antworten",
+    "successful": "Erfolgreich",
+    "failed": "Fehlgeschlagen",
+    "avgRating": "Durchschn. Bewertung",
+    "rateLimited": "Rate-Limited",
+    "performanceMetrics": "Leistungsmetriken",
+    "failureCount": "Fehleranzahl",
+    "swipeSpeed": "Wisch-Geschwindigkeit",
+    "sessionActive": "Session aktiv",
+    "currentAI": "Aktuelle KI",
+    "apiKeyStatus": "API-Schlüssel Status",
+    "yes": "Ja",
+    "no": "Nein"
+  },
+  "popup": {
+    "sidebarAvailable": "SpicySwipe ist aktiv!",
+    "sidebarInstructions": "Öffnen Sie die Seitenleiste in Tinder, um auf KI-Funktionen zuzugreifen",
+    "openTinder": "Öffnen Sie Tinder, um SpicySwipe zu verwenden",
+    "openTinderButton": "Tinder öffnen",
+    "supportDevelopment": "Entwicklung unterstützen"
+  },
+  "notifications": {
+    "error": "Fehler",
+    "success": "Erfolg",
+    "warning": "Warnung",
+    "info": "Information",
+    "languageChanged": "Sprache erfolgreich geändert!"
+  },
+  "buttons": {
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "retry": "Wiederholen",
+    "regenerate": "Regenerieren",
+    "send": "Senden",
+    "approve": "Genehmigen",
+    "reject": "Ablehnen",
+    "like": "Gefällt mir",
+    "nope": "Nope"
+  },
+  "messages": {
+    "loading": "Lädt...",
+    "processing": "Verarbeitung...",
+    "generating": "Generierung...",
+    "sending": "Senden...",
+    "error": "Ein Fehler ist aufgetreten",
+    "success": "Operation erfolgreich abgeschlossen",
+    "noData": "Keine Daten verfügbar"
+  },
+  "approvalBox": {
+    "title": "KI-Vorschlag",
+    "dragToMove": "(Zum Verschieben ziehen)",
+    "use": "Verwenden",
+    "regenerate": "Neu generieren",
+    "translate": "Übersetzen",
+    "cancel": "Abbrechen",
+    "changeTone": "Nachrichtenton ändern",
+    "loading": "Laden..."
+  },
+  "errors": {
+    "title": "KI-Generierung fehlgeschlagen",
+    "forMatch": "für",
+    "rateLimitTitle": "⏳ API-Limit erreicht",
+    "rateLimitMessage": "Ihr KI-Anbieter hat sein Nutzungslimit erreicht. Bitte warten Sie 30-60 Sekunden und versuchen Sie es erneut, oder wechseln Sie zu einem anderen KI-Modell in den Einstellungen.",
+    "missingKeyTitle": "🔑 API-Schlüssel fehlt",
+    "missingKeyMessage": "Kein API-Schlüssel für das ausgewählte KI-Modell gefunden. Gehen Sie zur KI-Registerkarte in den Einstellungen und geben Sie Ihren API-Schlüssel ein.",
+    "extensionErrorTitle": "🔄 Erweiterungsfehler",
+    "extensionErrorMessage": "Die Erweiterung muss neu geladen werden. Bitte aktualisieren Sie diese Seite.",
+    "networkErrorTitle": "🌐 Netzwerkfehler",
+    "networkErrorMessage": "Verbindung zum KI-Dienst konnte nicht hergestellt werden. Überprüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
+    "retryButton": "🔄 Wiederholen",
+    "settingsButton": "⚙️ Einstellungen"
+  },
+  "consentOverlay": {
+    "title": "Willkommen bei SpicySwipe",
+    "description": "Um die Funktionen von SpicySwipe nutzen zu können, benötigen wir Ihre Zustimmung, um Ihr Tinder-Erlebnis mit KI-gestützten Funktionen zu verbessern.",
+    "features": [
+      "KI-Funktionen zu Tinder hinzufügen",
+      "Profilinformationen analysieren",
+      "Ihr Messaging-Erlebnis verbessern"
+    ],
+    "acceptButton": "Ich stimme zu"
+  }
+}

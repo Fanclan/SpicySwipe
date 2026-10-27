@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "version": "3.0.0",
+  "minimum_chrome_version": "116",
+  "name": "SpicySwipe — Your dating copilot",
+  "description": "Thoughtful AI drafts and focused swipe sessions for Tinder. Your words, your pace, your control.",
+  "author": "Soufienne Rahali",
+  "homepage_url": "https://github.com/Fanclan/SpicySwipe",
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://tinder.com/*",
+    "https://www.tinder.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.deepseek.com/*",
+    "http://localhost:11434/*",
+    "http://127.0.0.1:11434/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://tinder.com/*",
+        "https://www.tinder.com/*"
+      ],
+      "js": [
+        "shared/core.js",
+        "shared/session.js",
+        "shared/client.js",
+        "ui/icons.js",
+        "ui/workspace.js",
+        "content/tinder.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png"
+    }
+  },
+  "options_ui": {
+    "page": "ui/dashboard.html",
+    "open_in_tab": true
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "ui/styles.css"
+      ],
+      "matches": [
+        "https://tinder.com/*",
+        "https://www.tinder.com/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' http: https:; style-src 'self'; img-src 'self' data:;"
+  },
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}
