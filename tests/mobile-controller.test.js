@@ -340,3 +340,25 @@ test('Bumble late-transition guard stays set if static evidence changes during r
  x.android.swipeProfile=async()=>assert.fail('must not swipe');
  await assert.rejects(x.c.act('like',x.c.token()),/uncertain|changed/);assert.ok(x.c.lastAction);
 });
+
+
+const readFailure=()=>Object.assign(Error('Android command failed.'),{code:'ANDROID_COMMAND_FAILED'});
+test('a transient Android hierarchy failure is retried with fresh evidence and no input',async()=>{
+ const x=setup();let reads=0;x.android.hierarchy=async()=>{if(++reads===1)throw readFailure();return {xml:screen({screenKey:'fresh'}),foreground:'co.hinge.app'}};
+ const s=await x.c.request('context');assert.equal(s.screen.screenKey,'fresh');assert.equal(reads,2);assert.deepEqual(x.calls,[]);
+});
+test('a transient screenshot failure discards the previous hierarchy before retrying',async()=>{
+ let evidence=0;const x=setup(screen(),{readEvidence:async()=>{if(++evidence===1)throw readFailure();return {hashes:[]}}});let reads=0;x.android.hierarchy=async()=>({xml:screen({identity:++reads===1?'old':'fresh'}),foreground:'co.hinge.app'});
+ const s=await x.c.request('context');assert.equal(s.screen.identity,'fresh');assert.equal(reads,2);assert.deepEqual(x.calls,[]);
+});
+test('persistent Android read failures stop after one retry',async()=>{
+ const x=setup();let reads=0;x.android.hierarchy=async()=>{reads++;throw readFailure()};await assert.rejects(x.c.request('context'),/command failed/);assert.equal(reads,2);assert.deepEqual(x.calls,[]);
+});
+test('canceling during Android read recovery prevents a second read',async()=>{
+ const gate=deferred(),x=setup(screen(),{wait:()=>gate.promise});let reads=0;x.android.hierarchy=async()=>{reads++;throw readFailure()};
+ const job=x.c.request('context');const result=assert.rejects(job,/changed|cancel/i);await new Promise(r=>setImmediate(r));await x.c.request('stop');gate.resolve();await result;assert.equal(reads,1);assert.deepEqual(x.calls,[]);
+});
+test('Android command failures from taps are never automatically repeated',async()=>{
+ const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{tap:async()=>{throw readFailure()}});
+ await assert.rejects(x.c.request('act',{kind:'like'}),/command failed/);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
+});

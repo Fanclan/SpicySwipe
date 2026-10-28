@@ -27,7 +27,17 @@ class MobileController{
   if(t)this.assert(t);
  }
  async consent(t){const s=await this.service.request('load');this.assert(t);if(!s.sidebarConsentGiven)throw Error('Complete setup and grant consent in AI settings first.');}
- async read(t){this.assert(t);const raw=await this.android.hierarchy();this.assert(t);let s=this.readScreen(raw.xml,{platform:this.platform,foreground:raw.foreground});
+ async read(t){
+  // Retry only an observation, never the tap/scroll that may already have reached the device.
+  // Rebuild hierarchy and image evidence together so no stale partial read survives recovery.
+  try{return await this.readOnce(t)}catch(error){
+   this.assert(t);
+   if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT'].includes(error.code))throw error;
+   await this.pauseFor(750,t);
+   return this.readOnce(t);
+  }
+ }
+ async readOnce(t){this.assert(t);const raw=await this.android.hierarchy();this.assert(t);let s=this.readScreen(raw.xml,{platform:this.platform,foreground:raw.foreground});
   if(this.readEvidence||(this.photoHashes&&s.photos?.length)){
    const ev=this.readEvidence?await this.readEvidence(s,t.signal):{hashes:await this.photoHashes(s.photos)};this.assert(t);
    const photos=s.photos.map((p,i)=>({...p,visual:ev.hashes?.[i]||null,visualSquare:ev.squareHashes?.[i]||null}));

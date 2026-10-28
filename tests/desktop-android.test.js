@@ -370,3 +370,10 @@ test('profile swipe rejects stale validity, offscreen cards and invalid directio
 test('Windows opt-in native OpenGL bypasses the crashing software renderer and disables Vulkan',async t=>{const f=fixture(t,{platform:'win32',graphicsMode:'host-opengl'});await f.android.start('Pixel_6_API_34');assert.deepEqual(f.children[0].args,['-avd','Pixel_6_API_34','-no-window','-no-boot-anim','-gpu','host','-feature','-Vulkan','-no-snapshot-load']);assert.equal(f.children[0].settings.windowsHide,true);assert.equal(f.children[0].args.includes('-wipe-data'),false);});
 test('unrecognized graphics modes cannot add emulator arguments',async t=>{const f=fixture(t,{platform:'win32',graphicsMode:'host -wipe-data'});await f.android.start('Pixel_6_API_34');assert.deepEqual(f.children[0].args,['-avd','Pixel_6_API_34','-no-window','-no-boot-anim','-gpu','swiftshader','-no-snapshot-load']);});
 test('Windows graphics preference leaves Mac startup unchanged',async t=>{const f=fixture(t,{platform:'darwin',graphicsMode:'host-opengl'});await f.android.start('Pixel_6_API_34');assert.equal(f.children[0].args.includes('-gpu'),false);assert.equal(f.children[0].args.includes('-feature'),false);});
+
+
+test('Android process failures expose a stable recovery code without command payloads',async t=>{
+ const f=fixture(t);await f.android.select('emulator-5554');
+ for(const timedOut of [false,true]){f.setHandler(args=>{if(args.includes('screencap'))throw Object.assign(Error('private payload'),{killed:timedOut})});
+ await assert.rejects(f.android.screenshot(),error=>error.code===(timedOut?'ANDROID_COMMAND_TIMEOUT':'ANDROID_COMMAND_FAILED')&&!error.message.includes('private payload'));}
+});

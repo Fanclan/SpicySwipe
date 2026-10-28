@@ -38,7 +38,10 @@ class Android {
       this.execFile(file, args, { shell: false, windowsHide: true, timeout: 15000, maxBuffer: binary ? 25 * 1024 * 1024 : 1024 * 1024, encoding: binary ? null : 'utf8' }, (error, stdout) => {
         if (this.disposed) return reject(new Error('Android connection has closed. Reopen SpicySwipe.'));
         if (error) {
-          reject(new Error(error.killed || error.code === 'ETIMEDOUT' ? 'Android command timed out. Check the selected device and try again.' : 'Android command failed. Check the SDK, device connection and USB debugging authorization.'));
+          const timedOut = error.killed || error.code === 'ETIMEDOUT';
+          reject(Object.assign(new Error(timedOut ? 'Android command timed out. Check the selected device and try again.' : 'Android command failed. Check the SDK, device connection and USB debugging authorization.'), {
+            code: timedOut ? 'ANDROID_COMMAND_TIMEOUT' : 'ANDROID_COMMAND_FAILED'
+          }));
         } else resolve(binary ? Buffer.from(stdout) : String(stdout));
       });
     });

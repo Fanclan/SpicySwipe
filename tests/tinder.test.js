@@ -278,3 +278,24 @@ test('desktop child view hiding does not pause Tinder while its host remains vis
  await x.api.request('start');await tick();assert.equal(x.api.snapshot().session.status,'running');
  x.update({desktopHost:true,desktopVisible:false});assert.equal(x.api.snapshot().session.status,'paused');await x.api.request('stop');
 });
+
+
+test('a temporarily absent initial card is awaited before any Like',async t=>{
+ const x=await swipeSetup(t,{browsePhotos:false,maxSwipes:1}),d=x.dom.window.document,card=d.querySelector('article');let likes=0;d.querySelector('#like').onclick=()=>likes++;
+ card.remove();await x.api.request('start');x.waits.shift()();await tick();assert.equal(x.api.snapshot().session.status,'running');assert.equal(likes,0);
+ d.body.append(card);x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.count,1);
+});
+test('a persistently absent initial card stops after a bounded wait',async t=>{
+ const x=await swipeSetup(t,{browsePhotos:false}),d=x.dom.window.document;let likes=0;d.querySelector('#like').onclick=()=>likes++;d.querySelector('article').remove();
+ await x.api.request('start');x.waits.shift()();await tick();assert.equal(x.api.snapshot().session.status,'running');
+ for(let i=0;i<25&&x.api.snapshot().session.status==='running';i++){assert.ok(x.waits.length);x.waits.shift()();await tick()}
+ assert.equal(x.api.snapshot().session.status,'error');assert.match(x.api.snapshot().session.error,/No visible profile/);assert.equal(likes,0);
+});
+test('stop or a new blocking dialog during card loading prevents Likes',async t=>{
+ for(const mode of ['stop','dialog']){
+ const x=await swipeSetup(t,{browsePhotos:false}),d=x.dom.window.document,card=d.querySelector('article');let likes=0;d.querySelector('#like').onclick=()=>likes++;card.remove();
+ await x.api.request('start');x.waits.shift()();await tick();assert.equal(x.api.snapshot().session.status,'running');
+ d.body.append(card);if(mode==='stop')await x.api.request('stop');else d.body.insertAdjacentHTML('beforeend','<div role="dialog">Account requires attention</div>');
+ x.waits.shift()();await tick();assert.equal(likes,0);assert.equal(x.api.snapshot().session.status,mode==='stop'?'idle':'error');
+ }
+});

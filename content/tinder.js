@@ -131,7 +131,13 @@
   }
   const session=new SSSession({act:async(config,valid,commit,sleep)=>{
     if(!await guardPage(config,valid,sleep))return;
-    let card=currentCard();if(!card)throw new Error('No visible profile card. Check Tinder before continuing.');
+    let card=currentCard();
+    // A transition/loading gap may temporarily remove the initial card. No action has been issued yet.
+    for(let attempt=0;!card&&attempt<20;attempt++){
+      if(!await sleep(500,'reviewing')||!await guardPage(config,valid,sleep))return;
+      card=currentCard();
+    }
+    if(!card)throw new Error('No visible profile card. Check Tinder before continuing.');
     const identity=cardIdentity(card);
     if(!identity)throw new Error('Could not identify the visible profile. Check Tinder before continuing.');
     if(identity.key===lastCard)throw new Error('The profile has not changed. Check Tinder before continuing.');
