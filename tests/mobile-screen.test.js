@@ -209,3 +209,14 @@ test('clipped caption recognition rejects other containers, labels and positions
   assert.equal(read(xml,{commentText:''}).kind,'blocked');
  }
 });
+
+const videoClock='<node class="android.view.View" bounds="[53,1336][1027,1701]"><node class="android.widget.Button" content-desc="Unmute video" clickable="true" enabled="true" bounds="[64,1347][190,1473]" /><node class="android.view.View" text="" content-desc="Elapsed time: 13 seconds" clickable="false" scrollable="false" enabled="true" bounds="[902,1380][985,1441]" /></node>';
+test('inert elapsed counter beside native Unmute video does not invalidate a stationary photo',()=>{
+ const xml=profile.replace('</hierarchy>',videoClock+'</hierarchy>'),a=read(xml),b=read(xml.replace('13 seconds','16 seconds'));
+ assert.equal(a.kind,'profile');assert.equal(b.screenKey,a.screenKey);assert.equal(b.identity,a.identity);assert.deepEqual(b.controls,a.controls);assert.deepEqual(b.photos,a.photos);
+});
+test('elapsed-counter normalization preserves action, geometry and other text changes',()=>{
+ const xml=profile.replace('</hierarchy>',videoClock+'</hierarchy>'),a=read(xml);
+ for(const change of [xml.replace('[902,1380][985,1441]','[902,1381][985,1442]'),xml.replace('[875,1464][1001,1590]','[875,1465][1001,1591]'),xml.replace('Hiking &amp; coffee.','Books &amp; tea.')])assert.notEqual(read(change).screenKey,a.screenKey);
+ for(const sample of [xml.replace('Unmute video','Different control'),xml.replace('content-desc="Elapsed time: 13 seconds" clickable="false"','content-desc="Elapsed time: 13 seconds" clickable="true"'),xml.replace('text="" content-desc="Elapsed time','text="Other text" content-desc="Elapsed time')])assert.notEqual(read(sample).screenKey,read(sample.replace('13 seconds','16 seconds')).screenKey);
+});

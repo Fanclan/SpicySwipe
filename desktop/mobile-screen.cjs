@@ -98,7 +98,10 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if (platform !== 'hinge') return { ...result, kind: 'unsupported', reason: 'Screen reading is not verified for this platform.' };
  if (foreground !== PACKAGE) return block('Hinge must be the selected device foreground app.');
  let nodes; try { nodes = parse(xml); } catch (error) { return block(error.message); }
- result.screenKey = hash(nodes.map(n => n.a));
+ // A nearby playing video updates its inert accessibility timer even while the selected photo is unchanged.
+ // Normalize only that observed metadata; keep all geometry, other text and actionable attributes in the hash.
+ const videoContainers=new Set(nodes.filter(n=>n.a.class==='android.widget.Button'&&n.enabled&&n.visible&&n.a.clickable==='true'&&label(n)==='Unmute video'&&n.parent?.a.class==='android.view.View').map(n=>n.parent));
+ result.screenKey = hash(nodes.map(n=>n.a.class==='android.view.View'&&n.a.clickable==='false'&&n.a.scrollable==='false'&&!clean(n.a.text)&&videoContainers.has(n.parent)&&/^Elapsed time: \d+ seconds?$/.test(n.a['content-desc']||'')?{...n.a,'content-desc':'Elapsed time: <playing>'}:n.a));
  if (!nodes.length || nodes.some(n => n.a.package && n.a.package !== PACKAGE)) return block('Another app or system overlay is visible. Return to Hinge.');
  if (nodes.some(n => /(?:^|\.)(?:Dialog|AlertDialog|PopupWindow)$/.test(n.a.class || '') || /:id\/(?:alertTitle|button1|permission_allow_button)$/.test(n.a['resource-id'] || ''))) return block('A dialog requires user attention.');
  const visible = nodes.filter(n => n.visible), find = text => visible.filter(n => label(n) === text);
