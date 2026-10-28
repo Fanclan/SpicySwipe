@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Handle caption controls clipped behind the Hinge confirmation header when they belong to the selected photo.
+
 - Recognize Hinge Friend's Take cards during profile review while keeping automated Likes limited to verified photos.
 
 - Preserve active Hinge and Bumble sessions when first visiting their tabs by reusing the already selected device connection.

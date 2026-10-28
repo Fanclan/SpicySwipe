@@ -192,3 +192,20 @@ test('Friends Take background button is ignored only below the Like confirmation
  assert.equal(read(xml.replace('[875,1969][1001,2095]','[875,500][1001,626]'),{commentText:''}).kind,'blocked');
  assert.equal(read(xml.replace('Like Sample','Like SomeoneElse'),{commentText:''}).kind,'blocked');
 });
+
+function clippedCaptionLike(label='Show caption',position='[105,91][220,206]',wrapper='[95,181][985,971]'){
+ const photo=/<node\b(?=[^>]*class="android\.widget\.ImageView")(?=[^>]*content-desc="Sample(?:&apos;|')s photo")[^>]*\/>/;
+ assert.match(like,photo);
+ return like.replace(photo,image=>'<node class="android.view.View" bounds="'+wrapper+'"><node class="android.view.View" bounds="[95,118][985,971]"><node class="android.view.View" bounds="[95,181][985,971]">'+image+'</node></node><node class="android.view.View" bounds="[133,91][947,206]"><node class="android.widget.Button" content-desc="'+label+'" clickable="true" enabled="true" bounds="'+position+'" /></node></node>');
+}
+test('caption clipped behind the header stays bound to the selected confirmation image',()=>{
+ for(const label of ['Show caption','Hide caption']){
+  const s=read(clippedCaptionLike(label),{commentText:''});
+  assert.equal(s.kind,'like');assert.equal(s.controls.sendLike.label,'Send priority like');assert.equal(s.controls.like,null);assert.equal(s.photos.length,1);
+ }
+});
+test('clipped caption recognition rejects other containers, labels and positions',()=>{
+ for(const xml of [clippedCaptionLike('Buy caption'),clippedCaptionLike('Show caption','[105,20][220,136]'),clippedCaptionLike('Show caption','[0,91][220,206]'),clippedCaptionLike('Show caption','[105,1000][220,1120]'),clippedCaptionLike('Show caption','[105,91][220,206]','[0,0][1080,2400]')]){
+  assert.equal(read(xml,{commentText:''}).kind,'blocked');
+ }
+});

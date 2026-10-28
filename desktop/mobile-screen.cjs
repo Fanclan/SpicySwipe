@@ -150,7 +150,21 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const confirmation=pictures.filter(n=>{const b=bounds(n);return editor&&b.x===editor.x&&b.width===editor.width&&b.y+b.height<=editor.y;});
   if(confirmation.length!==1)return block('The selected confirmation photo is ambiguous.');
   const photoBounds=bounds(confirmation[0]);
-  const photoCaptionControl=n=>{const b=bounds(n);return n.a.class==='android.widget.Button'&&['Show caption','Hide caption'].includes(label(n))&&b&&b.x>=photoBounds.x&&b.y>=photoBounds.y&&b.x+b.width<=photoBounds.x+photoBounds.width&&b.y+b.height<=photoBounds.y+photoBounds.height};
+  const photoCaptionControl=n=>{
+   const b=bounds(n),p=photoBounds;
+   if(n.a.class!=='android.widget.Button'||!['Show caption','Hide caption'].includes(label(n))||!b||b.x<p.x||b.x+b.width>p.x+p.width||b.y+b.height>p.y+p.height)return false;
+   if(b.y>=p.y)return true;
+   // Compose can leave the caption's bounds above the photo's clipped top edge.
+   // Ignore it only inside that image's own wrapper and original square, never as a target.
+   if(p.height>=p.width||b.y<p.y+p.height-p.width||b.y+b.height<=p.y)return false;
+   for(let wrapper=confirmation[0].parent;wrapper;wrapper=wrapper.parent){
+    const w=bounds(wrapper);
+    if(wrapper.a.class!=='android.view.View'||!w||w.x!==p.x||w.width!==p.width||w.y<p.y+p.height-p.width||w.y+w.height!==p.y+p.height)break;
+    if(w.y!==p.y||w.height!==p.height)continue;
+    for(let parent=n.parent;parent;parent=parent.parent)if(parent===wrapper)return true;
+   }
+   return false;
+  };
   const knownButtons=new Set(['Info','More','Send a Rose','Send a Rose with message','Send priority like','Send priority like with message','Send like','Send like with message']);
   const formBounds=[comment[0],...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')].map(bounds);
   const formBottom=formBounds.length&&formBounds.every(Boolean)?Math.max(...formBounds.map(b=>b.y+b.height)):Infinity;
