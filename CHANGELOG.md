@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Recover from video-heavy Hinge sections with a bounded search back toward earlier photos.
+
 - Recognize Hinge photos whose native labels preserve trailing whitespace in the profile name.
 
 - Wait briefly for Tinder cards to load and retry a failed Android screen read once without replaying taps or swipes.

@@ -132,7 +132,7 @@ test('random review aligns to a fully visible photo within a bounded number of e
  await x.c.request('config',{scrollMin:1,scrollMax:1});await x.c.request('review');assert.equal(x.c.selectedPhoto.key,'later-photo');assert.equal(n,3);assert.equal(x.calls.includes('tap'),false);
 });
 test('unavailable photos stop bounded review without Like or Skip',async()=>{
- const x=setup(screen({photos:[],controls:{}}));await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/photo/i);assert.ok(x.calls.filter(c=>c.fraction).length<=6);assert.equal(x.calls.includes('tap'),false);
+ const x=setup(screen({photos:[],controls:{}}));await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/photo/i);assert.ok(x.calls.filter(c=>c.fraction).length<=18);assert.equal(x.calls.includes('tap'),false);
 });
 const emptyChat=(patch={})=>screen({kind:'conversation',identity:'chat-one',screenKey:'empty-chat-one',context:{name:'Example',bio:'Hiking',history:[]},photos:[],controls:{composer:control('composer'),sendMessage:control('send-message')},emptyConversation:true,composerTextVerified:true,composerText:'',...patch});
 test('watch defaults perform no read or provider request and autoSend alone never arms it',async()=>{
@@ -361,4 +361,14 @@ test('canceling during Android read recovery prevents a second read',async()=>{
 test('Android command failures from taps are never automatically repeated',async()=>{
  const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{tap:async()=>{throw readFailure()}});
  await assert.rejects(x.c.request('act',{kind:'like'}),/command failed/);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
+});
+
+
+test('video-heavy profiles fall back toward the top despite changing screen revisions',async()=>{
+ let moves=0,back=0;const x=setup(screen({photos:[]}),{scroll:async()=>{moves++;if(moves>6&&x.calls.at(-1).direction==='down')back++;x.set(back===7?screen():screen({photos:[],screenKey:'video-'+moves}))}});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.selectedPhoto.key,'photo-one');assert.equal(back,7);assert.equal(x.calls.includes('tap'),false);
+});
+test('return-to-top recovery still stops on changed profiles before any Like',async()=>{
+ let moves=0;const x=setup(screen({photos:[]}),{scroll:async()=>{moves++;x.set(screen({photos:[],screenKey:'video-'+moves,...(moves===7?{name:'Another'}:{})}))}});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/Profile changed/);assert.equal(moves,7);assert.equal(x.calls.includes('tap'),false);
 });

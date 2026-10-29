@@ -130,6 +130,13 @@ class MobileController{
   for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,reveal()||direction);candidates=(s.photos||[]).filter(p=>p.like);if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
   // Reaching a photo at the search boundary still permits two small alignment moves.
   for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<2&&reveal();i++){await move(.2,reveal());candidates=(s.photos||[]).filter(p=>p.like);}
+  // Videos can keep the screen revision changing at the bottom of a profile.
+  // Once forward search is exhausted, return toward earlier photos with a fixed budget.
+  const returnToPhotos=!s.photos?.length;
+  for(let i=0;!candidates.length&&returnToPhotos&&this.config.swipe.scrollProfile&&i<10;i++){
+   await move(reveal() ? .2 : .6,reveal()||'down');
+   candidates=(s.photos||[]).filter(p=>p.like);
+  }
   if(!candidates.length)throw Error('No fully visible photo found within the review limit. Scroll manually and read again.');
   this.selectedPhoto=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
