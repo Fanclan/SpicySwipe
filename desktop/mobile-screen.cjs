@@ -135,7 +135,10 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  result.name = label(skips[0]).slice(5); result.context.name = result.name;
  // This native prompt action is recognized only for the current profile; it is never a photo target.
  const friendTake=n=>n.a.class==='android.widget.Button'&&label(n)==="Like "+result.name+"'s Friend's Take";
- const pictures = visible.filter(n => label(n) === result.name + "'s photo" && n.a.class === 'android.widget.ImageView' && bounds(n));
+ // Native photo labels can preserve trailing whitespace from a profile name.
+ // Normalize only the owner segment; retain the exact suffix, name casing and image type.
+ const photoSuffix = "'s photo";
+ const pictures = visible.filter(n => label(n).endsWith(photoSuffix) && clean(label(n).slice(0,-photoSuffix.length)) === result.name && n.a.class === 'android.widget.ImageView' && bounds(n));
  const prompts = [...new Set(visible.map(label).filter(text => /^Prompt: .+\. Answer: .+/.test(text)))];
  const detailLabels = new Set(['Age', 'Gender', 'Sexuality', 'Height', 'Religion', 'Politics', 'Languages Spoken', 'Dating Intentions']);
  const details = [];

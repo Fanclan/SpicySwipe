@@ -220,3 +220,19 @@ test('elapsed-counter normalization preserves action, geometry and other text ch
  for(const change of [xml.replace('[902,1380][985,1441]','[902,1381][985,1442]'),xml.replace('[875,1464][1001,1590]','[875,1465][1001,1591]'),xml.replace('Hiking &amp; coffee.','Books &amp; tea.')])assert.notEqual(read(change).screenKey,a.screenKey);
  for(const sample of [xml.replace('Unmute video','Different control'),xml.replace('content-desc="Elapsed time: 13 seconds" clickable="false"','content-desc="Elapsed time: 13 seconds" clickable="true"'),xml.replace('text="" content-desc="Elapsed time','text="Other text" content-desc="Elapsed time')])assert.notEqual(read(sample).screenKey,read(sample.replace('13 seconds','16 seconds')).screenKey);
 });
+
+
+test('photo ownership tolerates trailing name whitespace in native labels',()=>{
+ for(const name of ['Example','Dotted İ','Two Words']){
+ const xml=profile.replaceAll('Sample',name).replaceAll(name+"'s photo",name+"  's photo");
+ const s=read(xml);assert.equal(s.name,name);assert.equal(s.photos.length,1);assert.ok(s.controls.like);
+ const noPrompt=xml.replace('Prompt: A perfect weekend. Answer: Hiking &amp; coffee.','');
+ assert.ok(read(noPrompt,{photoIdentity:'0123456789abcdef'}).identity);assert.ok(read(noPrompt,{photoIdentity:'0123456789abcdef'}).controls.like);
+ assert.equal(read(noPrompt).identity,null);
+ }
+});
+test('photo ownership still rejects another name and non-photo labels',()=>{
+ for(const label of ["Other 's photo","sample 's photo","Sample Extra 's photo","Sample 's video"]){
+ const s=read(profile.replace("Sample's photo",label));assert.equal(s.photos.length,0);assert.equal(s.controls.like,null);
+ }
+});
