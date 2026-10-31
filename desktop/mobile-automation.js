@@ -110,7 +110,9 @@
       el('photo').textContent = s ? photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
       el('reason').textContent = error || session.error || state.reason || s?.reason || '';
       const progress = `${session.count || 0} / ${session.limit || field('maxSwipes').value} issued profile actions`;
-      el('session').textContent = `${session.status || 'idle'}${session.phase && session.phase !== session.status ? ` · ${session.phase}` : ''} · ${progress}${session.endsAt ? ` · deadline ${time(session.endsAt)}` : ''}${session.nextActionAt ? ` · next action ${time(session.nextActionAt)}` : ''}${session.completionReason ? ` · ${session.completionReason}` : ''}`;
+      const waitingForProfiles = active && session.phase === 'waiting for profiles';
+      const statusText = waitingForProfiles ? 'Waiting for profiles' : `${session.status || 'idle'}${session.phase && session.phase !== session.status ? ` · ${session.phase}` : ''}`;
+      el('session').textContent = `${statusText} · ${progress}${session.endsAt ? ` · deadline ${time(session.endsAt)}` : ''}${session.nextActionAt ? ` · ${waitingForProfiles ? 'Next check' : 'next action'} ${time(session.nextActionAt)}` : ''}${session.completionReason ? ` · ${session.completionReason}` : ''}`;
       el('preset-note').textContent=state.openerArmed?'Empty-chat watcher armed. Pause or Stop disarms it.':el('preset-note').textContent.startsWith('Empty-chat watcher')?'Watcher stopped. Save settings to arm again.':el('preset-note').textContent;
       el('comment-note').textContent = field('mode').value === 'comment' ? 'AI comments are enabled by this choice. Selected profile text goes to your configured provider; unseen photo content is not described. Like submission must support an ordinary Like and a verified comment field.' : 'Plain Likes are selected. No AI comment is generated or sent with a Like.';
       const disable = (key, condition) => { el(key).disabled = condition; };
