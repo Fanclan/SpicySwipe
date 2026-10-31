@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Read additional evidence on video-first Hinge profiles before starting review or confirming a new-profile transition.
+
 - Recover from video-heavy Hinge sections with a bounded search back toward earlier photos.
 
 - Recognize Hinge photos whose native labels preserve trailing whitespace in the profile name.

@@ -110,9 +110,21 @@ class MobileController{
    throw Error('Could not confirm the Bumble swipe transition. It will not be retried on this profile.');
   }finally{if(issuedCount){commit(issuedCount);if(empty)this.session.finish('no more profiles');for(let i=0;i<issuedCount;i++)await this.record(kind)}}
  }
+ async identifyProfile(s,t,valid=()=>true){
+  if(this.platform!=='hinge'||s.kind!=='profile'||s.identity||s.photos?.length||!s.name||!this.config.swipe.scrollProfile)return s;
+  const name=s.name;
+  for(let i=0;i<3&&!s.identity;i++){
+   this.assert(t,valid);
+   await this.android.scrollProfile({fraction:.45,duration:450,direction:'up'},()=>{try{this.assert(t,valid);return true}catch{return false}});
+   await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+   if(s.kind!=='profile')throw Error('Profile evidence review interrupted: '+(s.reason||'Unrecognized screen.'));
+   if(s.name!==name)throw Error('Profile changed during identity review.');
+  }
+  return s;
+ }
  async review(t,sleep){
   if(this.platform==='bumble')return this.reviewBumble(t,sleep);
-  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.read(t);this.supported(s,['profile']);
+  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.identifyProfile(await this.read(t),t);this.supported(s,['profile']);
   const name=s.name,contexts=new Set([s.context?.bio||'']);
   const move=async (fraction,direction='up')=>{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
@@ -142,9 +154,11 @@ class MobileController{
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  } async record(kind){await this.service.request('record',{kind,detail:this.platform==='hinge'?'Hinge desktop':'Bumble desktop'})}
  async transition(before,t,valid=()=>true,allowOffer=false){
-  let offerHandled=false,last;
+  let offerHandled=false,evidenceChecked=false,last;
   for(let i=0;i<(allowOffer?6:3);i++){
-   await this.wait(700,t.signal);this.assert(t,valid);const after=await this.read(t);this.assert(t,valid);last=after;
+   await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
+   if(!evidenceChecked&&after.kind==='profile'&&!after.identity&&after.name&&after.name!==before.name){evidenceChecked=true;after=await this.identifyProfile(after,t,valid);}
+   last=after;
    if(after.kind==='likeOffer'&&allowOffer&&!offerHandled){
     offerHandled=true;if(this.lastAction)this.lastAction.offerKey=after.screenKey;
     await this.tap(after,after.controls.sendLike,t,valid);continue;
@@ -230,7 +244,7 @@ class MobileController{
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
    if(action==='config'){if(this.session.status==='running')throw Error('Pause the session before editing its settings.');const next=Config.normalize(data,this.config);this.assert(t);await this.service.request('save',{mobileConfig:{[this.platform]:next}});this.assert(t);this.config=next;this.openerArmed=next.autoOpeners===true;return this.snapshot()}
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);const s=await this.read(t);if(this.platform==='bumble'){if(s.kind==='empty'){this.session.start(this.config.swipe);this.session.finish('no more profiles');return this.snapshot()}if(s.kind!=='profile')throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else this.supported(s,['profile']);if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);let s=await this.read(t);if(this.platform==='bumble'){if(s.kind==='empty'){this.session.start(this.config.swipe);this.session.finish('no more profiles');return this.snapshot()}if(s.kind!=='profile')throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else{s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }

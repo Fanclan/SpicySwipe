@@ -372,3 +372,15 @@ test('return-to-top recovery still stops on changed profiles before any Like',as
  let moves=0;const x=setup(screen({photos:[]}),{scroll:async()=>{moves++;x.set(screen({photos:[],screenKey:'video-'+moves,...(moves===7?{name:'Another'}:{})}))}});
  await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/Profile changed/);assert.equal(moves,7);assert.equal(x.calls.includes('tap'),false);
 });
+
+
+test('a video-first next profile gathers evidence without repeating the submitted Like',async()=>{
+ const next=screen({name:'Next',identity:null,photos:[],screenKey:'next-video'});const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{tap:()=>x.set(next),scroll:()=>x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-detail'}))});
+ await x.c.request('act',{kind:'like'});assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.calls.filter(v=>v?.fraction).length,1);assert.equal(x.c.lastAction,null);
+});
+test('review gathers evidence on video-first profiles before choosing a photo',async()=>{
+ const x=setup(screen({identity:null,photos:[]}),{scroll:()=>x.set(screen())});await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.selectedPhoto.key,'photo-one');assert.equal(x.calls.includes('tap'),false);
+});
+test('identity recovery stays bounded and rejects a changed profile',async()=>{
+ for(const changed of [false,true]){let moves=0;const x=setup(screen({identity:null,photos:[]}),{scroll:()=>{moves++;if(changed)x.set(screen({name:'Other'}))}});await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/identity|Profile changed/i);assert.equal(moves,changed?1:3);assert.equal(x.calls.includes('tap'),false);}
+});
