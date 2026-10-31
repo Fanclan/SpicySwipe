@@ -9,6 +9,15 @@ module.exports=function readBumble(xml,options,h){
  result.screenKey=hash(nodes.map(n=>n.a));
  if(!nodes.length||nodes.some(n=>n.a.package&&n.a.package!=='com.bumble.app'))return block('Another app or system overlay is visible. Return to Bumble.');
  const visible=nodes.filter(n=>n.visible),id=name=>visible.filter(n=>n.a['resource-id']==='com.bumble.app:id/'+name),find=text=>visible.filter(n=>label(n)===text);
+ // Exact native matched-person reminder: Close is the only authorized action.
+ const reminderTitle=visible.filter(n=>n.a.class==='android.widget.TextView'&&/^Why not message .+\?$/.test(label(n)));
+ const reminderBody=find('You’ve already matched with them, and you two could be cute together.'),chat=find('Start chat'),close=find('Close');
+ if(reminderTitle.length===1&&reminderBody.length===1&&chat.length===1&&close.length===1){
+  const sheet=close[0].parent,chatButton=chat[0].parent,allowed=new Set([reminderTitle[0],reminderBody[0],chat[0],close[0]]);
+  if(sheet?.a.class==='android.view.View'&&reminderTitle[0].parent===sheet&&reminderBody[0].parent===sheet&&chatButton?.parent===sheet&&chatButton.a.class==='android.view.View'&&chatButton.a.clickable==='true'&&close[0].a.class==='android.widget.ImageView'&&close[0].a.clickable==='true'&&close[0].enabled&&[...allowed].every(fullyVisible)&&!visible.some(n=>(label(n)&&!allowed.has(n))||(n.a.clickable==='true'&&n!==close[0]&&n!==chatButton)||/EditText$/.test(n.a.class||''))){
+   result.kind='chatReminder';result.controls.dismiss=control(close[0],true);return result;
+  }
+ }
  const title=id('alertTitle');
  if(title.length){
   const pass=title.length===1&&label(title[0])==='Not interested?';

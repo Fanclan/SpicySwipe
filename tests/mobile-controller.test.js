@@ -384,3 +384,19 @@ test('review gathers evidence on video-first profiles before choosing a photo',a
 test('identity recovery stays bounded and rejects a changed profile',async()=>{
  for(const changed of [false,true]){let moves=0;const x=setup(screen({identity:null,photos:[]}),{scroll:()=>{moves++;if(changed)x.set(screen({name:'Other'}))}});await x.c.request('config',{scrollMin:0,scrollMax:0});await assert.rejects(x.c.request('review'),/identity|Profile changed/i);assert.equal(moves,changed?1:3);assert.equal(x.calls.includes('tap'),false);}
 });
+
+
+const reminder=()=>bumble({kind:'chatReminder',identity:null,controls:{dismiss:control('close')},photos:[],screenKey:'reminder'});
+test('Bumble closes a chat reminder after a swipe without messaging or repeating the swipe',async()=>{
+ const x=setup(bumble(),{platform:'bumble',tap:()=>x.set(bumble({name:'Next',identity:'next',screenKey:'next'}))});let swipes=0,commits=0;
+ x.android.swipeProfile=async(d,b,valid,issued)=>{assert.ok(valid());swipes++;issued();x.set(reminder())};
+ await x.c.act('like',x.c.token(),()=>true,()=>commits++);assert.equal(swipes,1);assert.equal(commits,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.lastAction,null);
+});
+test('Bumble never repeatedly closes a stuck chat reminder or repeats its swipe',async()=>{
+ const x=setup(bumble(),{platform:'bumble'});let swipes=0;x.android.swipeProfile=async(d,b,valid,issued)=>{swipes++;issued();x.set(reminder())};
+ await assert.rejects(x.c.act('like',x.c.token()),/reminder|transition/i);assert.equal(swipes,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
+});
+
+test('Bumble review dismisses a verified reminder before browsing the next card',async()=>{
+ const x=setup(reminder(),{platform:'bumble',tap:()=>x.set(bumble())});await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.screen.kind,'profile');assert.equal(x.calls.filter(v=>v==='tap').length,1);
+});

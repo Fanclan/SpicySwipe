@@ -67,3 +67,12 @@ test('Bumble static video evidence excludes native player text and needs support
  assert.equal(read(feed()).profileDiscriminator,null);
  assert.equal(read('<hierarchy/>').profileDiscriminator,null);
 });
+
+
+function chatReminder(){const n=(klass,attrs='',children='')=>'<node package="com.bumble.app" enabled="true" class="'+klass+'" bounds="[0,100][1080,2300]" '+attrs+'>'+children+'</node>';return '<hierarchy>'+n('android.view.View','',n('android.widget.ImageView','content-desc="Close" clickable="true"')+n('android.widget.TextView','text="Why not message Example?"')+n('android.widget.TextView','text="You’ve already matched with them, and you two could be cute together."')+n('android.view.View','clickable="true"',n('android.widget.TextView','text="Start chat"')+n('android.widget.Button','')) )+'</hierarchy>'}
+test('Bumble recognizes only the exact chat reminder and exposes only Close',()=>{
+ const s=read(chatReminder());assert.equal(s.kind,'chatReminder');assert.ok(s.controls.dismiss);assert.equal(s.controls.like,null);assert.equal(s.controls.sendMessage,null);assert.equal(s.identity,null);
+});
+test('Bumble chat reminder rejects changed wording, disabled Close, extra controls and editors',()=>{
+ const xml=chatReminder();for(const bad of [xml.replace('Why not message Example?','Buy Spotlight?'),xml.replace('Start chat','Buy now'),xml.replace('content-desc="Close" clickable="true"','content-desc="Close" clickable="false"'),xml.replace('class="android.widget.ImageView"','class="android.widget.EditText"'),xml.replace('</hierarchy>',node('clickable="true" text="Upgrade"')+'</hierarchy>')])assert.equal(read(bad).kind,'blocked');
+});

@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Dismiss the verified Bumble chat reminder once without sending a message or repeating a swipe.
+
 - Read additional evidence on video-first Hinge profiles before starting review or confirming a new-profile transition.
 
 - Recover from video-heavy Hinge sections with a bounded search back toward earlier photos.

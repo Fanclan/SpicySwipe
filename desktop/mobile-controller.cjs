@@ -59,8 +59,15 @@ class MobileController{
   finally{if(issued)await this.record(kind)}
  }
  async pauseFor(ms,t,sleep){if(sleep){if(!await sleep(ms,'photos'))throw Error('Session stopped during profile review.')}else await this.wait(ms,t.signal);this.assert(t)}
+ async dismissBumbleReminder(s,t,valid=()=>true){
+  if(s.kind!=='chatReminder')return s;
+  await this.tap(s,s.controls.dismiss,t,valid);await this.pauseFor(700,t);this.assert(t,valid);
+  const after=await this.read(t);this.assert(t,valid);
+  if(after.kind==='chatReminder')throw Error('Bumble chat reminder did not close. No further action was attempted.');
+  return after;
+ }
  async reviewBumble(t,sleep){
-  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.read(t);const contexts=new Set();
+  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.dismissBumbleReminder(await this.read(t),t);const contexts=new Set();
   const verify=()=>{if(s.kind!=='profile')throw Error(s.reason||'Bumble profile review was interrupted.');contexts.add(s.context?.bio||'')};verify();
   const move=async(direction,fraction)=>{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
@@ -80,7 +87,7 @@ class MobileController{
   if(this.config.mode!=='like')throw Error('Bumble Compliment/comment automation is not verified. Choose plain Likes.');
   this.supported(s,['profile']);const control=kind==='like'?s.controls.like:s.controls.skip,direction=kind==='like'?'right':'left';
   if(control?.direction!==direction)throw Error('The Bumble swipe card is not verified.');
-  await this.fresh(s,t,valid);this.lastAction={identity:s.identity,name:s.name,profileDiscriminator:s.profileDiscriminator||null};let issuedCount=0,confirmed=false,empty=false;
+  await this.fresh(s,t,valid);this.lastAction={identity:s.identity,name:s.name,profileDiscriminator:s.profileDiscriminator||null};let issuedCount=0,confirmed=false,empty=false,reminderDismissed=false;
   const same=after=>after.kind===s.kind&&after.name===s.name&&after.identity===s.identity&&after.screenKey===s.screenKey;
   const budget=()=>this.session.status==='running'&&this.session.count+issuedCount<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
   try{
@@ -90,7 +97,11 @@ class MobileController{
     await this.android.swipeProfile(direction,control.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
     let stable=0,retrySafe=true,candidate=null,candidateReads=0;
     for(let i=0;i<5;i++){
-     await this.wait(700,t.signal);this.assert(t,valid);const after=await this.read(t);this.assert(t,valid);
+     await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
+     if(after.kind==='chatReminder'){
+      retrySafe=false;if(reminderDismissed)throw Error('Bumble chat reminder reappeared. No further action was attempted.');
+      reminderDismissed=true;after=await this.dismissBumbleReminder(after,t,valid);
+     }
      if(after.kind==='swipeConfirm'&&after.swipeDirection===direction&&!confirmed){confirmed=true;retrySafe=false;await this.tap(after,after.controls.confirm,t,valid);continue;}
      if(after.kind==='profile'&&after.identity&&after.identity!==s.identity&&after.name!==s.name){this.lastAction=null;return this.snapshot()}
      if(distinctBumbleProfile(s,after)){
@@ -244,7 +255,7 @@ class MobileController{
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
    if(action==='config'){if(this.session.status==='running')throw Error('Pause the session before editing its settings.');const next=Config.normalize(data,this.config);this.assert(t);await this.service.request('save',{mobileConfig:{[this.platform]:next}});this.assert(t);this.config=next;this.openerArmed=next.autoOpeners===true;return this.snapshot()}
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);let s=await this.read(t);if(this.platform==='bumble'){if(s.kind==='empty'){this.session.start(this.config.swipe);this.session.finish('no more profiles');return this.snapshot()}if(s.kind!=='profile')throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else{s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(s.kind==='empty'){this.session.start(this.config.swipe);this.session.finish('no more profiles');return this.snapshot()}if(s.kind!=='profile')throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else{s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }
