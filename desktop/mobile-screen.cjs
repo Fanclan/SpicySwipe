@@ -125,6 +125,13 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   result.kind='likeOffer';result.identity=hash(['hinge-rose-offer',result.screenKey]);result.controls.sendLike={...action,label:'Send Like anyway'};
   result.reason='Rose offer: continue with a normal Like.';return result;
  }
+ const emptyTitle="You've seen everyone for now",emptyBody='Try changing your filters so more people match your criteria—or check back later!';
+ if(find(emptyTitle).length){
+  const nav=find('Discover'),required=[emptyTitle,emptyBody,'Change filters','Review skipped profiles'];
+  const labels=new Set([...required,'Discover','Standouts','Likes You','Matches','Profile Hub','Dating Preferences','Signals filter, Off','Age filter options','Height filter options','Dating intentions filter options']);
+  if(nav.length!==1||![nav[0],nav[0].parent].some(n=>n?.a.selected==='true')||required.some(text=>find(text).length!==1||!fullyVisible(find(text)[0]))||visible.some(n=>(label(n)&&!labels.has(label(n)))||/EditText/.test(n.a.class||'')))return block('Empty Discover screen is not verified.');
+  result.kind='empty';result.reason='Waiting for profiles. Your filters are unchanged.';return result;
+ }
  const safeViewLabels = new Set(['Discover','Standouts','Likes You','Matches','Profile Hub','Signals','Benefits','Like photo','Like prompt','Undo last skip','More','Selfie Verified','Dating Preferences']);
  if (visible.some(n => n.enabled && n.a.clickable === 'true' && n.a.class === 'android.view.View' && label(n) && !safeViewLabels.has(label(n)) && !/^Skip .+/.test(label(n)))) return block('An unfamiliar overlay requires user attention.');
  const chat=require('./mobile-chat.cjs').readChat({nodes,visible,find,label,bounds,fullyVisible,control,hash,result,block});if(chat)return chat;

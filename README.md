@@ -32,6 +32,16 @@
 - **Keep control.** Pause or stop each session. Unknown dialogs and uncertain profile identity stop actions; recognized Rose offers use the ordinary Like option.
 - **Use Chrome if you prefer.** The Tinder extension includes a sidebar, popup, and full settings workspace.
 
+## Mobile session recovery (current source)
+
+Hinge and Bumble wait five minutes between checks when their verified discovery queue is empty. Waiting does not count as a Like and ends at the original deadline; filters and skipped profiles are left alone.
+
+Mobile progress is saved locally before final input. After reopening SpicySwipe, select **Resume session** to revalidate the original device and continue with the saved count and deadline. An interrupted action is conservatively counted and guarded against replay; an uncertain result may still need manual attention. **Stop**, followed by **Start session**, explicitly begins a new budget.
+
+Temporary device-read errors receive bounded backoff. If the emulator stops responding, SpicySwipe can attempt one restart of that verified emulator per session. It never restarts all devices or the global ADB server. Unknown screens, account restrictions, persistent failures, and uncertain Likes stop for attention. These safeguards improve recovery; they cannot guarantee unattended ten-hour runs.
+
+Checkpoint files live in the application's user-data sessions folder. They include session settings, device identity and minimal pending-action evidence; treat them as private and do not attach them to public issues. This feature is in the current source and is not included in the older preview download below.
+
 ## Download the public preview
 
 [**Get SpicySwipe 3.0.1 preview**](https://github.com/Fanclan/SpicySwipe/releases/tag/v3.0.1-preview.1)

@@ -33,7 +33,7 @@ function getMobile(platform=activePlatform){
  if(!['hinge','bumble'].includes(platform))throw Error('Choose Hinge or Bumble first.');
  if(!mobileControllers.has(platform)){
   const device=mobileSession(platform).device;
-  mobileControllers.set(platform,new MobileController({android:device,service,platform:platform,changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
+  mobileControllers.set(platform,new MobileController({android:device,service,platform:platform,recoverDevice:options=>device.recover(options),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
    const picture=nativeImage.createFromDataURL(await device.screenshot());
    return require('./mobile-vision.cjs').evidence(picture,screen,{signal,fromBitmap:(bytes,size)=>nativeImage.createFromBitmap(bytes,size)});  }}));
  }
@@ -152,7 +152,7 @@ async function dispatch(action,data={}) {
     if(result.canceled)return {canceled:true};
     const next=new Android({sdkRoot:result.filePaths[0]});
     const status=await next.status();if(!status.available)throw Error('This folder does not contain platform-tools/adb. Choose the Android SDK folder.');
-    invalidateMobile('Android SDK changed.',true);await drainMobile();closeAndroidWindow();for(const state of mobileSessions.values())state.device.dispose();mobileSessions.clear();mobileControllers.clear();
+    invalidateMobile('Android SDK changed.');await drainMobile();closeAndroidWindow();for(const state of mobileSessions.values())state.device.dispose();mobileSessions.clear();mobileControllers.clear();
     await persistAndroid({sdkRoot:status.sdkRoot});return status;
   }
   if(action==='android:start'){const result=await android.start(data.avd);await persistAndroid({preferredAvd:data.avd},platform);return result;}
@@ -160,7 +160,7 @@ async function dispatch(action,data={}) {
   if(action==='android:select'){
     if([...mobileSessions].some(([key,state])=>key!==platform&&(state.device.serial===data.serial||state.pendingSerial===data.serial)))throw Error('This device belongs to another platform. Choose its dedicated emulator.');
     const selectionToken={};session.selectionToken=selectionToken;session.pendingSerial=data.serial;
-    invalidateMobile('Device changed.',true,platform);const revision=session.revision,device=android;
+    invalidateMobile('Device changed.',false,platform);const revision=session.revision,device=android;
     try{
       await drainMobile(platform);
       if(revision!==session.revision)throw Error('Device selection changed.');if(popoutPlatform===platform)closeAndroidWindow();
@@ -217,7 +217,7 @@ async function createWindow() {
   window.once('ready-to-show',()=>window.show());
   for(const event of ['minimize','hide'])window.on(event,()=>{if(tinder)service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',{...tinderSettings(settings),desktopVisible:false}));for(const c of mobileControllers.values())c.request('visibility',{visible:false});});
   for(const event of ['restore','show'])window.on(event,()=>{if(tinder)service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',{...tinderSettings(settings),desktopVisible:true}));for(const c of mobileControllers.values())c.request('visibility',{visible:true});});
-  window.on('closed',()=>{invalidateMobile('Workspace closed.',true);closeAndroidWindow();cancelPending();if(tinder&&!tinder.webContents.isDestroyed())tinder.webContents.close();tinder=null;window=null;});
+  window.on('closed',()=>{invalidateMobile('Workspace closed.');closeAndroidWindow();cancelPending();if(tinder&&!tinder.webContents.isDestroyed())tinder.webContents.close();tinder=null;window=null;});
   await window.loadFile(path.join(__dirname,'index.html'));
 }
 if(!app.requestSingleInstanceLock())app.quit();
@@ -233,5 +233,5 @@ else {
  }).catch(error=>{dialog.showErrorBox('SpicySwipe could not start',error.message);app.quit();});
  app.on('activate',()=>{if(!window&&service)createWindow();});
  app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
- app.on('before-quit',()=>{quitting=true;clearTimeout(mobileWatchTimer);invalidateMobile('Application closed.',true);for(const state of mobileSessions.values())state.device.dispose();});
+ app.on('before-quit',()=>{quitting=true;clearTimeout(mobileWatchTimer);invalidateMobile('Application closed.');for(const state of mobileSessions.values())state.device.dispose();});
 }

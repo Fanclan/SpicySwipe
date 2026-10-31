@@ -259,11 +259,11 @@ test('Bumble confirms first pass only for the matching swipe direction',async()=
  for(const confirmDirection of ['left','right']){const x=setup(bumble(),{platform:'bumble',tap:()=>x.set(bumble({name:'Next',identity:'next'}))});x.android.swipeProfile=async(d,b,v,cb)=>{cb();x.set(bumble({kind:'swipeConfirm',swipeDirection:confirmDirection,identity:'confirm',controls:{confirm:control('no')}}))};if(confirmDirection==='left'){await x.c.request('act',{kind:'pass'});assert.equal(x.calls.filter(v=>v==='tap').length,1)}else{await assert.rejects(x.c.request('act',{kind:'pass'}),/transition/);assert.equal(x.calls.filter(v=>v==='tap').length,0)}}
 });
 
-test('Bumble final profile completes the session when its verified queue becomes empty',async()=>{
- const empty=bumble({kind:'empty',identity:null,name:'',reason:'No more profiles within your Bumble filters.',controls:{},photos:[]});const x=setup(bumble(),{platform:'bumble'});let swipes=0;x.android.swipeProfile=async(d,b,v,issued)=>{swipes++;issued();x.set(empty)};await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{maxSwipes:30,likeRatio:1}});await x.c.request('start');await new Promise(r=>setImmediate(r));await x.c.drain();assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.completionReason,'no more profiles');assert.equal(x.c.session.count,1);assert.equal(swipes,1);
+test('Bumble final profile waits without resetting count when its verified queue becomes empty',async()=>{
+ const empty=bumble({kind:'empty',identity:null,name:'',reason:'No more profiles within your Bumble filters.',controls:{},photos:[]});const x=setup(bumble(),{platform:'bumble',wait:ms=>ms===300000?new Promise(()=>{}):Promise.resolve()});let swipes=0;x.android.swipeProfile=async(d,b,v,issued)=>{swipes++;issued();x.set(empty)};await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{maxSwipes:30,likeRatio:1}});await x.c.request('start');await new Promise(r=>setImmediate(r));await x.c.drain();assert.equal(x.c.session.status,'running');assert.equal(x.c.session.phase,'waiting for profiles');assert.equal(x.c.session.count,1);assert.equal(swipes,1);x.c.session.stop();
 });
-test('Bumble empty queue completes Start without a swipe or error',async()=>{
- const x=setup(bumble({kind:'empty',identity:null,controls:{},photos:[]}),{platform:'bumble'});await x.c.request('start');assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.count,0);assert.equal(x.c.session.completionReason,'no more profiles');
+test('Bumble empty queue starts waiting without a swipe or error',async()=>{
+ const x=setup(bumble({kind:'empty',identity:null,controls:{},photos:[]}),{platform:'bumble',wait:()=>new Promise(()=>{})});await x.c.request('start');assert.equal(x.c.session.status,'running');assert.equal(x.c.session.count,0);x.c.session.stop();
 });
 
 test('Hinge cropped confirmation uses verified square evidence without relaxing photo distance',async()=>{
@@ -399,4 +399,32 @@ test('Bumble never repeatedly closes a stuck chat reminder or repeats its swipe'
 
 test('Bumble review dismisses a verified reminder before browsing the next card',async()=>{
  const x=setup(reminder(),{platform:'bumble',tap:()=>x.set(bumble())});await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.screen.kind,'profile');assert.equal(x.calls.filter(v=>v==='tap').length,1);
+});
+
+test('Hinge empty transition confirms issued action and waits without another input',async()=>{
+ const x=setup(screen(),{wait:ms=>ms===300000?new Promise(()=>{}):Promise.resolve()});let taps=0;x.android.tapControl=async(b,valid,issued)=>{assert.ok(valid());taps++;issued?.();x.set(screen({kind:'empty',identity:null,name:'',photos:[],controls:{}}))};await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:0,maxSwipes:10}});await x.c.request('start');await new Promise(r=>setImmediate(r));await x.c.drain();assert.equal(x.c.session.count,1);assert.equal(x.c.session.phase,'waiting for profiles');assert.equal(taps,1);assert.equal(x.c.lastAction,null);x.c.session.stop();
+});
+
+test('pending action is durable before input and blocks replay after recreation',async()=>{
+ let saved;const store={read:()=>saved,write:v=>{saved=structuredClone(v)}};const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{checkpointStore:store});
+ x.android.tapControl=async()=>{assert.ok(saved.pendingAction);throw Object.assign(Error('transport timeout'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await assert.rejects(x.c.request('act',{kind:'like'}),/timeout/);assert.ok(saved.pendingAction);
+ const y=setup(screen(),{checkpointStore:store});await y.c.request('status');await assert.rejects(y.c.request('act',{kind:'pass'}),/uncertain|already/);assert.equal(y.calls.filter(x=>x==='tap').length,0);
+});
+test('checkpoint write failure prevents any final input',async()=>{const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{checkpointStore:{read:()=>null,write:()=>{throw Error('disk full')}}});await assert.rejects(x.c.request('act',{kind:'like'}),/disk|checkpoint/i);assert.equal(x.calls.filter(x=>x==='tap').length,0)});
+test('restored mobile session is paused with original progress and refuses another device',async()=>{
+ const x=setup();await x.c.request('status');x.c.session.start({maxSwipes:1000,sessionMinutes:600});x.c.session.count=8;x.c.session.pause();let value={version:1,platform:'hinge',binding:{serial:'emulator-1'},session:x.c.session.checkpoint(),config:x.c.config,pendingAction:null,recoveryAttempts:0};const y=setup(screen(),{checkpointStore:{read:()=>value,write:v=>{value=v}},wait:()=>new Promise(()=>{})});await y.c.request('status');assert.equal(y.c.session.count,8);assert.equal(y.c.session.status,'paused');y.android.serial='different-device';await assert.rejects(y.c.request('start'),/device|binding/i);assert.equal(y.c.session.count,8);assert.equal(y.c.session.endsAt,x.c.session.endsAt);
+});
+
+test('transport failures get bounded backoff then one scoped recovery, without resetting budget',async()=>{
+ const x=setup();await x.c.request('status');x.c.session.status='running';x.c.session.endsAt=Date.now()+100000;x.c.session.count=8;x.c.binding={serial:'emulator-1',avd:'Test'};let recoveries=0;x.c.recoverDevice=async()=>{recoveries++;return {restarted:true}};x.android.hierarchy=async()=>{throw Object.assign(Error('read timeout'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ const t=x.c.token();for(let i=0;i<3;i++){const result=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('no input'),async()=>true,t);assert.ok(result.retryAfter>0)}assert.equal(recoveries,1);assert.equal(x.c.session.count,8);await assert.rejects(x.c.sessionStep(x.c.config.swipe,()=>true,()=>{},async()=>true,x.c.token()),/timeout/);
+});
+test('an uncertain action prevents automatic device recovery or replay',async()=>{const x=setup();x.c.lastAction={identity:'old',name:'Old'};let recovered=0;x.c.recoverDevice=async()=>{recovered++};x.android.hierarchy=async()=>{throw Object.assign(Error('timeout'),{code:'ANDROID_COMMAND_TIMEOUT'})};await assert.rejects(x.c.sessionStep(x.c.config.swipe,()=>true,()=>{},async()=>true,x.c.token()),/timeout/);assert.equal(recovered,0)});
+
+test('a crash at the input boundary retains a conservative count reservation',async()=>{let saved;const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{checkpointStore:{read:()=>null,write:v=>{saved=structuredClone(v)}}});await x.c.request('status');x.c.session.status='running';x.c.session.endsAt=Date.now()+60000;x.c.session.count=8;x.android.tapControl=async()=>{assert.equal(saved.session.count,9);assert.ok(saved.pendingAction);throw Error('process interrupted')};await assert.rejects(x.c.act('like',x.c.token()),/interrupted/);const y=setup(screen(),{checkpointStore:{read:()=>saved,write:()=>{}}});await y.c.request('status');assert.equal(y.c.session.count,9);assert.equal(y.c.session.status,'paused');assert.equal(y.c.session.endsAt,x.c.session.endsAt);});
+test('Stop during scoped recovery prevents late resumption',async()=>{const gate=deferred(),x=setup();await x.c.request('status');x.c.binding={serial:'emulator-1',avd:'Test'};x.c.readFailures=2;x.c.session.status='running';x.c.session.endsAt=Date.now()+60000;x.android.hierarchy=async()=>{throw Object.assign(Error('timeout'),{code:'ANDROID_COMMAND_TIMEOUT'})};x.c.recoverDevice=async options=>{await gate.promise;assert.equal(options.valid(),false);return {restarted:true,serial:'emulator-2'}};const job=x.c.sessionStep(x.c.config.swipe,()=>x.c.session.status==='running',()=>{},async()=>true,x.c.token());await new Promise(r=>setImmediate(r));await x.c.request('stop');gate.resolve();await assert.rejects(job,/cancel/i);assert.equal(x.c.session.status,'idle');assert.equal(x.android.serial,'emulator-1');});
+
+test('resuming an error at its deadline or count limit cannot create a fresh budget',async()=>{
+ for(const exhausted of ['time','limit']){const x=setup();await x.c.request('status');const endsAt=Date.now()+(exhausted==='time'?-1:60000);Object.assign(x.c.session,{status:'error',endsAt,count:exhausted==='limit'?x.c.session.config.maxSwipes:8});await x.c.request('start');assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.endsAt,endsAt);assert.equal(x.c.session.completionReason,exhausted);assert.equal(x.calls.filter(v=>v==='tap').length,0);}
 });

@@ -1,0 +1,5 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const Store=require('../desktop/mobile-checkpoint.cjs');
+test('checkpoint round-trips atomically and corrupt data is not treated as a new session',t=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'spicy-checkpoint-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'hinge.json'),store=new Store(file);assert.equal(store.read(),null);store.write({version:1,count:8});assert.deepEqual(new Store(file).read(),{version:1,count:8});assert.deepEqual(fs.readdirSync(dir),['hinge.json']);fs.writeFileSync(file,'broken');assert.throws(()=>store.read(),/checkpoint/i);assert.equal(fs.readFileSync(file,'utf8'),'broken');});
+
+test('valid JSON with an invalid root cannot silently start a new session',t=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'spicy-checkpoint-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'hinge.json'),store=new Store(file);for(const value of ['null','[]','1']){fs.writeFileSync(file,value);assert.throws(()=>store.read(),/checkpoint/i);}});

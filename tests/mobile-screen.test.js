@@ -236,3 +236,9 @@ test('photo ownership still rejects another name and non-photo labels',()=>{
  const s=read(profile.replace("Sample's photo",label));assert.equal(s.photos.length,0);assert.equal(s.controls.like,null);
  }
 });
+
+const emptyQueue=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-empty.xml'),'utf8');
+test('exact empty Discover queue exposes no actionable controls',()=>{const s=read(emptyQueue);assert.equal(s.kind,'empty');assert.equal(s.identity,null);assert.ok(Object.values(s.controls).every(v=>v===null));});
+test('empty queue rejects missing body, wrong navigation and extra controls',()=>{
+ for(const xml of [emptyQueue.replace('Try changing your filters','Different copy'),emptyQueue.replace('selected="true"','selected="false"'),emptyQueue.replace('</hierarchy>','<node package="co.hinge.app" class="android.widget.Button" text="Continue" clickable="true" enabled="true" bounds="[1,1][40,40]"/></hierarchy>')])assert.equal(read(xml).kind,'blocked');
+});

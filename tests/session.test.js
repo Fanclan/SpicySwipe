@@ -53,3 +53,15 @@ test('pause during a break preserves the remaining break instead of skipping or 
 test('an uncertain last action retains its count but reports the transition error',async()=>{const s=new Session({wait:async()=>{},act:async(config,valid,commit)=>{commit();throw Error('Transition not confirmed')}});s.start({maxSwipes:1});await tick();assert.equal(s.count,1);assert.equal(s.status,'error');assert.match(s.error,/Transition/);});
 
 test('multi-gesture commit counts every issued input once despite duplicate calls',async()=>{const s=new Session({wait:async()=>{},act:async(c,valid,commit)=>{commit(2);commit(2)}});s.start({maxSwipes:2});await tick();assert.equal(s.count,2);assert.equal(s.status,'complete');assert.equal(s.completionReason,'limit')});
+
+test('deferred outcomes wait without counting and stop at the original deadline',async()=>{
+ let now=0,calls=0;const s=new Session({now:()=>now,wait:async ms=>{now+=ms},act:async()=>{calls++;return {retryAfter:300000,phase:'waiting for profiles'}}});
+ s.start({sessionMinutes:1,maxSwipes:5});await tick();assert.equal(s.count,0);assert.equal(calls,1);assert.equal(s.completionReason,'time');assert.equal(s.endsAt,60000);
+});
+test('checkpoint restore retains budget and break state but requires explicit resume',async()=>{
+ let now=0;const s=new Session({now:()=>now,wait:()=>new Promise(()=>{}),act:async()=>{}});s.start({maxSwipes:1000,sessionMinutes:600});s.count=8;s.nextBreakAt=20;s.breakUntil=30000;
+ const restored=new Session({now:()=>now,wait:()=>new Promise(()=>{}),act:async()=>{}});restored.restore(s.checkpoint());assert.equal(restored.status,'paused');assert.equal(restored.count,8);assert.equal(restored.endsAt,36000000);restored.start({maxSwipes:2,sessionMinutes:1});assert.equal(restored.config.maxSwipes,1000);assert.equal(restored.endsAt,36000000);assert.equal(restored.breakUntil,30000);s.stop();restored.stop();
+});
+
+test('stop cancels a deferred queue wait without another observation',async()=>{let release,calls=0;const s=new Session({wait:ms=>ms===300000?new Promise(r=>release=r):Promise.resolve(),act:async()=>{calls++;return {retryAfter:300000,phase:'waiting for profiles'}}});s.start({maxSwipes:1000,sessionMinutes:600});await tick();s.stop();release();await tick();assert.equal(calls,1);assert.equal(s.count,0);assert.equal(s.status,'idle');});
+test('long simulated session survives repeated empty queues without inflating count or deadline',async()=>{let now=0,observations=0,issued=0;const s=new Session({now:()=>now,wait:async ms=>{now+=ms},act:async(c,valid,commit)=>{observations++;if(observations%11===0)return {retryAfter:300000,phase:'waiting for profiles'};issued++;commit();}});s.start({maxSwipes:1000,sessionMinutes:600,delaySeconds:3,randomizeTiming:false,breaksEnabled:false});await tick();assert.equal(issued,1000);assert.equal(s.count,1000);assert.equal(s.endsAt,36000000);assert.equal(s.completionReason,'limit');assert.equal(observations,1099);});

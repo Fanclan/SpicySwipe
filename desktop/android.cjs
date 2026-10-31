@@ -90,12 +90,14 @@ class Android {
     return { avd, phase: 'waiting' };
   }
 
-  async start(avd) {
+  async start(avd, {valid=()=>true} = {}) {
+    const check=()=>{if(this.disposed||!valid())throw Error('Emulator start canceled.');};check();
     if (typeof avd !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(avd)) throw new Error('Choose a valid existing AVD.');
     if (!(await this._avds()).includes(avd)) throw new Error('That AVD does not exist. Create it in Android Studio first.');
+    check();
     this.launchFailures.delete(avd);
     this.processIssue = '';
-    const existing = await this.bootStatus(avd);
+    const existing = await this.bootStatus(avd);check();
     if (existing.serial) return { ...existing, starting: existing.phase !== 'ready', alreadyRunning: true };
     if (this.disposed) throw new Error('Android connection has closed. Reopen SpicySwipe.');
     if (this.children.has(avd)) return { avd, starting: true, alreadyRunning: true };
@@ -141,7 +143,7 @@ class Android {
     if (!serial) throw new Error('Select an Android device first.');
     const devices = await this._devices();
     if (this.serial !== serial) throw new Error('Device selection changed. Try again.');
-    if (!devices.some(device => device.id === serial && device.state === 'device')) throw new Error('Selected Android device disconnected or is unavailable. Reconnect it and select it again.');
+    if (!devices.some(device => device.id === serial && device.state === 'device')) throw Object.assign(new Error('Selected Android device disconnected or is unavailable. Reconnect it and select it again.'),{code:'ANDROID_DEVICE_UNAVAILABLE'});
     return serial;
   }
 
@@ -187,6 +189,47 @@ class Android {
 
   async _installed(serial, app) {
     return (await this._on(serial, ['shell', 'pm', 'list', 'packages', app])).split(/\r?\n/).some(line => line.trim() === 'package:' + app);
+  }
+
+  async recover({avd,platform,valid,wait}) {
+    const serial=this.serial,epoch=this.inputEpoch;
+    const check=()=>{if(this.disposed||this.inputEpoch!==epoch||!valid())throw Error('Device recovery canceled.');};
+    check();
+    if(!/^emulator-\d+$/.test(serial||'')||typeof avd!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(avd))throw Error('Automatic recovery requires a verified emulator AVD.');
+    this._app(platform);
+    const devices=await this._devices();check();
+    if(devices.some(d=>d.id===serial)){
+      const name=(await this._run(this.adb,['-s',serial,'emu','avd','name'])).split(/\r?\n/)[0].trim();check();
+      if(name!==avd)throw Error('Emulator identity changed. Automatic recovery refused.');
+      let healthy=false;
+      try{healthy=(await this._run(this.adb,['-s',serial,'shell','echo','spicyswipe-health'])).trim()==='spicyswipe-health'}catch{}
+      check();if(healthy)return {restarted:false,serial};
+      await this._run(this.adb,['-s',serial,'emu','kill']);check();
+      // A console shutdown must be confirmed. Never kill arbitrary host processes or ADB.
+      let gone=false;
+      for(let i=0;i<10;i++){await wait(1000);check();const current=await this._devices();check();if(!current.some(d=>d.id===serial)){gone=true;break}}
+      if(!gone)throw Error('Emulator did not shut down. Restart it manually before resuming.');
+    }
+    // ADB can disappear before the app-owned emulator process exits. Do not
+    // mistake that dying child for an already-running replacement.
+    for(let i=0;this.children.has(avd)&&i<10;i++){await wait(1000);check();}
+    if(this.children.has(avd))throw Error('Emulator process is still shutting down. Resume after it exits.');
+    check();await this.start(avd,{valid:()=>{check();return true}});check();
+    for(let i=0;i<30;i++){
+      await wait(2000);check();const boot=await this.bootStatus(avd);check();
+      if(boot.phase!=='ready')continue;
+      this.serial=boot.serial;
+      await this.openApp(platform);check();await wait(1500);check();return {restarted:true,serial:boot.serial}
+    }
+    throw Error('Emulator recovery timed out. Resume after the device is ready.');
+  }
+
+  async deviceIdentity() {
+    const serial=await this._selected();
+    if(!/^emulator-\d+$/.test(serial))return {serial};
+    const avd=(await this._on(serial,['emu','avd','name'])).split(/\r?\n/)[0].trim();
+    if(!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(avd))throw Error('Emulator identity could not be verified.');
+    return {serial,avd};
   }
 
   async inspect() {

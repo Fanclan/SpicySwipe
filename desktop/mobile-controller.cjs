@@ -6,22 +6,70 @@ const hashDistance=(a,b)=>{if(!a||!b||a.length!==b.length)return Infinity;let n=
 // Pixel changes alone cannot establish a new same-name Bumble profile.
 const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(after.identity)&&after.identity!==before.identity&&after.name===before.name&&Boolean(before.profileDiscriminator)&&Boolean(after.profileDiscriminator)&&after.profileDiscriminator!==before.profileDiscriminator&&after.controls?.like?.direction==='right';
 class MobileController{
- constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence}){
+ constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
-  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence});this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
+  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
-  this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(async token=>{const prepared=await this.review(token,sleep);this.assert(token,valid);await this.act(this.random()<c.likeRatio?'like':'pass',token,valid,commit,prepared)},true),changed:()=>this.notify()});
+  this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
  snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- notify(){this.changed(this.snapshot())}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts}}
+ persist(){if(this.loaded&&this.checkpointStore)this.checkpointStore.write(this.checkpoint())}
+ notify(){
+  try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
+  this.changed(this.snapshot());
+ }
+ reserveAction(action,increment=1){
+  this.lastAction=action;
+  if(this.session.status==='running')this.reservedCount=Math.max(this.session.count,this.reservedCount)+increment;
+  this.persist();
+ }
+ async verifyBinding(t){
+  const binding=this.android.deviceIdentity?await this.android.deviceIdentity():{serial:t.serial};this.assert(t);
+  if(this.binding&&(this.binding.avd?this.binding.avd!==binding.avd:this.binding.serial!==binding.serial))throw Error('Saved session belongs to another device. Reconnect its original device before resuming.');
+  this.binding=binding;this.persist();
+ }
+ restoreCheckpoint(saved){
+  if(!saved)return;
+  if(saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
+  this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;
+  this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
+ }
  token(){return {epoch:this.epoch,serial:this.android.serial,inputEpoch:this.android.inputEpoch,signal:this.abort.signal}}
  assert(t,valid=()=>true){if(t.epoch!==this.epoch||t.serial!==this.android.serial||t.inputEpoch!==this.android.inputEpoch||!t.serial||t.signal.aborted||!valid())throw Error('Mobile action canceled: device, screen ownership, or session changed.');}
  invalidate(reason='Mobile context changed',{stop=false}={}){this.openerArmed=false;this.epoch++;this.abort.abort();this.abort=new AbortController();this.android.cancelInput();stop?this.session.stop():this.session.pause();this.draft=null;this.selectedPhoto=null;this.reviewContext=null;this.screen=null;this.reason=reason;this.notify()}
  drain(){return this.queue.catch(()=>{})}
- enqueue(fn,session=false){const t=this.token();const job=this.queue.then(async()=>{this.assert(t);this.busy=true;this.notify();try{await fn(t)}finally{this.busy=false;this.notify()}return this.snapshot()});this.queue=job.catch(()=>{});return job}
+ enqueue(fn,session=false){const t=this.token();const job=this.queue.then(async()=>{this.assert(t);this.busy=true;this.notify();let result;try{result=await fn(t)}finally{this.busy=false;this.notify()}return session?result:this.snapshot()});this.queue=job.catch(()=>{});return job}
+ async sessionStep(c,valid,commit,sleep,t){
+  try{
+   const observed=await this.read(t);this.assert(t,valid);
+   if(observed.kind==='empty'){this.lastAction=null;this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}
+   const prepared=await this.review(t,sleep);this.assert(t,valid);
+   await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
+   this.readFailures=0;
+   if(this.screen?.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
+  }catch(error){
+   this.assert(t);if(!valid())throw error;
+   if(this.lastAction||!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE'].includes(error.code))throw error;
+   const failures=++this.readFailures;
+   if(failures<=2)return {retryAfter:failures*5000,phase:'recovering device read'};
+   if(!this.recoverDevice||!this.binding?.avd||this.recoveryAttempts>=1)throw error;
+   this.recoveryAttempts++;this.persist();this.session.phase='recovering device';this.notify();
+   const epoch=this.epoch,inputEpoch=this.android.inputEpoch;
+   const stillValid=()=>epoch===this.epoch&&!t.signal.aborted&&valid();
+   const result=await this.recoverDevice({avd:this.binding.avd,platform:this.platform,valid:stillValid,wait:ms=>this.wait(ms,t.signal)});
+   if(!stillValid()||inputEpoch!==this.android.inputEpoch)throw Error('Device recovery canceled.');
+   if(!result.restarted)throw error;
+   // Only the verified recovery may adopt a changed emulator port; user selections invalidate the epoch.
+   if(result.serial)this.android.serial=result.serial;
+   t.serial=this.android.serial;t.inputEpoch=this.android.inputEpoch;this.assert(t,valid);
+   this.binding={...this.binding,serial:this.android.serial};this.screen=null;this.reviewContext=null;this.selectedPhoto=null;this.persist();
+   return {retryAfter:1500,phase:'revalidating device'};
+  }
+ }
  async load(t){
   if(!this.loaded){
-   if(!this.loading)this.loading=this.service.request('load').then(s=>{this.config=Config.normalize(s.mobileConfig?.[this.platform]||{});this.loaded=true}).finally(()=>{this.loading=null});
+   if(!this.loading)this.loading=this.service.request('load').then(s=>{this.config=Config.normalize(s.mobileConfig?.[this.platform]||{});this.restoreCheckpoint(this.checkpointStore?.read());this.loaded=true;this.persist()}).finally(()=>{this.loading=null});
    await this.loading;
   }
   if(t)this.assert(t);
@@ -87,13 +135,14 @@ class MobileController{
   if(this.config.mode!=='like')throw Error('Bumble Compliment/comment automation is not verified. Choose plain Likes.');
   this.supported(s,['profile']);const control=kind==='like'?s.controls.like:s.controls.skip,direction=kind==='like'?'right':'left';
   if(control?.direction!==direction)throw Error('The Bumble swipe card is not verified.');
-  await this.fresh(s,t,valid);this.lastAction={identity:s.identity,name:s.name,profileDiscriminator:s.profileDiscriminator||null};let issuedCount=0,confirmed=false,empty=false,reminderDismissed=false;
+  await this.fresh(s,t,valid);let issuedCount=0,confirmed=false,reminderDismissed=false;
   const same=after=>after.kind===s.kind&&after.name===s.name&&after.identity===s.identity&&after.screenKey===s.screenKey;
   const budget=()=>this.session.status==='running'&&this.session.count+issuedCount<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
   try{
    for(let attempt=0;attempt<2;attempt++){
     let issued=false;
     const onIssued=()=>{if(!issued){issued=true;issuedCount++}};
+    this.reserveAction({identity:s.identity,name:s.name,profileDiscriminator:s.profileDiscriminator||null});
     await this.android.swipeProfile(direction,control.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
     let stable=0,retrySafe=true,candidate=null,candidateReads=0;
     for(let i=0;i<5;i++){
@@ -108,7 +157,7 @@ class MobileController{
       const key=JSON.stringify([after.identity,after.profileDiscriminator]);candidateReads=key===candidate?candidateReads+1:1;candidate=key;retrySafe=false;
       if(candidateReads>=2){this.lastAction=null;return this.snapshot()}
      }else{candidate=null;candidateReads=0}
-     if(after.kind==='empty'){empty=true;this.lastAction=null;return this.snapshot()}
+     if(after.kind==='empty'){this.lastAction=null;return this.snapshot()}
      if(after.kind==='blocked')throw Error('Bumble action transition requires attention. '+after.reason);
      if(same(after))stable++;else{stable=0;retrySafe=false}
     }
@@ -119,7 +168,7 @@ class MobileController{
     if(!same(beforeRetry)||!budget())break;
    }
    throw Error('Could not confirm the Bumble swipe transition. It will not be retried on this profile.');
-  }finally{if(issuedCount){commit(issuedCount);if(empty)this.session.finish('no more profiles');for(let i=0;i<issuedCount;i++)await this.record(kind)}}
+  }finally{if(issuedCount){commit(issuedCount);for(let i=0;i<issuedCount;i++)await this.record(kind)}}
  }
  async identifyProfile(s,t,valid=()=>true){
   if(this.platform!=='hinge'||s.kind!=='profile'||s.identity||s.photos?.length||!s.name||!this.config.swipe.scrollProfile)return s;
@@ -170,8 +219,9 @@ class MobileController{
    await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
    if(!evidenceChecked&&after.kind==='profile'&&!after.identity&&after.name&&after.name!==before.name){evidenceChecked=true;after=await this.identifyProfile(after,t,valid);}
    last=after;
+   if(after.kind==='empty'){this.lastAction=null;return}
    if(after.kind==='likeOffer'&&allowOffer&&!offerHandled){
-    offerHandled=true;if(this.lastAction)this.lastAction.offerKey=after.screenKey;
+    offerHandled=true;if(this.lastAction){this.lastAction.offerKey=after.screenKey;this.persist();}
     await this.tap(after,after.controls.sendLike,t,valid);continue;
    }
    if((after.kind==='profile'||(before.kind!=='likeOffer'&&after.kind==='like'))&&after.identity&&after.name!==before.name){this.lastAction=null;return}
@@ -181,7 +231,7 @@ class MobileController{
  }
  async submitLike(screen,original,t,valid,commit){
   await this.fresh(screen,t,valid);this.assert(t,valid);
-  this.lastAction={identity:original.identity,name:original.name,...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})};
+  this.reserveAction({identity:original.identity,name:original.name,...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})});
   let issued=false;const onIssued=()=>{issued=true};
   try{
    await this.android.tapControl(screen.controls.sendLike.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
@@ -190,7 +240,7 @@ class MobileController{
   return this.snapshot();
  }
  async act(kind,t,valid=()=>true,commit=()=>{},prepared){
-  if(!['like','pass'].includes(kind))throw Error('Unknown mobile action.');await this.load(t);await this.consent(t);let s=prepared||await this.read(t);this.supported(s,kind==='like'?['profile','like','likeOffer']:['profile','like']);
+  if(!['like','pass'].includes(kind))throw Error('Unknown mobile action.');await this.load(t);await this.consent(t);await this.verifyBinding(t);let s=prepared||await this.read(t);this.supported(s,kind==='like'?['profile','like','likeOffer']:['profile','like']);
   if(this.lastAction&&(this.lastAction.identity===s.identity||this.lastAction.name===s.name||(s.kind==='likeOffer'&&this.lastAction.offerKey===s.screenKey))){
    if(this.platform!=='bumble'||!distinctBumbleProfile(this.lastAction,s))throw Error('An action was already attempted on this profile. Its result is uncertain; change profiles manually before continuing.');
    // A late transition must be independently re-read before releasing its guard.
@@ -200,7 +250,7 @@ class MobileController{
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;
   if(kind==='pass'){
-   await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.lastAction={identity:s.identity,name:s.name};
+   await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({identity:s.identity,name:s.name});
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
   if(s.kind==='profile'){
@@ -255,7 +305,7 @@ class MobileController{
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
    if(action==='config'){if(this.session.status==='running')throw Error('Pause the session before editing its settings.');const next=Config.normalize(data,this.config);this.assert(t);await this.service.request('save',{mobileConfig:{[this.platform]:next}});this.assert(t);this.config=next;this.openerArmed=next.autoOpeners===true;return this.snapshot()}
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(s.kind==='empty'){this.session.start(this.config.swipe);this.session.finish('no more profiles');return this.snapshot()}if(s.kind!=='profile')throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else{s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(s.kind!=='empty'){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }

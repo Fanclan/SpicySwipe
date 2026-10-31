@@ -1,5 +1,9 @@
 # 3.0.2 — Unreleased
 
+- Wait for verified empty Hinge/Bumble queues without counting checks or resetting session deadlines.
+- Save mobile progress and pending actions atomically, restore interrupted sessions paused, and revalidate device ownership before resuming.
+- Back off transient read failures and attempt at most one scoped emulator recovery per session; uncertain actions are never blindly replayed.
+
 - Dismiss the verified Bumble chat reminder once without sending a message or repeating a swipe.
 
 - Read additional evidence on video-first Hinge profiles before starting review or confirming a new-profile transition.
