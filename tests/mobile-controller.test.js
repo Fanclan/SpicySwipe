@@ -394,11 +394,25 @@ test('Bumble closes a chat reminder after a swipe without messaging or repeating
 });
 test('Bumble never repeatedly closes a stuck chat reminder or repeats its swipe',async()=>{
  const x=setup(bumble(),{platform:'bumble'});let swipes=0;x.android.swipeProfile=async(d,b,valid,issued)=>{swipes++;issued();x.set(reminder())};
- await assert.rejects(x.c.act('like',x.c.token()),/reminder|transition/i);assert.equal(swipes,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
+ await assert.rejects(x.c.act('like',x.c.token()),/popup|transition/i);assert.equal(swipes,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
 });
 
 test('Bumble review dismisses a verified reminder before browsing the next card',async()=>{
  const x=setup(reminder(),{platform:'bumble',tap:()=>x.set(bumble())});await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.screen.kind,'profile');assert.equal(x.calls.filter(v=>v==='tap').length,1);
+});
+
+test('Bumble closes a SuperSwipe offer after a swipe without messaging or repeating the swipe',async()=>{
+ const x=setup(bumble(),{platform:'bumble',tap:()=>x.set(bumble({name:'Next',identity:'next',screenKey:'next'}))});let swipes=0,commits=0;
+ x.android.swipeProfile=async(d,b,valid,issued)=>{assert.ok(valid());swipes++;issued();x.set(({...reminder(),kind:'promoOffer'}))};
+ await x.c.act('like',x.c.token(),()=>true,()=>commits++);assert.equal(swipes,1);assert.equal(commits,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.lastAction,null);
+});
+test('Bumble never repeatedly closes a stuck SuperSwipe offer or repeats its swipe',async()=>{
+ const x=setup(bumble(),{platform:'bumble'});let swipes=0;x.android.swipeProfile=async(d,b,valid,issued)=>{swipes++;issued();x.set(({...reminder(),kind:'promoOffer'}))};
+ await assert.rejects(x.c.act('like',x.c.token()),/popup|transition/i);assert.equal(swipes,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.lastAction);
+});
+
+test('Bumble review dismisses a verified offer before browsing the next card',async()=>{
+ const x=setup(({...reminder(),kind:'promoOffer'}),{platform:'bumble',tap:()=>x.set(bumble())});await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');assert.equal(x.c.screen.kind,'profile');assert.equal(x.calls.filter(v=>v==='tap').length,1);
 });
 
 test('Hinge empty transition confirms issued action and waits without another input',async()=>{
@@ -435,3 +449,6 @@ test('changed screen before feed refresh prevents relaunch',async()=>{const x=se
 
 test('Stop during a feed relaunch cancels later reads and preserves the deadline',async()=>{const empty=screen({kind:'empty',identity:null,photos:[],controls:{}}),x=setup(empty),gate=deferred();await x.c.request('status');x.c.session.endsAt=Date.now()+60000;const end=x.c.session.endsAt;x.android.refreshFeed=async()=>gate.promise;const job=x.c.refreshEmpty(empty,x.c.token(),()=>true);await new Promise(r=>setImmediate(r));await x.c.request('stop');gate.resolve();await assert.rejects(job,/cancel|changed/i);assert.equal(x.c.session.count,0);assert.equal(x.c.session.endsAt,end);assert.equal(x.c.session.status,'idle')});
 test('feed cooldown survives controller recreation and prevents another relaunch',async()=>{const empty=screen({kind:'empty',identity:null,photos:[],controls:{}}),x=setup(empty);await x.c.request('status');await x.c.refreshEmpty(empty,x.c.token(),()=>true);const saved=x.c.checkpoint(),y=setup(empty,{checkpointStore:{read:()=>saved,write:()=>{}}});await y.c.request('status');y.android.refreshFeed=async()=>assert.fail('cooldown must survive restart');assert.equal((await y.c.refreshEmpty(empty,y.c.token(),()=>true)).kind,'empty');assert.equal(y.c.nextFeedRefreshAt,x.c.nextFeedRefreshAt)});
+
+for(const code of ['COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT'])test('transient '+code+' rebuilds hierarchy and visual evidence before proceeding',async()=>{let attempts=0,reads=0;const x=setup(screen(),{readEvidence:async()=>{if(++attempts===1)throw Object.assign(Error('Transient comment read'),{code});return {hashes:[],commentText:''}}});x.android.hierarchy=async()=>({xml:screen({identity:'observation-'+(++reads)}),foreground:'co.hinge.app'});const result=await x.c.request('context');assert.equal(attempts,2);assert.equal(reads,2);assert.equal(result.screen.identity,'observation-2');assert.deepEqual(x.calls,[]);});
+test('persistent unreadable comments stop without any Like and cannot be treated as blank',async()=>{let attempts=0;const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{readEvidence:async()=>{attempts++;throw Object.assign(Error('Comment unreadable'),{code:'COMMENT_FIELD_UNREADABLE'})}});await assert.rejects(x.c.request('act',{kind:'like'}),/unreadable/);assert.equal(attempts,2);assert.ok(!x.calls.includes('tap'));assert.equal(x.c.lastAction,null);});

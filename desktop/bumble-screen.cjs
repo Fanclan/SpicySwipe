@@ -18,6 +18,17 @@ module.exports=function readBumble(xml,options,h){
    result.kind='chatReminder';result.controls.dismiss=control(close[0],true);return result;
   }
  }
+ // Observed native SuperSwipe offer. Only Close is exposed; purchase stays inaccessible.
+ const offerTitle=find('50% off 15 SuperSwipes'),offerBody=find('Really like someone? Send a SuperSwipe and you’re sure to be seen'),price=find('Normal price $34.99'),buy=find('Only $17.49'),terms=find('Terms and Conditions'),timer=visible.filter(n=>/^Offer ends in \d{1,2}:[0-5]\d$/.test(label(n)));
+ if(close.length===1&&[offerTitle,offerBody,price,buy,terms,timer].every(a=>a.length===1)){
+  const sheet=close[0].parent,scroll=offerTitle[0].parent,purchase=buy[0].parent,allowed=new Set([close[0],offerTitle[0],offerBody[0],price[0],buy[0],terms[0],timer[0]]);
+  if(sheet?.a.class==='android.view.View'&&scroll?.a.class==='android.widget.ScrollView'&&scroll.parent===sheet&&offerBody[0].parent===scroll&&purchase?.a.class==='android.view.View'&&purchase.parent===sheet&&purchase.a.clickable==='true'&&[price[0],terms[0],timer[0]].every(n=>n.parent===sheet)&&close[0].a.class==='android.widget.ImageView'&&close[0].a.clickable==='true'&&close[0].enabled&&terms[0].a.class==='android.widget.Button'&&terms[0].a.clickable==='true'&&[offerTitle[0],offerBody[0],price[0],buy[0],timer[0]].every(n=>n.a.class==='android.widget.TextView'&&n.a.clickable!=='true')&&[...allowed].every(fullyVisible)&&!visible.some(n=>(label(n)&&!allowed.has(n))||(n.a.clickable==='true'&&![close[0],purchase,terms[0]].includes(n))||/EditText$/.test(n.a.class||''))){
+   // The centered countdown changes glyph width; retain its center, row and height.
+   const tb=bounds(timer[0]),sb=bounds(sheet),center=sb.x+sb.width/2;if(Math.abs(tb.x+tb.width/2-center)>1)return block('Bumble offer countdown layout requires attention.');
+   result.screenKey=hash(nodes.map(n=>n===timer[0]?{...n.a,text:'Offer ends in <countdown>',bounds:JSON.stringify([center,tb.y,tb.height])}:n.a));
+   result.kind='promoOffer';result.controls.dismiss=control(close[0],true);return result;
+  }
+ }
  const title=id('alertTitle');
  if(title.length){
   const pass=title.length===1&&label(title[0])==='Not interested?';

@@ -1,5 +1,9 @@
 # 3.0.2 — Unreleased
 
+- Remember Tinder location approval across restarts, with a Privacy menu toggle to revoke it.
+- Retry transient Hinge comment-field OCR once from a fresh screen without replaying actions.
+- Close the verified Bumble SuperSwipe offer once without purchasing or repeating a swipe.
+
 - Refresh verified empty Hinge/Bumble feeds by reopening only the selected app, with a persisted five-minute cooldown, bounded startup checks and cancellation guards.
 
 - Let Tinder wait and recheck when no profile card is available; show a useful no-profiles message across all three apps without counting checks as Likes.

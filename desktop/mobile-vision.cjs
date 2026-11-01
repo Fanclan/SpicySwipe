@@ -41,7 +41,7 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
   if(b.x<0||b.y<0||b.x+b.width>size.width||b.y+b.height>size.height)throw Error('Comment field moved outside the screen.');
   const crop=picture.crop(b),clean=fromBitmap?fromBitmap(withoutCaret(crop.toBitmap(),crop.getSize()),crop.getSize()):crop;
   const text=(await ocr(clean.toPNG(),{signal})).replace(/\s+/g,' ').trim();
-  if(!text)throw Error('The comment field could not be read. Nothing was sent.');
+  if(!text)throw Object.assign(Error('The comment field could not be read. Nothing was sent.'),{code:'COMMENT_FIELD_UNREADABLE'});
   // The placeholder is grey; typed characters are dark. A narrow blinking caret is allowed.
   const bitmap=crop.toBitmap(),dimensions=crop.getSize();let darkColumns=0;
   for(let x=12;x<dimensions.width-12;x++){let dark=0;for(let y=12;y<dimensions.height-12;y++){const i=(y*dimensions.width+x)*4;if(bitmap[i]<90&&bitmap[i+1]<90&&bitmap[i+2]<90)dark++}if(dark>2)darkColumns++;}

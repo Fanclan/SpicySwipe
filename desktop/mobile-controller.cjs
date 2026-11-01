@@ -97,7 +97,7 @@ class MobileController{
   // Rebuild hierarchy and image evidence together so no stale partial read survives recovery.
   try{return await this.readOnce(t)}catch(error){
    this.assert(t);
-   if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT'].includes(error.code))throw error;
+   if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT'].includes(error.code))throw error;
    await this.pauseFor(750,t);
    return this.readOnce(t);
   }
@@ -125,10 +125,10 @@ class MobileController{
  }
  async pauseFor(ms,t,sleep){if(sleep){if(!await sleep(ms,'photos'))throw Error('Session stopped during profile review.')}else await this.wait(ms,t.signal);this.assert(t)}
  async dismissBumbleReminder(s,t,valid=()=>true){
-  if(s.kind!=='chatReminder')return s;
+  if(!['chatReminder','promoOffer'].includes(s.kind))return s;
   await this.tap(s,s.controls.dismiss,t,valid);await this.pauseFor(700,t);this.assert(t,valid);
   const after=await this.read(t);this.assert(t,valid);
-  if(after.kind==='chatReminder')throw Error('Bumble chat reminder did not close. No further action was attempted.');
+  if(['chatReminder','promoOffer'].includes(after.kind))throw Error('Bumble popup did not close. No further action was attempted.');
   return after;
  }
  async reviewBumble(t,sleep){
@@ -164,8 +164,8 @@ class MobileController{
     let stable=0,retrySafe=true,candidate=null,candidateReads=0;
     for(let i=0;i<5;i++){
      await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
-     if(after.kind==='chatReminder'){
-      retrySafe=false;if(reminderDismissed)throw Error('Bumble chat reminder reappeared. No further action was attempted.');
+     if(['chatReminder','promoOffer'].includes(after.kind)){
+      retrySafe=false;if(reminderDismissed)throw Error('Bumble popup reappeared. No further action was attempted.');
       reminderDismissed=true;after=await this.dismissBumbleReminder(after,t,valid);
      }
      if(after.kind==='swipeConfirm'&&after.swipeDirection===direction&&!confirmed){confirmed=true;retrySafe=false;await this.tap(after,after.controls.confirm,t,valid);continue;}

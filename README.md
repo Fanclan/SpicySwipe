@@ -123,6 +123,8 @@ For updates, rebuild and reload the same extension folder to keep its identity a
 
 ## Privacy and account actions
 
+In the desktop app, choose **Allow location** once to remember Tinder location access across restarts. You can change it under **Privacy → Allow Tinder location**. Turning it off reloads Tinder to end active location tracking.
+
 Settings and activity are stored locally. Desktop API keys use Electron's OS-backed encryption; the app refuses to save keys when secure encryption is unavailable. Extension API keys use `chrome.storage.local`, which is not an encrypted vault. AI requests send the selected text context to the provider you configure. See [privacy and data flow](docs/PRIVACY.md).
 
 Automated sessions perform real account actions. Review settings before starting, use only your own accounts, and respect other users and each platform's rules. The project does not promise account protection, undetectability, or uninterrupted compatibility. It is not affiliated with or endorsed by Tinder, Hinge, Bumble, or their owners.

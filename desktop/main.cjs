@@ -8,6 +8,7 @@ const Service = require('./service.cjs');
 const Android = require('./android.cjs');
 const MobileController = require('./mobile-controller.cjs');
 const P = require('./policy.cjs');
+const LocationPermission = require('./location-permission.cjs');
 const androidURL = pathToFileURL(path.join(__dirname,'android.html')).href;
 let androidWindow, popoutSerial, popoutPlatform;
 let mobileWatchTimer, quitting=false;
@@ -15,7 +16,7 @@ const mobileSessions=new Map();
 const dedicatedAvds={hinge:"SpicySwipe_Phone_API_36",bumble:"SpicySwipe_Bumble_API_36"};
 function mobileSession(platform){if(!Object.hasOwn(dedicatedAvds,platform))throw Error("Choose Hinge or Bumble first.");if(!mobileSessions.has(platform))mobileSessions.set(platform,{device:new Android({sdkRoot:androidPreferences.sdkRoot,graphicsMode:androidPreferences.platforms?.[platform]?.graphicsMode}),commands:Promise.resolve(),revision:0});return mobileSessions.get(platform);}
 const uiURL = pathToFileURL(path.join(__dirname,'index.html')).href;
-let locationAllowed=false, locationPrompt=false;
+let locationPermission;
 let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
 const pending = new Map();
 let androidPreferences={},androidPreferenceWrites=Promise.resolve();
@@ -69,14 +70,7 @@ function ensureTinder() {
   tinder = new WebContentsView({webPreferences:{preload:path.join(__dirname,'generated','tinder-preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,partition:'persist:tinder',backgroundThrottling:false}});
   window.contentView.addChildView(tinder); tinder.setVisible(false);
   guardNavigation(tinder.webContents);
-  tinder.webContents.session.setPermissionRequestHandler(async(wc,permission,callback,details) => {
-    if(wc!==tinder?.webContents||permission!=='geolocation'||details.isMainFrame===false||!P.isTinderURL(details.requestingUrl||wc.getURL())||!P.isTinderURL(wc.getURL()))return callback(false);
-    if(locationAllowed)return callback(true);
-    if(locationPrompt)return callback(false);
-    locationPrompt=true;
-    try{const result=await dialog.showMessageBox(window,{type:'question',title:'Tinder location access',message:'Allow Tinder to use your location?',detail:'Tinder uses your device location to show nearby profiles. This permission lasts until you quit SpicySwipe.',buttons:['Not now','Allow location'],defaultId:0,cancelId:0});locationAllowed=result.response===1;callback(locationAllowed);}catch{callback(false);}finally{locationPrompt=false;}
-  });
-  tinder.webContents.session.setPermissionCheckHandler((wc,permission,origin,details) => locationAllowed&&wc===tinder?.webContents&&permission==='geolocation'&&details.isMainFrame!==false&&P.isTinderURL(origin)&&P.isTinderURL(wc.getURL()));
+  locationPermission.attach(tinder.webContents.session);
   tinder.webContents.on('did-start-navigation', (_event,_url,_inPlace,isMainFrame) => { if (isMainFrame) cancelPending(); });
   tinder.webContents.on('render-process-gone', () => {cancelPending();send('page',{connected:false,error:'Tinder closed unexpectedly. Reload it to reconnect.'});});
   tinder.webContents.on('did-fail-load', (_event,code,description,_url,isMainFrame) => {if(isMainFrame && code!==-3)send('notice',{message:'Tinder could not load: '+description,error:true});});
@@ -228,7 +222,13 @@ else {
   let androidConfig={};try{androidConfig=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'android.json'),'utf8'));}catch{}
   androidPreferences={...(typeof androidConfig.sdkRoot==='string'?{sdkRoot:androidConfig.sdkRoot}:{}),...(typeof androidConfig.preferredSerial==='string'?{preferredSerial:androidConfig.preferredSerial}:{}),...(typeof androidConfig.preferredAvd==='string'?{preferredAvd:androidConfig.preferredAvd}:{})};
   androidPreferences.platforms=androidConfig.platforms||{hinge:{preferredSerial:androidConfig.preferredSerial,preferredAvd:androidConfig.preferredAvd}};
-  Menu.setApplicationMenu(Menu.buildFromTemplate([...(process.platform==='darwin'?[{label:'SpicySwipe',submenu:[{role:'about'},{type:'separator'},{role:'hide'},{role:'quit'}]}]:[]),{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{role:'close'}]}]));
+  locationPermission=new LocationPermission({file:path.join(app.getPath('userData'),'location-permission.json'),fsImpl:fs,getContents:()=>tinder?.webContents,
+   prompt:async()=>{const result=await dialog.showMessageBox(window,{type:'question',title:'Tinder location access',message:'Allow Tinder to use your location?',detail:'Tinder uses your device location to show nearby profiles. SpicySwipe will remember your approval. You can turn access off in the Privacy menu.',buttons:['Not now','Allow location'],defaultId:0,cancelId:0});return result.response===1;},
+   onChange:allowed=>{const item=Menu.getApplicationMenu()?.getMenuItemById('tinder-location');if(item)item.checked=allowed;},
+   onError:error=>dialog.showErrorBox('Location permission could not be saved',error.message)
+  });
+  await locationPermission.load();
+  Menu.setApplicationMenu(Menu.buildFromTemplate([...(process.platform==='darwin'?[{label:'SpicySwipe',submenu:[{role:'about'},{type:'separator'},{role:'hide'},{role:'quit'}]}]:[]),{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Privacy',submenu:[{id:'tinder-location',label:'Allow Tinder location',type:'checkbox',checked:locationPermission.allowed,click:async item=>{const revoking=!item.checked;try{await locationPermission.setAllowed(item.checked);}catch(error){item.checked=locationPermission.allowed;dialog.showErrorBox('Location permission could not be saved',error.message+' Your change may not survive restarting SpicySwipe.');}finally{if(revoking&&tinder&&!tinder.webContents.isDestroyed())tinder.webContents.reload();}}}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{role:'close'}]}]));
   await createWindow();scheduleMobileWatch();
  }).catch(error=>{dialog.showErrorBox('SpicySwipe could not start',error.message);app.quit();});
  app.on('activate',()=>{if(!window&&service)createWindow();});
