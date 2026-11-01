@@ -8,12 +8,12 @@ const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(afte
 class MobileController{
  constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
-  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
+  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.nextFeedRefreshAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
  snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts}}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0}}
  persist(){if(this.loaded&&this.checkpointStore)this.checkpointStore.write(this.checkpoint())}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
@@ -31,8 +31,8 @@ class MobileController{
  }
  restoreCheckpoint(saved){
   if(!saved)return;
-  if(saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
-  this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;
+  if((saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
+  this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;
   this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
  }
  token(){return {epoch:this.epoch,serial:this.android.serial,inputEpoch:this.android.inputEpoch,signal:this.abort.signal}}
@@ -40,10 +40,27 @@ class MobileController{
  invalidate(reason='Mobile context changed',{stop=false}={}){this.openerArmed=false;this.epoch++;this.abort.abort();this.abort=new AbortController();this.android.cancelInput();stop?this.session.stop():this.session.pause();this.draft=null;this.selectedPhoto=null;this.reviewContext=null;this.screen=null;this.reason=reason;this.notify()}
  drain(){return this.queue.catch(()=>{})}
  enqueue(fn,session=false){const t=this.token();const job=this.queue.then(async()=>{this.assert(t);this.busy=true;this.notify();let result;try{result=await fn(t)}finally{this.busy=false;this.notify()}return session?result:this.snapshot()});this.queue=job.catch(()=>{});return job}
+ async refreshEmpty(s,t,valid){
+  this.assert(t,valid);if(s.kind!=='empty')return s;
+  if(this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
+  if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
+  await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
+  // Reserve the cooldown durably before relaunch, including failed or interrupted attempts.
+  this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
+  this.reviewContext=null;this.selectedPhoto=null;this.draft=null;this.screen=null;
+  if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
+  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));
+  this.assert(t,valid);
+  for(let i=0;i<6;i++){
+   await this.pauseFor(1000,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+   if(s.kind!=='blocked')return s;
+  }
+  return s;
+ }
  async sessionStep(c,valid,commit,sleep,t){
   try{
-   const observed=await this.read(t);this.assert(t,valid);
-   if(observed.kind==='empty'){this.lastAction=null;this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}
+   let observed=await this.read(t);this.assert(t,valid);
+   if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
    const prepared=await this.review(t,sleep);this.assert(t,valid);
    await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
    this.readFailures=0;

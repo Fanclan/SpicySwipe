@@ -252,6 +252,24 @@ class Android {
     return { opened: platform };
   }
 
+  async refreshFeed(platform,valid,wait) {
+    const epoch=this.inputEpoch,serial=await this._selected(),app=this._app(platform);
+    const check=()=>this._guard(serial,epoch,valid);check();
+    const resolved=await this._guardedOn(serial,epoch,['shell','cmd','package','resolve-activity','--brief','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER',app],valid);
+    const components=resolved.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.startsWith(app+'/')&&/^[A-Za-z][A-Za-z0-9_.]*\/[A-Za-z0-9_.$]+$/.test(s));
+    if(components.length!==1)throw Error('The selected app launcher activity could not be verified.');
+    await this._guardedOn(serial,epoch,['shell','am','force-stop',app],valid);
+    const output=await this._guardedOn(serial,epoch,['shell','am','start','-n',components[0]],valid);
+    if(/error|exception/i.test(output))throw Error('The feed refresh could not reopen the app. Open it manually before resuming.');
+    // Cold launches can take longer than a normal read. Observe readiness; never repeat launch.
+    for(let i=0;i<30;i++){
+      await wait(1000);check();
+      try{const foreground=await this._foreground(serial,epoch);check();if(foreground===app)return {refreshed:platform}}
+      catch(error){check();if(error.code!=='ANDROID_FOREGROUND_UNAVAILABLE')throw error;}
+    }
+    throw Error('The refreshed app did not become ready. Open it on the device and resume.');
+  }
+
   async openStore(platform) {
     const inputEpoch = this.inputEpoch;
     const app = this._app(platform), serial = await this._selected();
@@ -285,7 +303,7 @@ class Android {
       const match = line.match(/\bu\d+\s+([A-Za-z][A-Za-z0-9_.]+)\/[A-Za-z0-9_.$]+/);
       if (match) packages.add(match[1]);
     }
-    if (packages.size !== 1) throw new Error('Android foreground app could not be verified. Open Hinge and try again.');
+    if (packages.size !== 1) throw Object.assign(new Error('Android foreground app could not be verified. Open the selected app and try again.'),{code:'ANDROID_FOREGROUND_UNAVAILABLE'});
     return [...packages][0];
   }
 

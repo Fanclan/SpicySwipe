@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Refresh verified empty Hinge/Bumble feeds by reopening only the selected app, with a persisted five-minute cooldown, bounded startup checks and cancellation guards.
+
 - Let Tinder wait and recheck when no profile card is available; show a useful no-profiles message across all three apps without counting checks as Likes.
 
 - Wait for verified empty Hinge/Bumble queues without counting checks or resetting session deadlines.
