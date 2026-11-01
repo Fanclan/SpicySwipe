@@ -78,12 +78,12 @@
     const conn=$('#connection');conn.innerHTML=`<span class="dot ${page.connected?'green':''}"></span> ${bridge.preview?'Preview mode':page.connected?'Tinder connected':'Tinder not connected'}`;
     if(view==='swiping'){
       const s=page.session||{},active=s.status==='running';
-      $('#session-badge').textContent=active?({break:'On a break',photos:'Browsing photos',reading:'Reading profile',reviewing:'Reviewing',waiting:'Waiting'}[s.phase]||'Running'):title(s.status||'idle');
+      $('#session-badge').textContent=active?({'waiting for profiles':'No profiles available',break:'On a break',photos:'Browsing photos',reading:'Reading profile',reviewing:'Reviewing',waiting:'Waiting'}[s.phase]||'Running'):title(s.status||'idle');
       $('#session-count').textContent=s.count||0;$('#session-limit').textContent=s.limit||state.swipeConfig.maxSwipes;
       const progress=$('#session-progress');progress.max=s.limit||state.swipeConfig.maxSwipes;progress.value=s.count||0;
       const seconds=Math.max(0,Math.ceil(((s.nextActionAt||Date.now())-Date.now())/1000));
       const countdown=seconds>=60?`${Math.floor(seconds/60)}m ${seconds%60}s`:`${seconds}s`;
-      $('#session-message').textContent=s.error||(active?({break:`Taking a breather. Continuing in ${countdown}.`,photos:`Looking at a photo · ${countdown} remaining.`,reading:`Reading the profile · ${countdown} remaining.`,waiting:`Next profile review in ${countdown}.`,reviewing:'Reviewing the current profile.'}[s.phase]||'Session in progress.'):s.status==='paused'?'Paused. Resume when you’re ready.':s.status==='complete'?(s.completionReason==='time'?'Your session time is up.':'Profile limit reached. All done.'):'Open Tinder Discover, review your preferences, and start when ready.');
+      $('#session-message').textContent=s.error||(active?({'waiting for profiles':`Tinder is not showing a profile. Checking again in ${countdown}. No Likes are sent while waiting; your original session deadline still applies.`,break:`Taking a breather. Continuing in ${countdown}.`,photos:`Looking at a photo · ${countdown} remaining.`,reading:`Reading the profile · ${countdown} remaining.`,waiting:`Next profile review in ${countdown}.`,reviewing:'Reviewing the current profile.'}[s.phase]||'Session in progress.'):s.status==='paused'?'Paused. Resume when you’re ready.':s.status==='complete'?(s.completionReason==='time'?'Your session time is up.':'Profile limit reached. All done.'):'Open Tinder Discover, review your preferences, and start when ready.');
       $('#session-deadline').textContent=s.endsAt&&['running','paused'].includes(s.status)?`Ends at ${new Date(s.endsAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`:'';
       $('[data-action="start"]').disabled=active;$('[data-action="start"] span').textContent=s.status==='paused'?'Resume session':'Start session';$('[data-action="pause"]').disabled=!active;
 

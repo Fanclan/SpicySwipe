@@ -1,5 +1,7 @@
 # 3.0.2 — Unreleased
 
+- Let Tinder wait and recheck when no profile card is available; show a useful no-profiles message across all three apps without counting checks as Likes.
+
 - Wait for verified empty Hinge/Bumble queues without counting checks or resetting session deadlines.
 - Save mobile progress and pending actions atomically, restore interrupted sessions paused, and revalidate device ownership before resuming.
 - Back off transient read failures and attempt at most one scoped emulator recovery per session; uncertain actions are never blindly replayed.

@@ -32,9 +32,9 @@
 - **Keep control.** Pause or stop each session. Unknown dialogs and uncertain profile identity stop actions; recognized Rose offers use the ordinary Like option.
 - **Use Chrome if you prefer.** The Tinder extension includes a sidebar, popup, and full settings workspace.
 
-## Mobile session recovery (current source)
+## Session recovery (current source)
 
-Hinge and Bumble wait five minutes between checks when their verified discovery queue is empty. Waiting does not count as a Like and ends at the original deadline; filters and skipped profiles are left alone.
+All three apps wait five minutes between checks when no profile is available. Waiting does not count as a Like and ends at the original deadline; filters and skipped profiles are left alone.
 
 Mobile progress is saved locally before final input. After reopening SpicySwipe, select **Resume session** to revalidate the original device and continue with the saved count and deadline. An interrupted action is conservatively counted and guarded against replay; an uncertain result may still need manual attention. **Stop**, followed by **Start session**, explicitly begins a new budget.
 

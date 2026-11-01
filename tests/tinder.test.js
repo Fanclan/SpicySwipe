@@ -285,11 +285,11 @@ test('a temporarily absent initial card is awaited before any Like',async t=>{
  card.remove();await x.api.request('start');x.waits.shift()();await tick();assert.equal(x.api.snapshot().session.status,'running');assert.equal(likes,0);
  d.body.append(card);x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.count,1);
 });
-test('a persistently absent initial card stops after a bounded wait',async t=>{
+test('a persistently absent initial card waits for profiles without counting',async t=>{
  const x=await swipeSetup(t,{browsePhotos:false}),d=x.dom.window.document;let likes=0;d.querySelector('#like').onclick=()=>likes++;d.querySelector('article').remove();
  await x.api.request('start');x.waits.shift()();await tick();assert.equal(x.api.snapshot().session.status,'running');
- for(let i=0;i<25&&x.api.snapshot().session.status==='running';i++){assert.ok(x.waits.length);x.waits.shift()();await tick()}
- assert.equal(x.api.snapshot().session.status,'error');assert.match(x.api.snapshot().session.error,/No visible profile/);assert.equal(likes,0);
+ for(let i=0;i<25&&x.api.snapshot().session.status==='running'&&x.api.snapshot().session.phase!=='waiting for profiles';i++){assert.ok(x.waits.length);x.waits.shift()();await tick()}
+ assert.equal(x.api.snapshot().session.status,'running');assert.equal(x.api.snapshot().session.phase,'waiting for profiles');assert.equal(x.api.snapshot().session.count,0);assert.equal(x.api.snapshot().session.error,'');assert.equal(likes,0);await x.api.request('stop');
 });
 test('stop or a new blocking dialog during card loading prevents Likes',async t=>{
  for(const mode of ['stop','dialog']){
@@ -298,4 +298,10 @@ test('stop or a new blocking dialog during card loading prevents Likes',async t=
  d.body.append(card);if(mode==='stop')await x.api.request('stop');else d.body.insertAdjacentHTML('beforeend','<div role="dialog">Account requires attention</div>');
  x.waits.shift()();await tick();assert.equal(likes,0);assert.equal(x.api.snapshot().session.status,mode==='stop'?'idle':'error');
  }
+});
+
+test('Tinder resumes when a profile appears after an empty-queue wait without renewing the deadline',async t=>{
+ const x=await swipeSetup(t,{browsePhotos:false,maxSwipes:2}),d=x.dom.window.document,card=d.querySelector('article');let likes=0;d.querySelector('#like').onclick=()=>likes++;card.remove();await x.api.request('start');const deadline=x.api.snapshot().session.endsAt;
+ for(let i=0;i<22&&x.api.snapshot().session.phase!=='waiting for profiles';i++){x.waits.shift()();await tick()}
+ assert.equal(x.api.snapshot().session.phase,'waiting for profiles');assert.equal(x.api.snapshot().session.count,0);d.body.append(card);x.waits.shift()();await tick();x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.count,1);assert.equal(x.api.snapshot().session.endsAt,deadline);await x.api.request('stop');
 });

@@ -137,7 +137,9 @@
       if(!await sleep(500,'reviewing')||!await guardPage(config,valid,sleep))return;
       card=currentCard();
     }
-    if(!card)throw new Error('No visible profile card. Check Tinder before continuing.');
+    // No card is available after the loading grace period. Observe again later; never
+    // count a queue check as an action or change filters to manufacture more profiles.
+    if(!card)return {retryAfter:300000,phase:'waiting for profiles'};
     const identity=cardIdentity(card);
     if(!identity)throw new Error('Could not identify the visible profile. Check Tinder before continuing.');
     if(identity.key===lastCard)throw new Error('The profile has not changed. Check Tinder before continuing.');
