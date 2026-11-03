@@ -242,3 +242,28 @@ test('exact empty Discover queue exposes no actionable controls',()=>{const s=re
 test('empty queue rejects missing body, wrong navigation and extra controls',()=>{
  for(const xml of [emptyQueue.replace('Try changing your filters','Different copy'),emptyQueue.replace('selected="true"','selected="false"'),emptyQueue.replace('</hierarchy>','<node package="co.hinge.app" class="android.widget.Button" text="Continue" clickable="true" enabled="true" bounds="[1,1][40,40]"/></hierarchy>')])assert.equal(read(xml).kind,'blocked');
 });
+
+// Synthetic navigation only: no captured messages or profile data belong in fixtures.
+function emptyWithMessageBadge(message='Matches, 1 new message') {
+ const tabs=['Discover','Standouts','Likes You',message,'Profile Hub'];
+ const navigation='<node class="android.view.View" bounds="[0,2179][1080,2400]">'+tabs.map((text,i)=>'<node class="android.view.View" clickable="'+(i!==0)+'" selected="'+(i===0)+'" bounds="['+(i*216)+',2179]['+((i+1)*216)+',2337]"><node class="android.view.View" text="'+text+'" clickable="false" bounds="['+(i*216)+',2179]['+((i+1)*216)+',2337]"/></node>').join('')+'</node>';
+ return emptyQueue.replace(/<node[^>]*text="Discover"[^>]*\/>/,navigation);
+}
+test('empty Discover accepts changing native message counts only as a navigation badge',()=>{
+ for(const text of ['Matches, 1 new message','Matches, 2 new messages','Matches, 123 new messages']) {
+  const s=read(emptyWithMessageBadge(text));assert.equal(s.kind,'empty');assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
+ }
+});
+test('empty Discover rejects badge-like text outside the native navigation structure',()=>{
+ const xml=emptyWithMessageBadge();
+ for(const sample of [
+  emptyQueue.replace('</hierarchy>','<node class="android.view.View" text="Matches, 1 new message" bounds="[648,2179][864,2337]"/></hierarchy>'),
+  xml.replace('text="Matches, 1 new message" clickable="false"','text="Matches, 1 new message" clickable="true"'),
+  xml.replace('text="Matches, 1 new message" clickable="false" bounds="[648,2179][864,2337]"','text="Matches, 1 new message" clickable="false" bounds="[648,400][864,558]"'),
+  xml.replace('Matches, 1 new message','Matches, 1 new message. Buy now'),
+  xml.replace('selected="true"','selected="false"'),
+  xml.replace('</hierarchy>','<node class="android.widget.EditText" bounds="[10,10][100,100]"/></hierarchy>'),
+  xml.replace('</hierarchy>','<node class="android.app.Dialog" bounds="[10,10][100,100]"/></hierarchy>'),
+  xml.replace('</hierarchy>','<node package="com.android.systemui" bounds="[10,10][100,100]"/></hierarchy>'),
+ ]) {const s=read(sample);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(v=>v===null));}
+});

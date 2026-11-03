@@ -1,6 +1,10 @@
 # 3.0.2 — Unreleased
 
-- Verify a stalled Bumble swipe with one persisted app refresh and two matching observations, without replaying the swipe or resetting its session budget.
+- Keep Hinge and Bumble transient read failures in bounded recovery, and reconcile pending actions automatically with a persisted five-minute refresh cooldown. Preserve counts and deadlines; never replay uncertain Likes.
+- Show explicit recovery/checking states, recognize Hinge unread-message navigation badges on empty feeds, and retain sanitized Android failure diagnostics.
+- Observe cold-launch readiness after ambiguous launch acknowledgements without repeating launch commands.
+
+- Verify stalled Bumble swipes with rate-limited app refreshes and two matching observations, without replaying the swipe or resetting its session budget.
 - Reread a transient Hinge Like-form layout once while keeping profile, comment, and final-action checks intact.
 
 - Remember Tinder location approval across restarts, with a Privacy menu toggle to revoke it.

@@ -129,7 +129,18 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if(find(emptyTitle).length){
   const nav=find('Discover'),required=[emptyTitle,emptyBody,'Change filters','Review skipped profiles'];
   const labels=new Set([...required,'Discover','Standouts','Likes You','Matches','Profile Hub','Dating Preferences','Signals filter, Off','Age filter options','Height filter options','Dating intentions filter options']);
-  if(nav.length!==1||![nav[0],nav[0].parent].some(n=>n?.a.selected==='true')||required.some(text=>find(text).length!==1||!fullyVisible(find(text)[0]))||visible.some(n=>(label(n)&&!labels.has(label(n)))||/EditText/.test(n.a.class||'')))return block('Empty Discover screen is not verified.');
+  // Unread message counts change independently of the exhausted Discover queue.
+  // Accept that inert label only inside a sibling native navigation tab, never in an overlay.
+  const badges=visible.filter(n=>/^Matches, (?:1 new message|(?:[2-9]|[1-9]\d+) new messages)$/.test(label(n)));
+  const navigationBadge=n=>{
+   const discover=nav[0],tab=n.parent,discoverTab=discover?.parent,b=bounds(n),d=discover&&bounds(discover),t=tab&&bounds(tab);
+   return badges.length===1&&n===badges[0]&&nav.length===1&&n.a.class==='android.view.View'&&n.a.clickable==='false'&&
+    discover.a.class==='android.view.View'&&discoverTab?.a.class==='android.view.View'&&discoverTab.a.selected==='true'&&
+    tab?.a.class==='android.view.View'&&tab.a.clickable==='true'&&tab.parent===discoverTab.parent&&tab!==discoverTab&&
+    fullyVisible(n)&&fullyVisible(discover)&&b&&d&&t&&b.x===t.x&&b.y===t.y&&b.width===t.width&&b.height===t.height&&
+    b.y===d.y&&b.height===d.height&&b.x>=d.x+d.width;
+  };
+  if(nav.length!==1||![nav[0],nav[0].parent].some(n=>n?.a.selected==='true')||required.some(text=>find(text).length!==1||!fullyVisible(find(text)[0]))||visible.some(n=>(label(n)&&!labels.has(label(n))&&!navigationBadge(n))||/EditText/.test(n.a.class||'')))return block('Empty Discover screen is not verified.');
   result.kind='empty';result.reason='Waiting for profiles. Your filters are unchanged.';return result;
  }
  const safeViewLabels = new Set(['Discover','Standouts','Likes You','Matches','Profile Hub','Signals','Benefits','Like photo','Like prompt','Undo last skip','More','Selfie Verified','Dating Preferences']);

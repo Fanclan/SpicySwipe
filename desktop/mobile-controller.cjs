@@ -1,6 +1,8 @@
 'use strict';
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
+const transientRead=new Set(['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE','ANDROID_FOREGROUND_UNAVAILABLE','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','MOBILE_SCREEN_UNAVAILABLE','MOBILE_SCREEN_CHANGED','MOBILE_REVIEW_INTERRUPTED']);
+const transientError=(message,code='MOBILE_REVIEW_INTERRUPTED')=>Object.assign(Error(message),{code});
 const delay=(ms,signal)=>new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve()};const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done()});
 const hashDistance=(a,b)=>{if(!a||!b||a.length!==b.length)return Infinity;let n=0;for(let i=0;i<a.length;i++){let x=parseInt(a[i],16)^parseInt(b[i],16);while(x){n+=x&1;x>>=1}}return n};
 // Pixel changes alone cannot establish a new same-name Bumble profile.
@@ -14,7 +16,7 @@ class MobileController{
  }
  snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0}}
- persist(){if(this.loaded&&this.checkpointStore)this.checkpointStore.write(this.checkpoint())}
+ persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
   this.changed(this.snapshot());
@@ -26,7 +28,7 @@ class MobileController{
  }
  async verifyBinding(t){
   const binding=this.android.deviceIdentity?await this.android.deviceIdentity():{serial:t.serial};this.assert(t);
-  if(this.binding&&(this.binding.avd?this.binding.avd!==binding.avd:this.binding.serial!==binding.serial))throw Error('Saved session belongs to another device. Reconnect its original device before resuming.');
+  if(this.binding&&(this.binding.avd?this.binding.avd!==binding.avd:this.binding.serial!==binding.serial))throw transientError('Saved session belongs to another device. Reconnect its original device before resuming.','MOBILE_DEVICE_CHANGED');
   this.binding=binding;this.persist();
  }
  restoreCheckpoint(saved){
@@ -60,33 +62,48 @@ class MobileController{
  async sessionStep(c,valid,commit,sleep,t){
   try{
    let observed=await this.read(t);this.assert(t,valid);
-   if(this.platform==='bumble'&&this.lastAction){
-    if(await this.reconcileBumble(this.lastAction,t,valid))return {retryAfter:1000,phase:'checking next profile'};
-    throw Error('The earlier Bumble swipe is still uncertain. No additional swipe was sent.');
+   if(this.lastAction){
+    if(await this.reconcilePending(this.lastAction,t,valid)){this.reason='';this.readFailures=0;return {retryAfter:1000,phase:'checking next profile'}}
+    return this.pendingWait();
    }
    if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
    const prepared=await this.review(t,sleep);this.assert(t,valid);
    await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
-   this.readFailures=0;
+   this.readFailures=0;this.reason='';
    if(this.screen?.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
   }catch(error){
    this.assert(t);if(!valid())throw error;
-   if(this.lastAction||!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE'].includes(error.code))throw error;
-   const failures=++this.readFailures;
-   if(failures<=2)return {retryAfter:failures*5000,phase:'recovering device read'};
-   if(!this.recoverDevice||!this.binding?.avd||this.recoveryAttempts>=1)throw error;
-   this.recoveryAttempts++;this.persist();this.session.phase='recovering device';this.notify();
-   const epoch=this.epoch,inputEpoch=this.android.inputEpoch;
-   const stillValid=()=>epoch===this.epoch&&!t.signal.aborted&&valid();
-   const result=await this.recoverDevice({avd:this.binding.avd,platform:this.platform,valid:stillValid,wait:ms=>this.wait(ms,t.signal)});
-   if(!stillValid()||inputEpoch!==this.android.inputEpoch)throw Error('Device recovery canceled.');
-   if(!result.restarted)throw error;
-   // Only the verified recovery may adopt a changed emulator port; user selections invalidate the epoch.
-   if(result.serial)this.android.serial=result.serial;
-   t.serial=this.android.serial;t.inputEpoch=this.android.inputEpoch;this.assert(t,valid);
-   this.binding={...this.binding,serial:this.android.serial};this.screen=null;this.reviewContext=null;this.selectedPhoto=null;this.persist();
-   return {retryAfter:1500,phase:'revalidating device'};
+   if(['MOBILE_STORAGE_FAILURE','MOBILE_DEVICE_CHANGED'].includes(error.code)||this.storageError)throw error;
+   if(this.lastAction)return this.pendingWait(error);
+   if(!transientRead.has(error.code))throw error;
+   const failures=++this.readFailures,retryAfter=Math.min(60000,5000*2**Math.min(failures-1,4));
+   this.reason='Recovering the device screen; no profile action is being retried.';
+   if(failures<=2)return {retryAfter,phase:'recovering screen'};
+   if(this.recoverDevice&&this.binding?.avd&&this.recoveryAttempts<1&&error.code.startsWith('ANDROID_')){
+    this.recoveryAttempts++;this.persist();this.session.phase='recovering device';this.notify();
+    const epoch=this.epoch,inputEpoch=this.android.inputEpoch,stillValid=()=>epoch===this.epoch&&!t.signal.aborted&&valid();
+    try{
+     const result=await this.recoverDevice({avd:this.binding.avd,platform:this.platform,valid:stillValid,wait:ms=>this.wait(ms,t.signal)});
+     if(!stillValid()||inputEpoch!==this.android.inputEpoch)throw Error('Device recovery canceled.');
+     if(result.restarted){if(result.serial)this.android.serial=result.serial;t.serial=this.android.serial;t.inputEpoch=this.android.inputEpoch;this.assert(t,valid);this.binding={...this.binding,serial:this.android.serial};this.screen=null;this.reviewContext=null;this.selectedPhoto=null;this.persist();return {retryAfter:1500,phase:'revalidating device'}}
+    }catch(recoveryError){this.assert(t,valid);if(!transientRead.has(recoveryError.code))throw recoveryError;}
+   }
+   if(this.android.refreshFeed&&this.session.now()>=(this.nextFeedRefreshAt||0)){
+    try{
+     const current=await this.read(t);this.assert(t,valid);
+     const safe=['profile','empty'].includes(current.kind)||(current.kind==='like'&&current.composerTextVerified===true&&!current.composerText?.trim()&&!this.draft);
+     if(safe){await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);this.nextFeedRefreshAt=this.session.now()+300000;this.persist();await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);this.screen=null;this.selectedPhoto=null;this.reviewContext=null;}
+    }catch(refreshError){this.assert(t,valid);if(!transientRead.has(refreshError.code))throw refreshError;}
+   }
+   return {retryAfter,phase:this.screen?.kind==='blocked'?'waiting for supported screen':'recovering screen'};
   }
+ }
+ pendingWait(error){
+  this.session.count=Math.max(this.session.count,this.reservedCount);
+  if(this.session.count>=this.session.config.maxSwipes)this.session.finish('limit');
+  const operation=error?.diagnostics?.operation;
+  this.reason='The previous action is still being verified. No duplicate Like will be sent.'+(operation?' Recovering '+operation+'.':'');
+  this.persist();return {retryAfter:30000,phase:'verifying previous action'};
  }
  async load(t){
   if(!this.loaded){
@@ -101,7 +118,7 @@ class MobileController{
   // Rebuild hierarchy and image evidence together so no stale partial read survives recovery.
   try{return await this.readOnce(t)}catch(error){
    this.assert(t);
-   if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT'].includes(error.code))throw error;
+   if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','ANDROID_FOREGROUND_UNAVAILABLE'].includes(error.code))throw error;
    await this.pauseFor(750,t);
    return this.readOnce(t);
   }
@@ -118,8 +135,8 @@ class MobileController{
   }  if(this.reviewContext&&(this.reviewContext.identity!==s.identity||this.reviewContext.screenKey!==s.screenKey))this.reviewContext=null;
   this.screen=s;this.reason='';this.notify();return s;
  }
- supported(s,kinds){if(!kinds.includes(s.kind))throw Error(s.reason||'This screen is not recognized for this action.');if(!s.identity)throw Error('Profile identity is incomplete. Read more profile details before acting.');}
- async fresh(expected,t,valid){this.assert(t,valid);const s=await this.read(t);this.assert(t,valid);if(s.kind!==expected.kind||s.identity!==expected.identity||s.screenKey!==expected.screenKey)throw Error('Screen changed. Refresh context before acting.');return s}
+ supported(s,kinds){if(!kinds.includes(s.kind))throw transientError(s.reason||'This screen is not recognized for this action.','MOBILE_SCREEN_UNAVAILABLE');if(!s.identity)throw transientError('Profile identity is incomplete. Read more profile details before acting.');}
+ async fresh(expected,t,valid){this.assert(t,valid);const s=await this.read(t);this.assert(t,valid);if(s.kind!==expected.kind||s.identity!==expected.identity||s.screenKey!==expected.screenKey)throw transientError('Screen changed. Refresh context before acting.','MOBILE_SCREEN_CHANGED');return s}
  async tap(expected,control,t,valid=()=>true){if(!control)throw Error(expected.reason||'This action has no supported control on the current screen.');await this.fresh(expected,t,valid);this.assert(t,valid);await this.android.tapControl(control.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}});this.assert(t,valid)}
  async finalTap(control,t,valid=()=>true,commit=()=>{},kind){
   let issued=false;
@@ -137,39 +154,44 @@ class MobileController{
  }
  async reviewBumble(t,sleep){
   this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.dismissBumbleReminder(await this.read(t),t);const contexts=new Set();
-  const verify=()=>{if(s.kind!=='profile')throw Error(s.reason||'Bumble profile review was interrupted.');contexts.add(s.context?.bio||'')};verify();
+  const verify=()=>{if(s.kind!=='profile')throw transientError(s.reason||'Bumble profile review was interrupted.');contexts.add(s.context?.bio||'')};verify();
   const move=async(direction,fraction)=>{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
    await this.android.scrollProfile({fraction,direction,duration:Math.round(300+this.random()*400)},()=>{try{this.assert(t);return true}catch{return false}});this.assert(t);await this.pauseFor(450,t,sleep);s=await this.read(t);verify();
   };
   // A session may begin halfway down a profile. Return to its main photo first.
   for(let i=0;!s.controls.like&&i<8;i++)await move('down',.65);
-  this.supported(s,['profile']);if(!s.controls.like)throw Error('Could not verify Bumble’s main profile photo.');
+  this.supported(s,['profile']);if(!s.controls.like)throw transientError("Could not verify Bumble’s main profile photo.");
   const original=s;
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move('up',this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
   for(let i=0;!s.controls.like&&i<8;i++)await move('down',.65);
-  if(!s.controls.like||s.identity!==original.identity)throw Error('Bumble profile changed during review. Nothing was swiped.');
+  if(!s.controls.like||s.identity!==original.identity)throw transientError("Bumble profile changed during review. Nothing was swiped.");
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name:s.name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  }
- async reconcileBumble(original,t,valid){
+ async reconcileBumble(original,t,valid){if(this.platform!=='bumble')return false;return this.reconcilePending(original,t,valid)}
+ async reconcilePending(original,t,valid){
   this.assert(t,valid);
-  if(this.platform!=='bumble'||!this.android.refreshFeed||!this.lastAction||this.lastAction.identity!==original.identity||this.lastAction.name!==original.name)return false;
+  if(!this.lastAction||this.lastAction.identity!==original.identity||this.lastAction.name!==original.name)return false;
+  await this.verifyBinding(t);this.assert(t,valid);
   // Observe the stalled original card again. No swipe, Like, or message is retried.
-  const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||distinctBumbleProfile(original,observed))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
+  const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||(this.platform==='bumble'&&distinctBumbleProfile(original,observed)))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
   const current=await this.read(t);this.assert(t,valid);
   const late=changeKey(current);
   if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;this.lastAction=null;this.persist();return true;}
-  if(this.lastAction.refreshAttempted)return false;
-  if(current.kind!=='profile'||current.identity!==original.identity||current.name!==original.name)return false;
+  if(!this.android.refreshFeed||this.session.now()<(this.nextFeedRefreshAt||0))return false;
+  // A changed photo cannot prove a new person, but it must not prevent a read-only refresh.
+  const stalledProfile=current.kind==='profile'&&Boolean(current.identity)&&current.name===original.name;
+  const stalledLike=this.platform==='hinge'&&current.kind==='like'&&current.name===original.name&&current.composerTextVerified===true&&!current.composerText?.trim();
+  if(!stalledProfile&&!stalledLike)return false;
   await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);
-  this.lastAction.refreshAttempted=true;this.persist();
+  this.lastAction.refreshAttempted=true;this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
   if(this.session.status==='running'){this.session.phase='checking swipe result';this.notify()}
-  await this.android.refreshFeed('bumble',()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);
+  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);
   let candidate=null;
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);let observed=await this.read(t);this.assert(t,valid);
-   observed=await this.dismissBumbleReminder(observed,t,valid);this.assert(t,valid);
+   if(this.platform==='bumble')observed=await this.dismissBumbleReminder(observed,t,valid);this.assert(t,valid);
    const key=changeKey(observed);
    if(key&&key===candidate){this.lastAction=null;this.persist();return true}
    candidate=key;
@@ -224,8 +246,8 @@ class MobileController{
    this.assert(t,valid);
    await this.android.scrollProfile({fraction:.45,duration:450,direction:'up'},()=>{try{this.assert(t,valid);return true}catch{return false}});
    await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
-   if(s.kind!=='profile')throw Error('Profile evidence review interrupted: '+(s.reason||'Unrecognized screen.'));
-   if(s.name!==name)throw Error('Profile changed during identity review.');
+   if(s.kind!=='profile')throw transientError('Profile evidence review interrupted: '+(s.reason||'Unrecognized screen.'));
+   if(s.name!==name)throw transientError("Profile changed during identity review.");
   }
   return s;
  }
@@ -237,8 +259,8 @@ class MobileController{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
    this.assert(t);await this.android.scrollProfile({fraction,duration:Math.round(300+this.random()*400),direction},()=>{try{this.assert(t);return true}catch{return false}});this.assert(t);
    await this.pauseFor(450,t,sleep);s=await this.read(t);
-   if(s.kind!=='profile')throw Error('Profile review interrupted: '+(s.reason||'The current screen is not a recognized profile.'));
-   if(s.name!==name)throw Error('Profile changed during review.');contexts.add(s.context?.bio||'');
+   if(s.kind!=='profile')throw transientError('Profile review interrupted: '+(s.reason||'The current screen is not a recognized profile.'));
+   if(s.name!==name)throw transientError("Profile changed during review.");contexts.add(s.context?.bio||'');
   };
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move(this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
@@ -256,7 +278,7 @@ class MobileController{
    await move(reveal() ? .2 : .6,reveal()||'down');
    candidates=(s.photos||[]).filter(p=>p.like);
   }
-  if(!candidates.length)throw Error('No fully visible photo found within the review limit. Scroll manually and read again.');
+  if(!candidates.length)throw transientError("No fully visible photo found within the review limit. Scroll manually and read again.");
   this.selectedPhoto=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  } async record(kind){await this.service.request('record',{kind,detail:this.platform==='hinge'?'Hinge desktop':'Bumble desktop'})}
@@ -310,7 +332,7 @@ class MobileController{
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
    const samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
-   if(s.name!==original.name||(s.identity!==original.identity&&!samePhoto))throw Error('Could not verify the selected profile/photo in the Like confirmation.');
+   if(s.name!==original.name||(s.identity!==original.identity&&!samePhoto))throw transientError("Could not verify the selected profile/photo in the Like confirmation.");
   }
   if(s.composerTextVerified===false)throw Error('The comment field cannot be verified. Nothing was sent.');
   if(s.composerText?.trim())throw Error('An existing comment is present. Review or clear it manually first.');

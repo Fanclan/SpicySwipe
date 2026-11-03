@@ -390,3 +390,126 @@ test('recovery waits for the owned emulator process to exit before relaunching',
 test('feed refresh relaunches only the selected app and waits for its foreground',async t=>{const f=fixture(t);await f.android.select('emulator-5554');let reads=0;f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity\n';if(args.includes('activities'))return ++reads<2?'':'mResumedActivity: ActivityRecord{x u0 co.hinge.app/.MainActivity t1}';});await f.android.refreshFeed('hinge',()=>true,async()=>{});const commands=f.calls.map(c=>c.args.join(' '));assert.ok(commands.includes('-s emulator-5554 shell am force-stop co.hinge.app'));assert.ok(commands.includes('-s emulator-5554 shell am start -n co.hinge.app/.MainActivity'));assert.ok(!commands.some(c=>c.includes(' clear ')||c.includes('kill-server')||c.includes('emu kill')));assert.equal(reads,2)});
 test('canceling a feed refresh after stopping the app prevents a late launch',async t=>{const f=fixture(t);await f.android.select('emulator-5554');let valid=true;f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity\n';if(args.includes('force-stop'))valid=false;});await assert.rejects(f.android.refreshFeed('hinge',()=>valid,async()=>{}),/cancel|context/i);assert.ok(!f.calls.some(c=>c.args.includes('start')))});
 test('feed refresh refuses another package launcher before stopping the app',async t=>{const f=fixture(t);await f.android.select('emulator-5554');f.setHandler(args=>args.includes('resolve-activity')?'other.app/.MainActivity':undefined);await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),/launcher|activity/i);assert.ok(!f.calls.some(c=>c.args.includes('force-stop')))});
+
+for (const [args, operation] of [
+  [['shell','cmd','package','resolve-activity','private-profile'], 'launcher-resolve'],
+  [['shell','am','force-stop','co.hinge.app'], 'app-stop'],
+  [['shell','am','start','-n','co.hinge.app/.PrivateActivity'], 'app-launch'],
+  [['shell','dumpsys','activity','activities'], 'foreground-read'],
+  [['shell','uiautomator','dump','/private-profile.xml'], 'hierarchy-dump'],
+  [['shell','input','text','private-profile'], 'text-input']
+]) test(`Android ${operation} failures retain safe native diagnostics`, async t => {
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(()=>{throw Object.assign(Error('private-profile device-secret'),{code:1,signal:'SIGTERM',stderr:'private-profile'});});
+  await assert.rejects(f.android._on('emulator-5554',args),error=>{
+    assert.deepEqual(error.diagnostics,{operation,category:'exit',nativeCode:1,signal:'SIGTERM'});
+    assert.doesNotMatch(JSON.stringify(error),/private-profile|device-secret|emulator-5554|PrivateActivity/);
+    return true;
+  });
+});
+
+test('Android diagnostics omit unrecognized native codes and signals', async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('screencap'))throw Object.assign(Error('private-profile'),{code:'private-profile',signal:'device-secret'});});
+  await assert.rejects(f.android.screenshot(),error=>{
+    assert.deepEqual(error.diagnostics,{operation:'screenshot',category:'process'});
+    assert.doesNotMatch(JSON.stringify(error),/private-profile|device-secret/);return true;
+  });
+});
+
+for(const platform of ['hinge','bumble'])test(`${platform} feed refresh observes ambiguous launch success without repeating writes`,async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');const app=platform==='hinge'?'co.hinge.app':'com.bumble.app';let reads=0;
+  f.setHandler(args=>{
+    if(args.includes('resolve-activity'))return app+'/.MainActivity';
+    if(args.includes('start'))throw Object.assign(Error('lost acknowledgement'),{code:1});
+    if(args.includes('activities'))return ++reads===1?'':`mResumedActivity: ActivityRecord{x u0 ${app}/.MainActivity t1}`;
+  });
+  assert.deepEqual(await f.android.refreshFeed(platform,()=>true,async()=>{}),{refreshed:platform});
+  assert.equal(reads,2);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+  assert.equal(f.calls.filter(c=>c.args.includes('force-stop')).length,1);
+  assert.ok(f.calls.every(c=>!c.args.includes('clear')&&!c.args.includes('kill')));
+});
+
+test('feed refresh tolerates bounded transient foreground command failures',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');let reads=0;
+  f.setHandler(args=>{
+    if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';
+    if(args.includes('activities')){if(++reads<3)throw Object.assign(Error('temporary'),{code:'ECONNRESET'});return 'mResumedActivity: ActivityRecord{x u0 co.hinge.app/.MainActivity t1}';}
+  });
+  assert.deepEqual(await f.android.refreshFeed('hinge',()=>true,async()=>{}),{refreshed:'hinge'});
+  assert.equal(reads,3);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+test('feed refresh preserves the native diagnostic when foreground reads remain broken',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');let reads=0;
+  f.setHandler(args=>{
+    if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';
+    if(args.includes('activities')){reads++;throw Object.assign(Error('temporary'),{code:'ECONNRESET'});}
+  });
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),error=>{
+    assert.equal(error.code,'ANDROID_COMMAND_FAILED');assert.deepEqual(error.diagnostics,{operation:'foreground-read',category:'transport',nativeCode:'ECONNRESET'});return true;
+  });
+  assert.equal(reads,3);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+test('feed refresh preserves failed launch diagnostics when readiness is never established',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');let reads=0;
+  f.setHandler(args=>{
+    if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';
+    if(args.includes('start'))throw Object.assign(Error('timeout'),{code:'ETIMEDOUT',killed:true});
+    if(args.includes('activities')){reads++;return '';}
+  });
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),error=>{
+    assert.equal(error.code,'ANDROID_COMMAND_TIMEOUT');assert.equal(error.diagnostics.operation,'app-launch');assert.equal(error.diagnostics.nativeCode,'ETIMEDOUT');return true;
+  });
+  assert.equal(reads,30);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+for(const code of ['ENOENT','EACCES','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'])test(`feed refresh stops immediately for nontransient ${code} launch failure`,async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('start'))throw Object.assign(Error('failure'),{code});});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),error=>error.diagnostics?.nativeCode===code);
+  assert.equal(f.calls.filter(c=>c.args.includes('activities')).length,0);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+for(const stage of ['start','activities'])test(`feed refresh cancellation during failed ${stage} prevents further observation`,async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes(stage)){f.android.cancelInput();throw Object.assign(Error('temporary'),{code:1});}});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),/cancel|context/i);
+  assert.equal(f.calls.filter(c=>c.args.includes('activities')).length,stage==='activities'?1:0);
+  assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+test('changing the device during launch failure cannot inspect or launch the replacement',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('start')){f.android.serial='emulator-5558';throw Object.assign(Error('temporary'),{code:1});}});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),/cancel|context|changed/i);
+  assert.equal(f.calls.filter(c=>c.args.includes('activities')).length,0);assert.ok(!f.calls.some(c=>c.args.includes('emulator-5558')));
+});
+
+test('feed refresh deadline bounds slow reads and preserves the last native diagnostic',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');let elapsed=0,reads=0;
+  t.mock.method(Date,'now',()=>elapsed);
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('activities')){reads++;elapsed+=15000;throw Object.assign(Error('timeout'),{killed:true,code:'ETIMEDOUT'});}});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{elapsed+=1000;}),error=>error.code==='ANDROID_COMMAND_TIMEOUT'&&error.diagnostics.operation==='foreground-read');
+  assert.equal(reads,2);assert.equal(f.calls.filter(c=>c.args.includes('start')).length,1);
+});
+
+test('feed refresh fails promptly on a permanent foreground command error',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');let reads=0;
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('activities')){reads++;throw Object.assign(Error('denied'),{code:'EACCES'});}});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),error=>error.diagnostics?.category==='permission');assert.equal(reads,1);
+});
+
+test('feed refresh never relaunches after force-stop fails',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('force-stop'))throw Object.assign(Error('failed'),{code:1});});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),error=>error.diagnostics?.operation==='app-stop');
+  assert.equal(f.calls.filter(c=>c.args.includes('start')).length,0);assert.equal(f.calls.filter(c=>c.args.includes('force-stop')).length,1);
+});
+
+test('feed refresh rejects explicit activity errors without treating them as ambiguous launch success',async t=>{
+  const f=fixture(t);await f.android.select('emulator-5554');
+  f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('start'))return 'Error type 3: Activity class does not exist';});
+  await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),/reopen/i);assert.equal(f.calls.filter(c=>c.args.includes('activities')).length,0);
+});

@@ -10,6 +10,38 @@ const KEYS = Object.freeze({ Backspace: 67, Delete: 112, Enter: 66, Tab: 61, Arr
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
 const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
 
+// Fixed labels only: never attach command arguments, serials, output or native messages.
+const OPERATIONS = [
+  [['devices'], 'device-list'], [['-list-avds'], 'avd-list'],
+  [['shell','cmd','package','resolve-activity'], 'launcher-resolve'],
+  [['shell','am','force-stop'], 'app-stop'], [['shell','am','start'], 'app-launch'],
+  [['shell','monkey'], 'app-launch'], [['shell','dumpsys','activity'], 'foreground-read'],
+  [['shell','dumpsys','input'], 'display-read'], [['exec-out','screencap'], 'screenshot'],
+  [['shell','uiautomator','dump'], 'hierarchy-dump'], [['shell','cat'], 'hierarchy-read'],
+  [['shell','rm'], 'hierarchy-cleanup'], [['shell','pm','list','packages'], 'package-list'],
+  [['shell','input','text'], 'text-input'], [['shell','input','keyevent'], 'key-input'],
+  [['shell','input','tap'], 'tap'], [['shell','input','swipe'], 'swipe'],
+  [['emu','avd','name'], 'emulator-identity'], [['emu','kill'], 'emulator-stop'],
+  [['shell','getprop'], 'boot-status'], [['shell','echo'], 'health-check']
+];
+const NATIVE_CODES = new Set(['ETIMEDOUT','ECONNRESET','ECONNREFUSED','EPIPE','EIO','ENOTCONN','ENOENT','EACCES','EPERM','EINVAL','ENOMEM','EAGAIN','ENOBUFS','ERR_CHILD_PROCESS_STDIO_MAXBUFFER']);
+function commandDiagnostics(args, error) {
+  const command = args[0] === '-s' ? args.slice(2) : args;
+  const operation = OPERATIONS.find(([prefix]) => prefix.every((part, i) => command[i] === part))?.[1] || 'android-command';
+  const nativeCode = Number.isSafeInteger(error.code) || NATIVE_CODES.has(error.code) ? error.code : undefined;
+  const category = error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'output-limit'
+    : error.killed || error.code === 'ETIMEDOUT' ? 'timeout'
+    : ['ENOENT'].includes(error.code) ? 'tool-unavailable'
+    : ['EACCES','EPERM'].includes(error.code) ? 'permission'
+    : ['ECONNRESET','ECONNREFUSED','EPIPE','EIO','ENOTCONN'].includes(error.code) ? 'transport'
+    : Number.isSafeInteger(error.code) || error.code == null ? 'exit' : 'process';
+  const diagnostics = { operation, category };
+  if (nativeCode !== undefined) diagnostics.nativeCode = nativeCode;
+  if (['SIGTERM','SIGKILL','SIGINT','SIGABRT','SIGSEGV','SIGPIPE'].includes(error.signal)) diagnostics.signal = error.signal;
+  return diagnostics;
+}
+const transientCommandFailure = error => ['ANDROID_COMMAND_TIMEOUT','ANDROID_COMMAND_FAILED'].includes(error.code)
+  && ['timeout','transport','exit'].includes(error.diagnostics?.category);
 class Android {
   constructor({ sdkRoot, graphicsMode, platform = process.platform, arch = process.arch, home = os.homedir(), execFile = childProcess.execFile, spawn = childProcess.spawn } = {}) {
     this.platform = platform;
@@ -38,9 +70,10 @@ class Android {
       this.execFile(file, args, { shell: false, windowsHide: true, timeout: 15000, maxBuffer: binary ? 25 * 1024 * 1024 : 1024 * 1024, encoding: binary ? null : 'utf8' }, (error, stdout) => {
         if (this.disposed) return reject(new Error('Android connection has closed. Reopen SpicySwipe.'));
         if (error) {
-          const timedOut = error.killed || error.code === 'ETIMEDOUT';
+          const diagnostics = commandDiagnostics(args, error);
+          const timedOut = diagnostics.category === 'timeout';
           reject(Object.assign(new Error(timedOut ? 'Android command timed out. Check the selected device and try again.' : 'Android command failed. Check the SDK, device connection and USB debugging authorization.'), {
-            code: timedOut ? 'ANDROID_COMMAND_TIMEOUT' : 'ANDROID_COMMAND_FAILED'
+            code: timedOut ? 'ANDROID_COMMAND_TIMEOUT' : 'ANDROID_COMMAND_FAILED', diagnostics
           }));
         } else resolve(binary ? Buffer.from(stdout) : String(stdout));
       });
@@ -259,14 +292,37 @@ class Android {
     const components=resolved.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.startsWith(app+'/')&&/^[A-Za-z][A-Za-z0-9_.]*\/[A-Za-z0-9_.$]+$/.test(s));
     if(components.length!==1)throw Error('The selected app launcher activity could not be verified.');
     await this._guardedOn(serial,epoch,['shell','am','force-stop',app],valid);
-    const output=await this._guardedOn(serial,epoch,['shell','am','start','-n',components[0]],valid);
-    if(/error|exception/i.test(output))throw Error('The feed refresh could not reopen the app. Open it manually before resuming.');
-    // Cold launches can take longer than a normal read. Observe readiness; never repeat launch.
+    let launchError;
+    try {
+      const output=await this._guardedOn(serial,epoch,['shell','am','start','-n',components[0]],valid);
+      if(/error|exception/i.test(output))throw Error('The feed refresh could not reopen the app. Open it manually before resuming.');
+    } catch(error) {
+      check();
+      if(!transientCommandFailure(error))throw error;
+      // The device may have launched even though ADB lost its acknowledgement.
+      // Resolve that uncertainty with reads, never by repeating the write.
+      launchError=error;
+    }
+    const deadline=Date.now()+30000;
+    let readFailures=0,lastReadError;
     for(let i=0;i<30;i++){
       await wait(1000);check();
-      try{const foreground=await this._foreground(serial,epoch);check();if(foreground===app)return {refreshed:platform}}
-      catch(error){check();if(error.code!=='ANDROID_FOREGROUND_UNAVAILABLE')throw error;}
+      if(Date.now()>=deadline)break;
+      try {
+        const foreground=await this._foreground(serial,epoch);check();
+        readFailures=0;lastReadError=undefined;
+        if(foreground===app)return {refreshed:platform};
+      } catch(error) {
+        check();
+        if(error.code==='ANDROID_FOREGROUND_UNAVAILABLE'){readFailures=0;continue;}
+        if(!transientCommandFailure(error))throw error;
+        lastReadError=error;
+        if(++readFailures>=3)throw error;
+      }
     }
+    // Preserve the actionable failure instead of replacing it with a generic timeout.
+    if(lastReadError)throw lastReadError;
+    if(launchError)throw launchError;
     throw Error('The refreshed app did not become ready. Open it on the device and resume.');
   }
 

@@ -129,6 +129,10 @@ Settings and activity are stored locally. Desktop API keys use Electron's OS-bac
 
 Automated sessions perform real account actions. Review settings before starting, use only your own accounts, and respect other users and each platform's rules. The project does not promise account protection, undetectability, or uninterrupted compatibility. It is not affiliated with or endorsed by Tinder, Hinge, Bumble, or their owners.
 
+## Session recovery
+
+Hinge and Bumble automatically retry temporary screen reads with backoff. Empty feeds wait for new profiles. If a Like or swipe result is uncertain, the session shows **Verifying previous action**, keeps its count and deadline, and checks again without repeating that action. Verified stalled feeds may reopen at most once every five minutes; the cooldown survives restarting SpicySwipe. Login, permission, storage, and unsupported-screen problems may still need attention.
+
 ## Development
 
 ```sh
