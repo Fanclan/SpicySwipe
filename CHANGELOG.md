@@ -1,5 +1,8 @@
 # 3.0.2 — Unreleased
 
+- Verify a stalled Bumble swipe with one persisted app refresh and two matching observations, without replaying the swipe or resetting its session budget.
+- Reread a transient Hinge Like-form layout once while keeping profile, comment, and final-action checks intact.
+
 - Remember Tinder location approval across restarts, with a Privacy menu toggle to revoke it.
 - Retry transient Hinge comment-field OCR once from a fresh screen without replaying actions.
 - Close the verified Bumble SuperSwipe offer once without purchasing or repeating a swipe.

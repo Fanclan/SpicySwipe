@@ -452,3 +452,44 @@ test('feed cooldown survives controller recreation and prevents another relaunch
 
 for(const code of ['COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT'])test('transient '+code+' rebuilds hierarchy and visual evidence before proceeding',async()=>{let attempts=0,reads=0;const x=setup(screen(),{readEvidence:async()=>{if(++attempts===1)throw Object.assign(Error('Transient comment read'),{code});return {hashes:[],commentText:''}}});x.android.hierarchy=async()=>({xml:screen({identity:'observation-'+(++reads)}),foreground:'co.hinge.app'});const result=await x.c.request('context');assert.equal(attempts,2);assert.equal(reads,2);assert.equal(result.screen.identity,'observation-2');assert.deepEqual(x.calls,[]);});
 test('persistent unreadable comments stop without any Like and cannot be treated as blank',async()=>{let attempts=0;const x=setup(screen({kind:'like',controls:{sendLike:control('send')}}),{readEvidence:async()=>{attempts++;throw Object.assign(Error('Comment unreadable'),{code:'COMMENT_FIELD_UNREADABLE'})}});await assert.rejects(x.c.request('act',{kind:'like'}),/unreadable/);assert.equal(attempts,2);assert.ok(!x.calls.includes('tap'));assert.equal(x.c.lastAction,null);});
+
+
+test('Hinge waits once for a transient Like-form layout without repeating its photo tap',async()=>{
+ let taps=0,reads=0;const blocked=screen({kind:'blocked',reason:'An unfamiliar Like control requires user attention.'}),form=screen({kind:'like',controls:{sendLike:control('send')},composerTextVerified:true});
+ const x=setup(screen(),{tap:()=>{taps++;x.set(taps===1?blocked:screen({name:'Next',identity:'next'}))}});
+ const base=x.c.read.bind(x.c);x.c.read=async t=>{const s=await base(t);if(s.kind==='blocked'&&++reads===1)x.set(form);return s};
+ await x.c.act('like',x.c.token());assert.equal(taps,2);assert.equal(reads,1);assert.equal(x.c.lastAction,null);
+});
+test('Hinge persistent or changed Like forms remain blocked after a bounded reread',async()=>{
+ for(const changed of [false,true]){let taps=0,reads=0;const blocked=screen({kind:'blocked',reason:'An unfamiliar Like control requires user attention.'});const x=setup(screen(),{tap:()=>{taps++;x.set(blocked)}});const base=x.c.read.bind(x.c);x.c.read=async t=>{const s=await base(t);if(s.kind==='blocked'){reads++;if(changed)x.set(screen({kind:'like',name:'Other',identity:'other',controls:{sendLike:control('send')},composerTextVerified:true}))}return s};await assert.rejects(x.c.act('like',x.c.token()),/unfamiliar|verify/i);assert.equal(taps,1);assert.equal(reads,changed?1:2);assert.equal(x.c.lastAction,null);}
+});
+test('Bumble reconciles a stalled swipe by refreshing once and verifying the new profile twice',async()=>{
+ const original=bumble(),next=bumble({name:'Next',identity:'next',screenKey:'next'});const x=setup(original,{platform:'bumble'});let swipes=0,refreshes=0,commits=0,observations=0;
+ x.android.swipeProfile=async(d,b,v,issued)=>{swipes++;issued();x.set({...original,screenKey:'settled'})};x.android.refreshFeed=async(p,v)=>{assert.equal(p,'bumble');assert.ok(v());assert.equal(x.c.lastAction.refreshAttempted,true);refreshes++;x.set(next)};
+ const base=x.c.read.bind(x.c);x.c.read=async t=>{const s=await base(t);if(refreshes)observations++;return s};
+ await x.c.act('like',x.c.token(),()=>true,()=>commits++);assert.equal(swipes,1);assert.equal(refreshes,1);assert.ok(observations>=2);assert.equal(commits,1);assert.equal(x.c.lastAction,null);
+});
+test('Bumble refresh never treats the same card or unstable new evidence as a confirmed swipe',async()=>{
+ for(const mode of ['same','unstable','changed-photo']){const original=bumble({profileDiscriminator:'static'}),x=setup(original,{platform:'bumble'});let swipes=0,refreshes=0,reads=0,commits=0;x.android.swipeProfile=async(d,b,v,issued)=>{swipes++;issued();x.set({...original,screenKey:'settled'})};x.android.refreshFeed=async()=>{refreshes++;if(mode==='unstable')x.set(bumble({name:'Next',identity:'next'}));if(mode==='changed-photo')x.set({...original,identity:'other-photo'});};const base=x.c.read.bind(x.c);x.c.read=async t=>{const s=await base(t);if(refreshes&&mode==='unstable'&&++reads===1)x.set(original);return s};await assert.rejects(x.c.act('like',x.c.token(),()=>true,()=>commits++),/confirm|transition/i);assert.equal(swipes,1);assert.equal(refreshes,1);assert.equal(commits,1);assert.ok(x.c.lastAction);assert.equal(x.c.lastAction.refreshAttempted,true);}
+});
+test('Bumble reconciliation does not repeat a persisted refresh and cancellation prevents further reads',async()=>{
+ const x=setup(bumble(),{platform:'bumble'});x.c.lastAction={identity:'original',name:'Original',refreshAttempted:true};x.android.refreshFeed=async()=>assert.fail('must not repeat');assert.equal(await x.c.reconcileBumble(bumble(),x.c.token(),()=>true),false);
+ const y=setup(bumble(),{platform:'bumble'}),gate=deferred();await y.c.request('status');y.c.lastAction={identity:bumble().identity,name:bumble().name};y.android.refreshFeed=async()=>gate.promise;const job=y.c.reconcileBumble(bumble(),y.c.token(),()=>true);await new Promise(r=>setImmediate(r));await y.c.request('stop');gate.resolve();await assert.rejects(job,/cancel|changed/i);assert.ok(y.c.lastAction);
+});
+
+test('Bumble verified empty or distinct same-name profile confirms only after two post-refresh observations',async()=>{
+ for(const mode of ['empty','same-name']){const original=bumble({profileDiscriminator:'old'}),next=mode==='empty'?bumble({kind:'empty',identity:null,photos:[],controls:{}}):bumble({identity:'next',profileDiscriminator:'new'});const x=setup(original,{platform:'bumble'});await x.c.request('status');x.c.lastAction={identity:original.identity,name:original.name,profileDiscriminator:'old'};x.c.session.count=7;x.c.session.endsAt=Date.now()+60000;const end=x.c.session.endsAt;let reads=0;x.android.refreshFeed=async()=>{x.set(next)};const base=x.c.read.bind(x.c);x.c.read=async t=>{const s=await base(t);if(s===next)reads++;return s};assert.equal(await x.c.reconcileBumble(original,x.c.token(),()=>true),true);assert.equal(reads,2);assert.equal(x.c.session.count,7);assert.equal(x.c.session.endsAt,end);assert.equal(x.calls.includes('tap'),false);assert.equal(x.c.lastAction,null);}
+});
+test('Bumble failed refresh remains durably reserved and cannot trigger a second refresh',async()=>{
+ const original=bumble(),x=setup(original,{platform:'bumble'});x.c.lastAction={identity:original.identity,name:original.name};let calls=0;x.android.refreshFeed=async()=>{calls++;throw Error('transport failed')};await assert.rejects(x.c.reconcileBumble(original,x.c.token(),()=>true),/transport/);assert.equal(x.c.checkpoint().pendingAction.refreshAttempted,true);assert.equal(await x.c.reconcileBumble(original,x.c.token(),()=>true),false);assert.equal(calls,1);
+});
+test('Bumble cannot refresh a different pending profile or act after deadline cancellation',async()=>{
+ const x=setup(bumble(),{platform:'bumble'});x.c.lastAction={identity:'other',name:'Other'};x.android.refreshFeed=async()=>assert.fail('must not refresh');assert.equal(await x.c.reconcileBumble(bumble(),x.c.token(),()=>true),false);await assert.rejects(x.c.reconcileBumble(bumble(),x.c.token(),()=>false),/cancel|changed/i);
+});
+
+test('resumed pending Bumble swipe reconciles before review without counting or issuing another swipe',async()=>{
+ const original=bumble(),x=setup(original,{platform:'bumble'});await x.c.request('status');x.c.lastAction={identity:original.identity,name:original.name};x.c.session.count=9;x.c.session.endsAt=Date.now()+60000;const end=x.c.session.endsAt;x.android.refreshFeed=async()=>x.set(bumble({name:'Next',identity:'next'}));x.c.review=async()=>assert.fail('must not review during reconciliation');x.android.swipeProfile=async()=>assert.fail('must not swipe');const result=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('must not count'),async()=>true,x.c.token());assert.ok(result.retryAfter>0);assert.equal(x.c.session.count,9);assert.equal(x.c.session.endsAt,end);assert.equal(x.c.lastAction,null);
+});
+test('late verified Bumble transition clears a persisted refresh guard without another refresh',async()=>{
+ const original=bumble(),x=setup(bumble({name:'Next',identity:'next'}),{platform:'bumble'});x.c.lastAction={identity:original.identity,name:original.name,refreshAttempted:true};x.android.refreshFeed=async()=>assert.fail('must not refresh');assert.equal(await x.c.reconcileBumble(original,x.c.token(),()=>true),true);assert.equal(x.c.lastAction,null);
+});

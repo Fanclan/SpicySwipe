@@ -60,6 +60,10 @@ class MobileController{
  async sessionStep(c,valid,commit,sleep,t){
   try{
    let observed=await this.read(t);this.assert(t,valid);
+   if(this.platform==='bumble'&&this.lastAction){
+    if(await this.reconcileBumble(this.lastAction,t,valid))return {retryAfter:1000,phase:'checking next profile'};
+    throw Error('The earlier Bumble swipe is still uncertain. No additional swipe was sent.');
+   }
    if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
    const prepared=await this.review(t,sleep);this.assert(t,valid);
    await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
@@ -148,6 +152,31 @@ class MobileController{
   if(!s.controls.like||s.identity!==original.identity)throw Error('Bumble profile changed during review. Nothing was swiped.');
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name:s.name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  }
+ async reconcileBumble(original,t,valid){
+  this.assert(t,valid);
+  if(this.platform!=='bumble'||!this.android.refreshFeed||!this.lastAction||this.lastAction.identity!==original.identity||this.lastAction.name!==original.name)return false;
+  // Observe the stalled original card again. No swipe, Like, or message is retried.
+  const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||distinctBumbleProfile(original,observed))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
+  const current=await this.read(t);this.assert(t,valid);
+  const late=changeKey(current);
+  if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;this.lastAction=null;this.persist();return true;}
+  if(this.lastAction.refreshAttempted)return false;
+  if(current.kind!=='profile'||current.identity!==original.identity||current.name!==original.name)return false;
+  await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);
+  this.lastAction.refreshAttempted=true;this.persist();
+  if(this.session.status==='running'){this.session.phase='checking swipe result';this.notify()}
+  await this.android.refreshFeed('bumble',()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);
+  let candidate=null;
+  for(let i=0;i<6;i++){
+   await this.pauseFor(1000,t);this.assert(t,valid);let observed=await this.read(t);this.assert(t,valid);
+   observed=await this.dismissBumbleReminder(observed,t,valid);this.assert(t,valid);
+   const key=changeKey(observed);
+   if(key&&key===candidate){this.lastAction=null;this.persist();return true}
+   candidate=key;
+   if(observed.kind!=='blocked'&&!key)return false;
+  }
+  return false;
+ }
  async swipeBumble(kind,s,t,valid,commit){
   if(this.config.mode!=='like')throw Error('Bumble Compliment/comment automation is not verified. Choose plain Likes.');
   this.supported(s,['profile']);const control=kind==='like'?s.controls.like:s.controls.skip,direction=kind==='like'?'right':'left';
@@ -184,6 +213,7 @@ class MobileController{
     const beforeRetry=await this.fresh(s,t,valid);this.assert(t,valid);
     if(!same(beforeRetry)||!budget())break;
    }
+   if(await this.reconcileBumble(s,t,valid))return this.snapshot();
    throw Error('Could not confirm the Bumble swipe transition. It will not be retried on this profile.');
   }finally{if(issuedCount){commit(issuedCount);for(let i=0;i<issuedCount;i++)await this.record(kind)}}
  }
@@ -273,7 +303,11 @@ class MobileController{
   if(s.kind==='profile'){
    const photo=this.selectedPhoto&&s.photos.find(p=>p.key===this.selectedPhoto.key)||s.photos?.filter(p=>p.like)[Math.floor(this.random()*(s.photos?.filter(p=>p.like).length||1))];
    if(!photo?.like)throw Error('No supported fully visible photo. Scroll or review again before liking.');this.selectedPhoto=photo;
-   await this.tap(s,photo.like,t,valid);await this.pauseFor(900,t);s=await this.read(t);this.supported(s,['like']);
+   await this.tap(s,photo.like,t,valid);await this.pauseFor(900,t);s=await this.read(t);
+   // Native keyboard/form animation can briefly expose conflicting background controls.
+   // Reread once, retaining every identity, comment and control check below.
+   if(s.kind==='blocked'&&s.reason==='An unfamiliar Like control requires user attention.'){await this.pauseFor(750,t);this.assert(t,valid);s=await this.read(t);}
+   this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
    const samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
    if(s.name!==original.name||(s.identity!==original.identity&&!samePhoto))throw Error('Could not verify the selected profile/photo in the Like confirmation.');
