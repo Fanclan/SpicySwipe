@@ -267,3 +267,128 @@ test('empty Discover rejects badge-like text outside the native navigation struc
   xml.replace('</hierarchy>','<node package="com.android.systemui" bounds="[10,10][100,100]"/></hierarchy>'),
  ]) {const s=read(sample);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(v=>v===null));}
 });
+
+// Synthetic error layout: public UI copy and geometry only, no captured user data.
+const feedError = `<hierarchy><node package="co.hinge.app" class="android.view.View" bounds="[0,0][1080,2400]">
+ <node class="android.widget.ScrollView" bounds="[0,356][1080,2179]">
+  <node class="android.view.View" bounds="[274,1312][806,1380]"><node class="android.widget.TextView" text="Something went wrong" clickable="false" bounds="[274,1312][806,1380]"/></node>
+  <node class="android.widget.TextView" text="Oops, something's gone wrong. Let's give it another try." clickable="false" bounds="[106,1401][974,1501]"/>
+  <node class="android.view.View" clickable="true" enabled="true" bounds="[383,1590][698,1716]">
+   <node class="android.widget.TextView" text="Try again" clickable="false" bounds="[454,1627][627,1678]"/>
+   <node class="android.widget.Button" clickable="false" bounds="[383,1590][698,1715]"/>
+  </node>
+ </node>
+ <node class="android.widget.TextView" text="Discover" clickable="false" bounds="[53,234][348,324]"/>
+ <node class="android.view.View" bounds="[0,2179][1080,2400]">
+  <node class="android.view.View" clickable="false" selected="true" bounds="[0,2179][216,2337]"><node class="android.view.View" content-desc="Discover" clickable="false" bounds="[0,2179][216,2337]"/></node>
+  <node class="android.view.View" clickable="true" bounds="[216,2179][432,2337]"><node class="android.view.View" content-desc="Standouts" clickable="false" bounds="[216,2179][432,2337]"/></node>
+  <node class="android.view.View" clickable="true" bounds="[432,2179][648,2337]"><node class="android.view.View" content-desc="Likes You" clickable="false" bounds="[432,2179][648,2337]"/></node>
+  <node class="android.view.View" clickable="true" bounds="[648,2179][864,2337]"><node class="android.view.View" content-desc="Matches" clickable="false" bounds="[648,2179][864,2337]"/></node>
+  <node class="android.view.View" clickable="true" bounds="[864,2179][1080,2337]"><node class="android.view.View" content-desc="Profile Hub" clickable="false" bounds="[864,2179][1080,2337]"/></node>
+ </node>
+</node></hierarchy>`;
+
+test('recognized Discover feed error exposes only the native retry target',()=>{
+ const s=read(feedError);
+ assert.equal(s.kind,'feedError');assert.equal(s.identity,null);assert.equal(s.name,'');assert.deepEqual(s.photos,[]);
+ assert.deepEqual(s.controls.retry.bounds,{x:383,y:1590,width:315,height:126});assert.equal(s.controls.retry.label,'Try again');assert.ok(s.controls.retry.key);assert.ok(s.screenKey);
+ assert.ok(Object.entries(s.controls).every(([key,value])=>key==='retry'||value===null));
+});
+
+test('Discover retry rejects altered copy, ambiguous controls, geometry and navigation',()=>{
+ const extra=node=>feedError.replace('</hierarchy>',node+'</hierarchy>');
+ const samples=[
+  feedError.replace('Something went wrong','Another error'),
+  feedError.replace("Oops, something's gone wrong.", 'Unexpected failure.'),
+  feedError.replace('Try again','Continue'),
+  feedError.replace('selected="true"','selected="false"'),
+  feedError.replace('text="Discover"','text="Standouts"'),
+  feedError.replace('content-desc="Discover"','content-desc="Standouts"'),
+  feedError.replace('class="android.view.View" clickable="true" enabled="true"','class="android.view.View" clickable="false" enabled="true"'),
+  feedError.replace('enabled="true"','enabled="false"'),
+  feedError.replace('enabled="true"','enabled="true" visible-to-user="false"'),
+  feedError.replace('[383,1590][698,1716]','[383,1590][383,1716]'),
+  feedError.replace('[383,1590][698,1716]','[383,1590][698,2300]'),
+  feedError.replace('[383,1590][698,1715]','[383,1590][500,1715]'),
+  feedError.replace('[454,1627][627,1678]','[1,1][40,40]'),
+  feedError.replace('class="android.widget.Button"','class="android.view.View"'),
+  feedError.replace('class="android.widget.ScrollView"','class="android.view.View"'),
+  feedError.replace('co.hinge.app','other.app'),
+  extra('<node class="android.widget.TextView" text="Try again" bounds="[1,1][40,40]"/>'),
+  extra('<node class="android.widget.TextView" text="Subscribe" bounds="[1,1][40,40]"/>'),
+  extra('<node class="android.view.View" clickable="true" bounds="[1,1][40,40]"/>'),
+  extra('<node class="android.widget.EditText" bounds="[1,1][40,40]"/>'),
+  extra('<node class="android.app.Dialog" bounds="[1,1][40,40]"/>'),
+  extra('<node package="com.android.systemui" bounds="[1,1][40,40]"/>'),
+ ];
+ for(const [i,xml] of samples.entries()) {const s=read(xml);assert.equal(s.kind,'blocked','sample '+i);assert.ok(Object.values(s.controls).every(v=>v===null),'sample '+i);}
+ assert.equal(read(feedError,{foreground:'other.app'}).kind,'blocked');
+});
+
+
+const promptText='Prompt: A perfect weekend. Answer: Hiking and coffee.';
+const promptNode=(label,box,children='',extra='')=>'<node package="co.hinge.app" class="android.view.View" content-desc="'+label+'" bounds="'+box+'" enabled="true" clickable="false" '+extra+'>'+children+'</node>';
+const promptButton=(label,box,extra='')=>'<node package="co.hinge.app" class="android.widget.Button" content-desc="'+label+'" bounds="'+box+'" enabled="true" '+extra+'/>';
+function promptScreen(confirm=false) {
+ const content=confirm
+  ?promptNode('','[53,541][1027,1475]',promptNode('','[95,583][985,1092]',promptNode(promptText,'[95,583][985,1092]'))+promptNode('','[53,1092][1027,1475]',promptNode('Edit comment','[95,1124][985,1302]')+promptButton('Send a Rose','[95,1334][358,1443]','clickable="false"')+promptButton('Send priority like','[390,1334][985,1443]','clickable="false"')))
+  :promptNode('','[53,280][1027,873]',promptNode('','[53,280][1027,873]',promptNode(promptText,'[53,280][1027,873]')+promptNode('','[849,695][1027,873]',promptNode('','[849,695][1027,873]',promptButton('Like prompt','[875,721][1001,847]','clickable="true"')))));
+ return '<hierarchy>'+promptNode('','[0,0][1080,2400]',promptNode('Discover','[0,2179][216,2337]','','selected="true"')+promptButton('Skip Sample','[53,1963][216,2126]','clickable="true"')+promptNode('','[0,181][1080,2179]',content,'scrollable="true"'))+'</hierarchy>';
+}
+
+test('native static prompt card exposes its own fully visible Like without inventing photos',()=>{
+ const s=read(promptScreen());assert.equal(s.kind,'profile');assert.equal(s.photos.length,0);assert.equal(s.controls.like,null);assert.ok(s.identity);
+ assert.ok(Array.isArray(s.prompts));assert.equal(s.prompts.length,1);assert.equal(s.prompts[0].text,promptText);assert.deepEqual(s.prompts[0].bounds,{x:53,y:280,width:974,height:593});assert.equal(s.prompts[0].like.label,'Like prompt');assert.deepEqual(s.prompts[0].like.bounds,{x:875,y:721,width:126,height:126});assert.ok(s.prompts[0].key);
+});
+
+test('prompt Likes require a unique same-card button and fully visible static text',()=>{
+ const xml=promptScreen(),button=promptButton('Like prompt','[875,721][1001,847]','clickable="true"');
+ const samples=[xml.replaceAll('[53,280][1027,873]','[53,100][1027,873]'),xml.replace('content-desc="Like prompt" bounds="[875,721][1001,847]" enabled="true"','content-desc="Like prompt" bounds="[875,721][1001,847]" enabled="false"'),xml.replace(button,button+button),xml.replace(button,'').replace('</hierarchy>',button+'</hierarchy>'),xml.replace('content-desc="'+promptText+'"','content-desc="'+promptText+'" visible-to-user="false"'),xml.replace('[875,721][1001,847]','[1000,721][1100,847]')];
+ for(const candidate of samples){const s=read(candidate);assert.ok(Array.isArray(s.prompts));assert.ok(s.prompts.every(p=>p.like===null));}
+});
+
+test('observed prompt confirmation exposes selected full text and requires verified comment contents',()=>{
+ const before=read(promptScreen()),unverified=read(promptScreen(true)),s=read(promptScreen(true),{commentText:''});
+ assert.equal(s.kind,'like');assert.equal(s.identity,before.identity);assert.deepEqual(s.photos,[]);assert.equal(s.prompts.length,1);assert.equal(s.prompts[0].text,before.prompts[0].text);assert.equal(s.prompts[0].like,null);assert.deepEqual(s.prompts[0].bounds,{x:95,y:583,width:890,height:509});assert.equal(s.controls.sendLike.label,'Send priority like');assert.equal(unverified.kind,'like');assert.equal(unverified.controls.sendLike,null);
+});
+
+test('prompt confirmation rejects duplicate, detached, clipped or unknown controls',()=>{
+ const xml=promptScreen(true),prompt=promptNode(promptText,'[95,583][985,1092]'),send=promptButton('Send priority like','[390,1334][985,1443]','clickable="false"');
+ const samples=[xml.replace(prompt,prompt+prompt),xml.replace(prompt,'').replace('</hierarchy>',prompt+'</hierarchy>'),xml.replaceAll('[95,583][985,1092]','[95,150][985,1092]'),xml.replace(send,'').replace('</hierarchy>',send+'</hierarchy>'),xml.replace('Send priority like','Send a Rose'),xml.replace('</hierarchy>',promptButton('Buy gift','[100,1200][200,1300]','clickable="true"')+'</hierarchy>')];
+ for(const candidate of samples)assert.equal(read(candidate,{commentText:''}).controls.sendLike,null);
+ assert.equal(read(xml,{commentText:'unexpected text'}).controls.sendLike,null);
+ assert.ok(read(xml.replace('Send priority like','Send priority like with message'),{commentText:'A verified comment'}).controls.sendLike);
+});
+
+
+function promptWithPreviousVideo() {
+ const video=promptNode('','[53,118][1027,488]',promptNode('','[53,181][1027,488]',promptNode("Sample's video",'[53,181][1027,488]')+promptNode('','[849,310][1027,488]',promptNode('','[849,310][1027,488]',promptButton('Like video','[875,336][1001,462]','clickable="true"')))));
+ return promptScreen(true).replace(promptNode('','[53,541][1027,1475]','').replace('</node>',''),video+promptNode('','[53,541][1027,1475]','').replace('</node>',''));
+}
+test('prompt confirmation tolerates only its separate preceding owned video card',()=>{
+ const xml=promptWithPreviousVideo(),s=read(xml,{commentText:''});assert.equal(s.kind,'like');assert.equal(s.controls.sendLike.label,'Send priority like');assert.equal(s.prompts.length,1);
+ for(const candidate of [xml.replace("Sample's video","Other's video"),xml.replace('Like video','Purchase video'),xml.replace('[53,118][1027,488]','[53,118][1027,1200]'),xml.replace('[875,336][1001,462]','[875,600][1001,726]')])assert.equal(read(candidate,{commentText:''}).controls.sendLike,null);
+ const detached=promptScreen(true).replace('</hierarchy>',promptButton('Like video','[875,336][1001,462]','clickable="true"')+'</hierarchy>');assert.equal(read(detached,{commentText:''}).controls.sendLike,null);
+});
+
+
+function promptWithSibling(kind='photo',side='before') {
+ const before=side==='before',box=before?'[53,118][1027,275]':'[53,1528][1027,2179]',contentBox=before?'[53,181][1027,275]':box,buttonBox=before?'[875,123][1001,249]':'[875,1969][1001,2095]';
+ const text=kind==='prompt'?'Prompt: My ideal Sunday. Answer: A long walk.':"Sample's "+kind;
+ const content=kind==='photo'?'<node package="co.hinge.app" class="android.widget.ImageView" content-desc="'+text+'" enabled="true" clickable="false" bounds="'+contentBox+'"/>':promptNode(text,contentBox);
+ const sibling=promptNode('',box,promptNode('',contentBox,content)+promptNode('',box,promptButton('Like '+kind,buttonBox,'clickable="true"')));
+ const cardStart=promptNode('','[53,541][1027,1475]','').replace('</node>','');
+ return promptScreen(true).replace(cardStart,sibling+cardStart);
+}
+test('prompt confirmation ignores only disjoint sibling cards with their matching native content',()=>{
+ for(const kind of ['photo','video','prompt'])for(const side of ['before','after']){
+  const xml=promptWithSibling(kind,side),s=read(xml,{commentText:''});assert.equal(s.kind,'like',kind+' '+side);assert.equal(s.controls.sendLike.label,'Send priority like');assert.equal(s.prompts.length,1);assert.equal(s.prompts[0].text,promptText);assert.deepEqual(s.photos,[]);
+  assert.equal(read(xml.replace('Like '+kind,'Buy '+kind),{commentText:''}).controls.sendLike,null);
+  if(kind!=='prompt')assert.equal(read(xml.replace("Sample's "+kind,"Other's "+kind),{commentText:''}).controls.sendLike,null);
+ }
+});
+test('prompt confirmation rejects mismatched, detached or overlapping sibling controls',()=>{
+ const xml=promptWithSibling();
+ for(const candidate of [xml.replace('Like photo','Like video'),xml.replace('Like photo','Like prompt'),xml.replace('[875,123][1001,249]','[875,600][1001,726]'),xml.replaceAll('[53,118][1027,275]','[53,118][1027,1200]'),xml.replace('class="android.widget.ImageView"','class="android.view.View"'),xml.replace("Sample's photo",'unrelated'),xml.replace('scrollable="true"','scrollable="false"')])assert.equal(read(candidate,{commentText:''}).controls.sendLike,null);
+ const after=promptWithSibling('photo','after');assert.equal(read(after.replaceAll('[53,1528][1027,2179]','[53,1400][1027,2179]'),{commentText:''}).controls.sendLike,null);
+});

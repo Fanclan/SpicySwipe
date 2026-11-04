@@ -530,3 +530,86 @@ test('transport recovery never relaunches using a cached profile after an editor
 test('changed photo evidence on the same pending person permits refresh but never confirms another profile',async()=>{
  const original=bumble({profileDiscriminator:'same-static'}),current=bumble({identity:'changed-photo',profileDiscriminator:'same-static'}),x=setup(current,{platform:'bumble'});x.c.lastAction={identity:original.identity,name:original.name,profileDiscriminator:original.profileDiscriminator};let refreshes=0;x.android.refreshFeed=async()=>refreshes++;assert.equal(await x.c.reconcilePending(original,x.c.token(),()=>true),false);assert.equal(refreshes,1);assert.ok(x.c.lastAction);assert.equal(x.calls.includes('tap'),false);
 });
+
+const feedError=()=>screen({kind:'feedError',name:'',identity:null,screenKey:'feed-error',photos:[],controls:{retry:control('Try again')}});
+test('Hinge session retries a verified feed error without counting a profile action or clearing pending evidence',async()=>{
+ const x=setup(feedError(),{tap:()=>x.set(screen())});await x.c.request('status');x.c.session.count=3;x.c.session.endsAt=Date.now()+600000;x.c.lastAction={identity:'previous',name:'Previous'};const pending=x.c.lastAction,end=x.c.session.endsAt;
+ const result=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('retry is not a Like'),async()=>true,x.c.token());
+ assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.screen.kind,'profile');assert.equal(x.c.session.count,3);assert.equal(x.c.session.endsAt,end);assert.equal(x.c.lastAction,pending);assert.ok(result.retryAfter>0);
+});
+test('feed retry has a durable cooldown and never taps a changed screen',async()=>{
+ const x=setup(feedError());await x.c.request('status');await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail(),async()=>true,x.c.token());await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail(),async()=>true,x.c.token());assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.ok(x.c.checkpoint().nextFeedRetryAt>Date.now());
+ const y=setup(feedError());let reads=0;y.android.hierarchy=async()=>({xml:++reads===1?feedError():screen({kind:'blocked',screenKey:'overlay'}),foreground:'co.hinge.app'});await y.c.sessionStep(y.c.config.swipe,()=>true,()=>assert.fail(),async()=>true,y.c.token());assert.equal(y.calls.filter(v=>v==='tap').length,0);
+});
+test('Hinge can start on a verified recoverable feed error without resetting a resumed budget',async()=>{
+ const x=setup(feedError(),{wait:()=>new Promise(()=>{})});await x.c.request('status');x.c.session.status='paused';x.c.session.count=3;x.c.session.endsAt=Date.now()+600000;const end=x.c.session.endsAt;await x.c.request('start');assert.equal(x.c.session.status,'running');assert.equal(x.c.session.count,3);assert.equal(x.c.session.endsAt,end);x.c.session.pause();
+});
+
+test('native Bumble footer Like scrolls within reviewed profile and confirms next person without gesture replay',async()=>{
+ const initial=bumble({actionStrategy:'footer'}),footer=bumble({actionStrategy:'footer',name:'',identity:null,photos:[],controls:{profileLike:control('Like'),profilePass:control('Not for me')}}),next=bumble({name:'Next',identity:'next',screenKey:'next'});
+ const x=setup(initial,{platform:'bumble',scroll:()=>x.set(footer),tap:()=>x.set(next)});let committed=0;x.android.swipeProfile=async()=>assert.fail('native footer must not swipe');await x.c.act('like',x.c.token(),()=>true,()=>committed++);assert.equal(committed,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.lastAction,null);assert.equal(x.c.screen.name,'Next');
+});
+test('Bumble footer search stops on a different named profile or unknown overlay without issuing a Like',async()=>{
+ for(const after of [bumble({actionStrategy:'footer',name:'Other',identity:'other'}),bumble({kind:'blocked',reason:'overlay'})]){const x=setup(bumble({actionStrategy:'footer'}),{platform:'bumble',scroll:()=>x.set(after)});await assert.rejects(x.c.act('like',x.c.token()),/changed|interrupted|recognized/i);assert.equal(x.calls.filter(v=>v==='tap').length,0);assert.equal(x.c.lastAction,null);}
+});
+test('Bumble footer search is bounded and cannot tap after cancellation',async()=>{
+ const initial=bumble({actionStrategy:'footer'}),x=setup(initial,{platform:'bumble'});await assert.rejects(x.c.act('like',x.c.token()),/footer|ordinary Like/i);assert.ok(x.calls.filter(v=>v?.direction).length<=24);assert.equal(x.calls.filter(v=>v==='tap').length,0);
+ const y=setup(initial,{platform:'bumble',scroll:()=>y.c.invalidate('Stopped')});await assert.rejects(y.c.act('like',y.c.token()),/cancel/i);assert.equal(y.calls.filter(v=>v==='tap').length,0);
+});
+
+test('video-only Hinge review can select a verified static prompt and send a plain Like',async()=>{
+ const prompt={key:'prompt-one',text:'Prompt: My weekend. Answer: Hiking',bounds:box,like:control('Like prompt')},initial=screen({photos:[],prompts:[prompt],controls:{skip:control('skip'),like:null}});let taps=0;
+ const x=setup(initial,{tap:()=>{taps++;x.set(taps===1?screen({kind:'like',photos:[],prompts:[{...prompt,like:null}],composerTextVerified:true,controls:{sendLike:control('send'),comment:control('comment')}}):screen({name:'Next',identity:'next',screenKey:'next'}))}});await x.c.request('config',{scrollMin:0,scrollMax:0});const prepared=await x.c.review(x.c.token());let committed=0;await x.c.act('like',x.c.token(),()=>true,()=>committed++,prepared);assert.equal(committed,1);assert.equal(taps,2);assert.equal(x.c.lastAction,null);
+});
+test('Hinge changed prompt confirmation never sends a Like',async()=>{
+ const prompt={key:'prompt-one',text:'Prompt: My weekend. Answer: Hiking',bounds:box,like:control('Like prompt')},initial=screen({photos:[],prompts:[prompt],controls:{skip:control('skip'),like:null}});const x=setup(initial,{tap:()=>x.set(screen({kind:'like',photos:[],prompts:[{...prompt,text:'Prompt: Other. Answer: Other',like:null}],composerTextVerified:true,controls:{sendLike:control('send'),comment:control('comment')}}))});await x.c.request('config',{scrollMin:0,scrollMax:0});const prepared=await x.c.review(x.c.token());await assert.rejects(x.c.act('like',x.c.token(),()=>true,()=>assert.fail(),prepared),/prompt|verify/i);assert.equal(x.calls.filter(v=>v==='tap').length,1);
+});
+
+test('Bumble footer search rejects contradictory same-name static identity',async()=>{
+ const initial=bumble({actionStrategy:'footer',profileDiscriminator:'original-age'}),changed=bumble({actionStrategy:'footer',identity:'other',profileDiscriminator:'different-age',controls:{profileLike:control('Like')}});const x=setup(initial,{platform:'bumble',scroll:()=>x.set(changed)});await assert.rejects(x.c.act('like',x.c.token()),/changed/i);assert.equal(x.calls.filter(v=>v==='tap').length,0);assert.equal(x.c.lastAction,null);
+});
+test('pending Bumble footer action returns to main card read-only and verifies a late transition',async()=>{
+ const footer=bumble({actionStrategy:'footer',identity:null,name:'',controls:{profileLike:control('Like')}}),next=bumble({actionStrategy:'footer',name:'Next',identity:'next'});const x=setup(footer,{platform:'bumble',scroll:()=>x.set(next)});x.c.lastAction={identity:'original',name:'Original'};x.c.session.count=10;const pending=x.c.lastAction;assert.equal(await x.c.reconcilePending(pending,x.c.token(),()=>true),true);assert.equal(x.c.lastAction,null);assert.equal(x.c.session.count,10);assert.equal(x.calls.filter(v=>v==='tap').length,0);assert.equal(x.calls.filter(v=>v?.direction==='down').length,1);
+});
+test('pending Bumble read-only top recovery is bounded and retains guard on an unknown screen',async()=>{
+ const footer=bumble({actionStrategy:'footer',identity:null,name:'',controls:{profileLike:control('Like')}}),x=setup(footer,{platform:'bumble',scroll:()=>x.set(bumble({kind:'blocked',identity:null,reason:'unknown'}))});x.c.lastAction={identity:'original',name:'Original'};assert.equal(await x.c.reconcilePending(x.c.lastAction,x.c.token(),()=>true),false);assert.ok(x.c.lastAction);assert.equal(x.calls.filter(v=>v==='tap').length,0);assert.equal(x.calls.filter(v=>v?.direction).length,1);
+});
+
+test('Hinge reopens Discover before reviewing an unbound or previously rejected blank Like form',async()=>{
+ const initial=screen({photos:[],prompts:[{key:'one',text:'Prompt: Weekend. Answer: Hiking',bounds:box,like:control('Like prompt')}]}),form=screen({kind:'like',name:'Other',identity:'other',prompts:[{text:'Prompt: Other. Answer: Other'}],photos:[],composerTextVerified:true,controls:{sendLike:control('send'),comment:control('comment')}});
+ const x=setup(initial,{tap:()=>x.set(form)});await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1}});
+ let commits=0,refreshes=0;const step=()=>x.c.sessionStep(x.c.config.swipe,()=>true,()=>commits++,async()=>true,x.c.token());await step();assert.equal(commits,0);
+ x.android.refreshFeed=async()=>{refreshes++;x.set(screen({name:'New card',identity:'new'}))};
+ await step();assert.equal(refreshes,1);assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(commits,0);assert.equal(x.c.screen.name,'New card');
+});
+test('Hinge blank Like form can resume the saved session but typed comments never auto-submit',async()=>{
+ const form=screen({kind:'like',composerTextVerified:true,controls:{sendLike:control('send'),comment:control('comment')}}),x=setup(form,{wait:()=>new Promise(()=>{})});await x.c.request('config',{swipe:{likeRatio:1}});x.c.session.status='paused';x.c.session.count=3;x.c.session.endsAt=Date.now()+600000;await x.c.request('start');assert.equal(x.c.session.status,'running');x.c.session.pause();
+ for(const fields of [{composerText:'existing comment'},{composerTextVerified:false}]){const y=setup({...form,...fields});await y.c.sessionStep(y.c.config.swipe,()=>true,()=>assert.fail(),async()=>true,y.c.token());assert.equal(y.calls.filter(v=>v==='tap').length,0);}
+});
+
+test('Bumble pending footer Like closes verified feedback prompt and confirms a different profile without voting again',async()=>{
+ const feedback=bumble({...reminder(),kind:'feedbackPrompt'}),next=bumble({name:'Next',identity:'next',screenKey:'next'});
+ const x=setup(feedback,{platform:'bumble',tap:()=>x.set(next)});x.c.lastAction={name:'Original',identity:'original'};x.c.session.count=1;
+ assert.equal(await x.c.reconcilePending(x.c.lastAction,x.c.token(),()=>true),true);
+ assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.session.count,1);assert.equal(x.c.lastAction,null);
+});
+test('Bumble dismisses verified feedback after the ordinary footer Like before checking transition',async()=>{
+ const initial=bumble({actionStrategy:'footer'}),footer=bumble({actionStrategy:'footer',name:'',identity:null,controls:{profileLike:control('Like')}}),feedback=bumble({...reminder(),kind:'feedbackPrompt'}),next=bumble({name:'Next',identity:'next',screenKey:'next'});
+ let taps=0,commits=0;const x=setup(initial,{platform:'bumble',scroll:()=>x.set(footer),tap:()=>x.set(++taps===1?feedback:next)});
+ await x.c.act('like',x.c.token(),()=>true,()=>commits++);assert.equal(taps,2);assert.equal(commits,1);assert.equal(x.c.lastAction,null);
+});
+
+test('Bumble restores the main card from a deep native profile without photo dwell on positioning scrolls',async()=>{
+ const anonymous=bumble({actionStrategy:'footer',name:'',identity:null,photos:[],controls:{}}),main=bumble({actionStrategy:'footer'});
+ let movements=0;const x=setup(anonymous,{platform:'bumble',scroll:()=>{if(++movements===12)x.set(main)}});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});const waits=[];
+ await x.c.reviewBumble(x.c.token(),async ms=>{waits.push(ms);return true});
+ assert.equal(movements,12);assert.ok(waits.every(ms=>ms<=500));assert.equal(x.calls.filter(v=>v==='tap').length,0);
+});
+test('native Bumble automated review continues to the footer from its verified scroll position',async()=>{
+ const main=bumble({actionStrategy:'footer'}),middle=bumble({actionStrategy:'footer',name:'',identity:null,screenKey:'middle',controls:{}}),footer={...middle,screenKey:'footer',controls:{profileLike:control('Like')}},next=bumble({name:'Next',identity:'next',screenKey:'next'});
+ let moves=0;const x=setup(main,{platform:'bumble',scroll:()=>{x.set(++moves===1?middle:moves===2?footer:main)},tap:()=>x.set(next)});
+ await x.c.request('config',{scrollMin:1,scrollMax:1});const t=x.c.token(),prepared=await x.c.reviewBumble(t,async()=>true);let commits=0;
+ await x.c.act('like',t,()=>true,()=>commits++,prepared);
+ assert.deepEqual(x.calls.filter(v=>v?.direction).map(v=>v.direction),['up','up']);assert.equal(commits,1);assert.equal(x.c.screen.name,'Next');
+});

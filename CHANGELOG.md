@@ -1,5 +1,9 @@
 # 3.0.2 — Unreleased
 
+- Recover Hinge’s verified feed-loading error with a persisted retry cooldown, and reopen Discover to review again after interrupted blank Like forms.
+- Like a verified Hinge text prompt when a photo is unavailable, retaining exact confirmation-text and comment checks.
+- Use Bumble’s native ordinary Like/pass footer controls, recognize unlabeled native video cards from static profile evidence, and recover pending footer observations by scrolling without replaying the action.
+
 - Keep Hinge and Bumble transient read failures in bounded recovery, and reconcile pending actions automatically with a persisted five-minute refresh cooldown. Preserve counts and deadlines; never replay uncertain Likes.
 - Show explicit recovery/checking states, recognize Hinge unread-message navigation badges on empty feeds, and retain sanitized Android failure diagnostics.
 - Observe cold-launch readiness after ambiguous launch acknowledgements without repeating launch commands.
