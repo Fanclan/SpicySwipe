@@ -81,3 +81,176 @@ function promoOffer(){const n=(klass,attrs='',children='')=>'<node package="com.
 test('Bumble verified SuperSwipe offer exposes only Close and ignores its countdown',()=>{const xml=promoOffer(),s=read(xml);assert.equal(s.kind,'promoOffer');assert.ok(s.controls.dismiss);assert.equal(s.controls.like,null);assert.equal(s.identity,null);assert.equal(read(xml.replace('58:32','58:31')).screenKey,s.screenKey);assert.notEqual(read(xml.replace('[0,100][1080,2300]','[0,101][1080,2300]')).screenKey,s.screenKey);});
 test('Bumble offer countdown width may change but actionable geometry stays bound',()=>{const a=promoOffer().replace('bounds="[0,100][1080,2300]" text="Offer ends in','bounds="[357,2171][723,2230]" text="Offer ends in');const b=a.replace('[357,2171][723,2230]','[356,2171][724,2230]');assert.equal(read(a).screenKey,read(b).screenKey);assert.equal(read(a).screenKey,read(a.replace('[357,2171][723,2230]','[357,2171][724,2230]')).screenKey);assert.equal(read(a.replace('[357,2171][723,2230]','[360,2171][730,2230]')).kind,'blocked');assert.notEqual(read(a).screenKey,read(a.replace('[357,2171][723,2230]','[357,2172][723,2231]')).screenKey);});
 test('Bumble offer fails closed for changed offers, controls, hierarchy and timers',()=>{const xml=promoOffer();for(const bad of [xml.replace('SuperSwipes','Boosts'),xml.replace('Only $17.49','Subscribe'),xml.replace('clickable="true"','clickable="false"'),xml.replace('58:32','Buy now'),xml.replace('android.widget.ScrollView','android.widget.EditText'),xml.replace('</hierarchy>',node('clickable="true" text="Buy"')+'</hierarchy>')])assert.equal(read(bad).kind,'blocked');});
+
+// Synthetic native footer; public control labels and geometry only.
+const footerNode=(type,box,attrs='',children='')=>`<node package="com.bumble.app" class="${type}" enabled="true" bounds="${box}" ${attrs}>${children}</node>`;
+const footerAction=(text,box)=>footerNode('android.view.View',box,'clickable="true"',footerNode('android.view.View',box,`content-desc="${text}" clickable="false"`)+footerNode('android.widget.Button',box,'clickable="false"'));
+const votingFooter=footerNode('androidx.compose.ui.platform.ComposeView','[21,1587][1059,2086]','resource-id="com.bumble.app:id/encountersGridItem_votingContainer"',footerNode('android.view.View','[21,1587][1059,2086]','',footerNode('android.view.View','[53,1587][1027,2086]','',footerAction('Not for me','[95,1876][284,2065]')+footerAction('Send SuperSwipe','[422,1692][658,1928]')+footerAction('Like','[796,1876][985,2065]'))));
+const footerCard=(content=votingFooter,order=2)=>footerNode('android.widget.FrameLayout','[21,231][1059,2162]',`drawing-order="${order}"`,footerNode('android.widget.FrameLayout','[21,231][1059,2162]','resource-id="com.bumble.app:id/profile_root_container"',footerNode('androidx.recyclerview.widget.RecyclerView','[21,231][1059,2162]','resource-id="com.bumble.app:id/encountersGridProfile_list"',content)));
+const nativeFooterFeed=(cards=footerCard())=>'<hierarchy>'+footerNode('android.widget.FrameLayout','[0,63][1080,2337]','resource-id="com.bumble.app:id/mainApp_root"',footerNode('android.widget.FrameLayout','[0,210][1080,2183]','resource-id="com.bumble.app:id/encountersStackContainer"',cards)+footerNode('android.view.View','[432,2183][648,2337]','selected="true"',footerNode('android.view.View','[432,2183][648,2337]','content-desc="People"')))+'</hierarchy>';
+
+test('native Bumble footer exposes separate ordinary Like and pass targets without inventing identity',()=>{
+ const s=read(nativeFooterFeed());assert.equal(s.kind,'profile');assert.equal(s.actionStrategy,'footer');assert.equal(s.identity,null);assert.equal(s.name,'');assert.deepEqual(s.photos,[]);assert.equal(s.controls.like,null);assert.equal(s.controls.skip,null);
+ assert.deepEqual(s.controls.profileLike.bounds,{x:796,y:1876,width:189,height:189});assert.equal(s.controls.profileLike.label,'Like');assert.ok(s.controls.profileLike.key);
+ assert.deepEqual(s.controls.profilePass.bounds,{x:95,y:1876,width:189,height:189});assert.equal(s.controls.profilePass.label,'Not for me');
+ assert.deepEqual(Object.entries(s.controls).filter(([,v])=>v).map(([k])=>k).sort(),['profileLike','profilePass']);
+});
+
+test('native Bumble layout selects footer strategy at the top without changing gesture evidence',()=>{
+ const content=footerNode('android.view.View','[21,231][1059,2162]','content-desc="Example’s main photo"');
+ const s=read(nativeFooterFeed(footerCard(content)));assert.equal(s.actionStrategy,'footer');assert.ok(s.identity);assert.equal(s.controls.like.direction,'right');assert.ok(!s.controls.profileLike);assert.ok(!read(feed()).actionStrategy);
+});
+
+test('Bumble footer targets belong only to the unique foreground card',()=>{
+ const background=footerCard(votingFooter,1),top=footerCard('',2);
+ for(const cards of [background+top,top+background]){const s=read(nativeFooterFeed(cards));assert.ok(!s.controls.profileLike);assert.ok(!s.controls.profilePass);}
+ const hidden=nativeFooterFeed().replace('resource-id="com.bumble.app:id/encountersGridItem_votingContainer"','resource-id="com.bumble.app:id/encountersGridItem_votingContainer" visible-to-user="false"');assert.ok(!read(hidden).controls.profileLike);
+ assert.equal(read(nativeFooterFeed(footerCard()+footerCard())).kind,'blocked');
+});
+
+test('Bumble footer fails closed for altered native controls, geometry and overlays',()=>{
+ const xml=nativeFooterFeed(),extra=n=>xml.replace('</hierarchy>',n+'</hierarchy>');
+ const samples=[
+  xml.replace('Send SuperSwipe','Send Rose'),xml.replace('Not for me','Pass'),xml.replace('content-desc="Like"','content-desc="Like" clickable="true"'),
+  xml.replace('bounds="[796,1876][985,2065]" clickable="true"','bounds="[700,1800][889,1989]" clickable="true"'),
+  xml.replaceAll('[796,1876][985,2065]','[796,1800][985,1989]'),
+  xml.replaceAll('[796,1876][985,2065]','[796,2100][985,2289]'),
+  xml.replace('resource-id="com.bumble.app:id/encountersGridItem_votingContainer"','resource-id="com.bumble.app:id/other"'),
+  xml.replace('class="androidx.compose.ui.platform.ComposeView"','class="android.view.View"'),
+  xml.replace('selected="true"','selected="false"'),
+  xml.replace('class="android.widget.Button"','class="android.view.View"'),
+  xml.replace('enabled="true" bounds="[796,1876][985,2065]" clickable="true"','enabled="false" bounds="[796,1876][985,2065]" clickable="true"'),
+  nativeFooterFeed(footerCard(votingFooter+votingFooter)),
+  nativeFooterFeed(footerCard(votingFooter+footerNode('android.view.View','[796,1876][985,2065]','clickable="true" text="Buy"'))),
+  extra(footerNode('android.view.View','[796,1876][985,2065]','clickable="true" text="Buy"')),
+  extra(footerNode('android.app.Dialog','[796,1876][985,2065]')),
+  xml.replace('com.bumble.app','other.app'),
+ ];
+ for(const [i,sample]of samples.entries()){const s=read(sample);assert.ok(!s.controls.profileLike,'Like sample '+i);assert.ok(!s.controls.profilePass,'pass sample '+i);}
+});
+
+test('partially scrolled Bumble footer remains a profile without a tap target',()=>{
+ const clipped=votingFooter.replaceAll('[21,1587][1059,2086]','[21,1900][1059,2399]').replaceAll('[53,1587][1027,2086]','[53,1900][1027,2399]').replaceAll('[95,1876][284,2065]','[95,2189][284,2378]').replaceAll('[422,1692][658,1928]','[422,2005][658,2241]').replaceAll('[796,1876][985,2065]','[796,2189][985,2378]');
+ const s=read(nativeFooterFeed(footerCard(clipped)));assert.equal(s.kind,'profile');assert.equal(s.actionStrategy,'footer');assert.ok(!s.controls.profileLike);assert.ok(!s.controls.profilePass);
+});
+
+function unlabeledVideoSummary({name='Example',age=29,detail='Researcher',playback='00:05'}={}){
+ const box='[21,231][1059,2162]';
+ const player=footerNode('b.nativeVideo',box,'',footerNode('android.view.ViewGroup',box,'',footerNode('android.widget.FrameLayout',box,'resource-id="com.bumble.app:id/videoView_videoContainer"',footerNode('android.widget.TextView','[100,300][250,350]',`text="${playback}"`))));
+ const panel=footerNode('android.view.View','[63,1559][1017,2162]','',footerNode('android.widget.TextView','[74,1903][379,1972]',`text="${name}, ${age}" clickable="false"`)+(detail?footerNode('android.widget.TextView','[127,1994][625,2046]',`text="${detail}" clickable="false"`):''));
+ return footerNode('androidx.compose.ui.platform.ComposeView',box,'resource-id="com.bumble.app:id/encountersGridItem_summaryContainer"',footerNode('android.view.View',box,'',footerNode('android.view.View',box,'clickable="true"',footerNode('android.view.View',box,'',player+panel))));
+}
+
+test('native unlabeled Bumble main video derives stable identity from its own summary facts',()=>{
+ const xml=nativeFooterFeed(footerCard(unlabeledVideoSummary())),s=read(xml);
+ assert.equal(s.kind,'profile');assert.equal(s.name,'Example');assert.ok(s.identity);assert.ok(s.profileDiscriminator);assert.equal(s.actionStrategy,'footer');assert.deepEqual(s.photos,[]);assert.equal(s.controls.like.direction,'right');
+ assert.equal(read(xml,{photoIdentity:'fedcba9876543210'}).identity,s.identity);
+ assert.equal(read(xml.replace('00:05','00:06')).identity,s.identity);
+ assert.notEqual(read(xml.replace('Researcher','Designer')).identity,s.identity);
+ assert.notEqual(read(xml.replace('Example, 29','Example, 30')).profileDiscriminator,s.profileDiscriminator);
+ for(const cards of [footerCard(unlabeledVideoSummary(),2)+card('Queued',1),card('Queued',1)+footerCard(unlabeledVideoSummary(),2)])assert.equal(read(nativeFooterFeed(cards)).identity,s.identity);
+});
+
+test('unlabeled Bumble video requires complete unique native player and static header evidence',()=>{
+ const summary=unlabeledVideoSummary(),xml=nativeFooterFeed(footerCard(summary));
+ const badSummaries=[
+  unlabeledVideoSummary({detail:''}),unlabeledVideoSummary({age:17}),
+  summary.replace('encountersGridItem_summaryContainer','encountersGridItem_photoContainer'),
+  summary.replace('videoView_videoContainer','unknownPlayer'),
+  summary.replace('class="android.widget.FrameLayout"','class="android.view.View"'),
+  summary.replace('resource-id="com.bumble.app:id/videoView_videoContainer"','resource-id="com.bumble.app:id/videoView_videoContainer" visible-to-user="false"'),
+  summary.replace('bounds="[21,231][1059,2162]" resource-id="com.bumble.app:id/videoView_videoContainer"','bounds="[21,300][1059,2162]" resource-id="com.bumble.app:id/videoView_videoContainer"'),
+  summary.replace('text="Example, 29"','text="Example, 29" visible-to-user="false"'),
+  summary.replace('text="Example, 29"','text="Example, 29" content-desc="Other, 29"'),
+  summary.replace('text="Researcher"','text="Other, 30"'),
+  summary.replace('bounds="[74,1903][379,1972]"','bounds="[74,2200][379,2269]"'),
+  summary+summary,
+ ];
+ for(const [i,content]of badSummaries.entries()){const s=read(nativeFooterFeed(footerCard(content)));assert.equal(s.identity,null,'sample '+i);assert.equal(s.controls.like,null,'sample '+i);}
+ const background=nativeFooterFeed(footerCard(summary,1)+footerCard('',2));assert.equal(read(background).identity,null);
+ assert.equal(read(xml.replace('</hierarchy>','<node package="com.android.systemui"/></hierarchy>')).kind,'blocked');
+});
+
+test('Bumble viewport-clipped voting row permits another scroll while its ordinary targets cross the viewport edge',()=>{
+ const clipped=votingFooter.replace('[21,1587][1059,2086]','[21,1700][1059,2162]').replace('[21,1587][1059,2086]','[21,1700][1059,2199]').replace('[53,1587][1027,2086]','[53,1700][1027,2199]').replaceAll('[95,1876][284,2065]','[95,1989][284,2178]').replaceAll('[422,1692][658,1928]','[422,1805][658,2041]').replaceAll('[796,1876][985,2065]','[796,1989][985,2178]');
+ const readFooter=content=>read(nativeFooterFeed(footerCard(content)));
+ const s=readFooter(clipped);
+ assert.equal(s.kind,'profile');assert.equal(s.actionStrategy,'footer');assert.ok(Object.values(s.controls).every(v=>!v));
+ for(const changed of [
+  clipped.replace('Send SuperSwipe','New offer'),
+  clipped.replace('[796,1989][985,2178]','[780,1989][969,2178]'),
+  clipped.replace('[21,1700][1059,2162]','[21,1700][1059,2140]'),
+  clipped+footerNode('android.view.View','[800,2000][950,2150]','clickable="true" text="Buy"'),
+ ]) assert.equal(readFooter(changed).kind,'blocked');
+});
+
+function feedbackSheet(){
+ const text=(value,box)=>footerNode('android.widget.TextView',box,'clickable="false" text="'+value+'"');
+ const choice=(value,box,textBox)=>footerNode('android.view.View',box,'clickable="true"',text(value,textBox)+footerNode('android.widget.Button',box,'clickable="false"'));
+ const content=footerNode('android.view.View','[0,1454][63,1580]','clickable="true" content-desc="Close"')
+  +text('Enjoying Bumble?','[319,1743][761,1819]')+text('We’d love your feedback.','[307,1861][773,1917]')
+  +choice('Yes','[42,1980][1038,2106]','[507,2017][574,2070]')+choice('No','[42,2127][1038,2253]','[513,2164][567,2217]');
+ return '<hierarchy>'+footerNode('android.view.View','[0,63][1080,2337]','',footerNode('android.view.View','[0,1517][1080,2337]','',content))+'</hierarchy>';
+}
+
+test('Bumble feedback prompt exposes only the visible part of the native Close target',()=>{
+ const s=read(feedbackSheet());assert.equal(s.kind,'feedbackPrompt');assert.equal(s.identity,null);
+ assert.deepEqual(Object.entries(s.controls).filter(([,v])=>v).map(([k])=>k),['dismiss']);
+ assert.equal(s.controls.dismiss.label,'Close');assert.deepEqual(s.controls.dismiss.bounds,{x:0,y:1517,width:63,height:63});assert.ok(s.controls.dismiss.key);
+});
+
+test('Bumble feedback prompt blocks changed copy, controls, overlapping choices and ambiguous Close bounds',()=>{
+ const xml=feedbackSheet(),extra=n=>xml.replace('</hierarchy>',n+'</hierarchy>');
+ const cases=[xml.replace('Enjoying Bumble?','Enjoying Premium?'),xml.replace('We’d love your feedback.','Write a review'),xml.replace('text="Yes"','text="Continue"'),
+  xml.replace('clickable="true" content-desc="Close"','clickable="false" content-desc="Close"'),
+  xml.replace('enabled="true" bounds="[0,1454]','enabled="false" bounds="[0,1454]'),
+  xml.replace('[0,1454][63,1580]','[20,1454][83,1580]'),xml.replace('[0,1454][63,1580]','[0,1500][63,1626]'),
+  xml.replaceAll('[42,1980][1038,2106]','[0,1517][1080,2253]'),
+  xml.replace('class="android.widget.Button"','class="android.view.View"'),xml.replace('com.bumble.app','com.android.systemui'),
+  extra(footerNode('android.view.View','[0,1517][63,1580]','content-desc="Close" clickable="true"')),
+  extra(footerNode('android.view.View','[0,1517][63,1580]','clickable="true"')),extra(footerNode('android.app.Dialog','[0,1517][63,1580]')),
+ ];
+ for(const [i,bad]of cases.entries()){const s=read(bad);assert.equal(s.kind,'blocked','case '+i);assert.ok(Object.values(s.controls).every(v=>!v));}
+});
+
+test('native navigation below the Bumble viewport permits scrolling the partially visible voting row',()=>{
+ const viewportBottom=2162;
+ function positionedFooter(top) {
+  const bottom=top+499;
+  const update=(_match,x1,y1,x2,y2)=>'['+x1+','+(top+Number(y1)-1587)+']['+x2+','+(top+Number(y2)-1587)+']';
+  const moved=votingFooter.replace(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/g,update);
+  return moved.replace('[21,'+top+'][1059,'+bottom+']','[21,'+Math.max(231,top)+'][1059,'+Math.min(viewportBottom,bottom)+']');
+ }
+ const underNav=footerNode('android.view.View','[0,2183][216,2337]','clickable="true" content-desc="Profile"');
+ const nav=footerNode('android.widget.FrameLayout','[0,2183][1080,2337]','resource-id="com.bumble.app:id/mainApp_navigationTabBar"',underNav+footerNode('android.view.View','[432,2183][648,2337]','selected="true"',footerNode('android.view.View','[432,2183][648,2337]','content-desc="People"')));
+ const stockNav=footerNode('android.view.View','[432,2183][648,2337]','selected="true"',footerNode('android.view.View','[432,2183][648,2337]','content-desc="People"'));
+ const arranged=(top,bar=nav,overlay='')=>nativeFooterFeed(footerCard(positionedFooter(top)+overlay)).replace(stockNav,bar);
+ for(const top of [1836,1950,2075,2140,0,15,100]){
+  const s=read(arranged(top));assert.equal(s.kind,'profile','top '+top);assert.ok(!s.controls.profileLike&&!s.controls.profilePass,'top '+top);
+ }
+ for(const xml of [
+  arranged(1836,nav,footerNode('android.view.View','[95,2125][284,2162]','clickable="true" text="Buy"')),
+  arranged(1836,nav,footerNode('android.view.View','[95,2185][284,2285]','clickable="true" text="Buy"')),
+  arranged(1836,nav.replace('mainApp_navigationTabBar','otherContainer')),
+  arranged(1836,nav.replace('[0,2183][1080,2337]','[0,2125][1080,2337]')),
+ ]) assert.equal(read(xml).kind,'blocked');
+});
+
+test('Bumble permits scrolling when Android crops the native voting controls at the display edge',()=>{
+ const host='[21,2061][1059,2162]',outer='[21,2061][1059,2400]',inner='[53,2061][1027,2400]';
+ const cropped=votingFooter.replace('[21,1587][1059,2086]',host).replace('[21,1587][1059,2086]',outer).replace('[53,1587][1027,2086]',inner)
+  .replaceAll('[95,1876][284,2065]','[95,2350][284,2400]').replaceAll('[422,1692][658,1928]','[422,2166][658,2400]').replaceAll('[796,1876][985,2065]','[796,2350][985,2400]');
+ const readFooter=content=>read(nativeFooterFeed(footerCard(content)));
+ const likeAction=footerAction('Like','[796,2350][985,2400]');
+ const partiallyExported=[
+  cropped.replace(likeAction,''),
+  cropped.replace(likeAction,likeAction.replace('content-desc="Like"','content-desc=""')),
+  cropped.replaceAll('[796,2350][985,2400]','[796,2400][985,2400]'),
+  cropped.replace(likeAction,likeAction.replace(footerNode('android.widget.Button','[796,2350][985,2400]','clickable="false"'),'')),
+ ];
+ for(const clipped of [cropped,...partiallyExported,cropped.replace('bounds="[95,2350][284,2400]" content-desc="Not for me"','bounds="[95,2360][284,2400]" content-desc="Not for me"')]){
+  const s=readFooter(clipped);assert.equal(s.kind,'profile');assert.ok(Object.values(s.controls).every(v=>!v));
+ }
+ const fullBad=votingFooter.replaceAll('[95,1876][284,2065]','[95,1876][284,1926]').replaceAll('[796,1876][985,2065]','[796,1876][985,1926]');
+ for(const invalid of [fullBad,cropped.replace('Send SuperSwipe','Subscribe'),cropped.replace('resource-id=', 'clickable="true" resource-id='),cropped+footerNode('android.view.View','[95,2100][284,2162]','clickable="true" text="Buy"')])assert.equal(readFooter(invalid).kind,'blocked');
+});

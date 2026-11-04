@@ -18,7 +18,7 @@
       <div class="ma-context"><strong data-mobile="screen">No screen read</strong><pre data-mobile="context"></pre><p data-mobile="photo" class="ma-hint"></p></div>
       <p data-mobile="reason" role="status" aria-live="polite" class="ma-reason"></p>
       <div class="ma-actions">${button('like', 'Like selected photo', true)}${button('skip', 'Skip')}</div>
-      <p class="ma-hint">Review varies the scroll depth and selects a full photo, with up to six bounded photo-search scrolls; it does not Like or Skip. Photo contents are not analyzed by AI. Final actions require a fresh recognized screen.</p></section>
+      <p class="ma-hint">Review varies the scroll depth and selects a visible photo or a text prompt when no photo is available; it does not Like or Skip. Photo contents are not analyzed by AI. Final actions require a fresh recognized screen.</p></section>
       <form data-mobile="form" class="ma-card"><div class="ma-heading"><h3>Auto-like profiles</h3><div class="ma-actions">${button('quick', 'Quick preset')}${button('overnight', 'Overnight preset')}</div></div>
       <p data-mobile="preset-note" class="ma-hint">Presets fill the form. Save or Start applies your choices.</p>
       <div class="ma-fields">${number('maxSwipes', 'Profile limit', 1, 10000)}${number('sessionMinutes', 'Duration (minutes)', 1, 720)}${number('likeRatio', 'Like probability (0 to 1)', 0, 1, .05)}
@@ -107,7 +107,7 @@
       const context = s?.context || {}, history = Array.isArray(context.history) ? context.history.map(m => typeof m === 'string' ? m : `${m.speaker || m.role || 'Unknown speaker'}: ${m.text || m.content || ''}`).join('\n') : typeof context.history==='string'?context.history:'';
       el('context').textContent = [context.name, context.bio, history].filter(Boolean).join('\n\n');
       const photo = state.selectedPhoto;
-      el('photo').textContent = s ? photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
+      el('photo').textContent = s ? state.selectedPrompt ? 'Selected visible text prompt: ready' : photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
       el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'No profiles are available right now. We will check again automatically until the session deadline. No Likes are sent while waiting.' : s?.reason) || '';
       const progress = `${session.count || 0} / ${session.limit || field('maxSwipes').value} issued profile actions`;
       const waitingForProfiles = active && (session.phase === 'waiting for profiles' || (s?.kind === 'empty' && ['waiting', 'reviewing'].includes(session.phase)));

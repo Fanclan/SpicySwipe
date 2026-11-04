@@ -88,7 +88,7 @@ For concurrent Hinge and Bumble sessions, give each app a separate Android devic
 | Bumble Like / pass sessions | Tested | Not yet validated | Not yet validated |
 | Chrome extension for Tinder | Available in Chrome | Available in Chrome | Available in Chrome |
 
-Hinge defaults to plain Likes. AI comments and automatic openers are separate opt-ins. Bumble automation currently covers Likes and passes; Compliments and automatic messaging are not implemented. Test a short session after any dating-app update. Session counters represent actions attempted by the app, not independently confirmed unique matches or accepted Likes.
+Hinge defaults to plain Likes and can use a verified text prompt when no full photo is available. Its recognized feed-loading error retries automatically. Bumble uses the ordinary Like/pass buttons on supported native profiles and recognizes video-first cards; it returns to the main card to verify uncertain results without repeating an action. AI comments and automatic openers are separate opt-ins. Bumble automation currently covers Likes and passes; Compliments and automatic messaging are not implemented. Test a short session after any dating-app update. Session counters represent actions attempted by the app, not independently confirmed unique matches or accepted Likes.
 
 ## Build an installer
 

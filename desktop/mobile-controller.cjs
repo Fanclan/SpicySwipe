@@ -1,6 +1,7 @@
 'use strict';
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
+const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt']);
 const transientRead=new Set(['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE','ANDROID_FOREGROUND_UNAVAILABLE','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','MOBILE_SCREEN_UNAVAILABLE','MOBILE_SCREEN_CHANGED','MOBILE_REVIEW_INTERRUPTED']);
 const transientError=(message,code='MOBILE_REVIEW_INTERRUPTED')=>Object.assign(Error(message),{code});
 const delay=(ms,signal)=>new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve()};const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done()});
@@ -10,12 +11,12 @@ const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(afte
 class MobileController{
  constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
-  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.nextFeedRefreshAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
-  this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
+  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
+  this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
- snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0}}
+ snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
@@ -33,17 +34,22 @@ class MobileController{
  }
  restoreCheckpoint(saved){
   if(!saved)return;
-  if((saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
-  this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;
+  if((saved.nextFeedRetryAt!==undefined&&(!Number.isFinite(saved.nextFeedRetryAt)||saved.nextFeedRetryAt<0))||(saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
+  this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
  }
  token(){return {epoch:this.epoch,serial:this.android.serial,inputEpoch:this.android.inputEpoch,signal:this.abort.signal}}
  assert(t,valid=()=>true){if(t.epoch!==this.epoch||t.serial!==this.android.serial||t.inputEpoch!==this.android.inputEpoch||!t.serial||t.signal.aborted||!valid())throw Error('Mobile action canceled: device, screen ownership, or session changed.');}
- invalidate(reason='Mobile context changed',{stop=false}={}){this.openerArmed=false;this.epoch++;this.abort.abort();this.abort=new AbortController();this.android.cancelInput();stop?this.session.stop():this.session.pause();this.draft=null;this.selectedPhoto=null;this.reviewContext=null;this.screen=null;this.reason=reason;this.notify()}
+ invalidate(reason='Mobile context changed',{stop=false}={}){this.openerArmed=false;this.epoch++;this.abort.abort();this.abort=new AbortController();this.android.cancelInput();stop?this.session.stop():this.session.pause();this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.reviewContext=null;this.screen=null;this.reason=reason;this.notify()}
  drain(){return this.queue.catch(()=>{})}
  enqueue(fn,session=false){const t=this.token();const job=this.queue.then(async()=>{this.assert(t);this.busy=true;this.notify();let result;try{result=await fn(t)}finally{this.busy=false;this.notify()}return session?result:this.snapshot()});this.queue=job.catch(()=>{});return job}
  async refreshEmpty(s,t,valid){
   this.assert(t,valid);if(s.kind!=='empty')return s;
+  return this.refreshKnownFeed(s,t,valid);
+ }
+ async refreshKnownFeed(s,t,valid){
+  this.assert(t,valid);
+  if(s.kind!=='empty'&&!this.resumableLike(s))throw transientError('Cannot reopen the feed from this screen.');
   if(this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
   await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
@@ -59,14 +65,36 @@ class MobileController{
   }
   return s;
  }
+ async retryFeed(s,t,valid){
+  this.assert(t,valid);
+  if(this.platform!=='hinge'||s.kind!=='feedError'||!s.controls.retry)throw transientError('A verified feed retry control is required.');
+  const remaining=(this.nextFeedRetryAt||0)-this.session.now();
+  if(remaining>0)return {retryAfter:remaining,phase:'waiting to reconnect'};
+  await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
+  this.nextFeedRetryAt=this.session.now()+30000;this.persist();
+  await this.tap(s,s.controls.retry,t,valid);await this.pauseFor(1000,t);this.assert(t,valid);
+  const after=await this.read(t);this.assert(t,valid);
+  this.reason=after.kind==='feedError'?'Hinge could not load profiles. Retrying automatically.':'';
+  return {retryAfter:after.kind==='feedError'?30000:1000,phase:after.kind==='feedError'?'waiting to reconnect':'checking next profile'};
+ }
+ resumableLike(s){return this.platform==='hinge'&&this.config.mode==='like'&&this.config.swipe.likeRatio===1&&s.kind==='like'&&Boolean(s.identity)&&s.composerTextVerified===true&&!s.composerText?.trim()&&Boolean(s.controls.sendLike)}
  async sessionStep(c,valid,commit,sleep,t){
   try{
    let observed=await this.read(t);this.assert(t,valid);
+   if(observed.kind==='feedError')return await this.retryFeed(observed,t,valid);
    if(this.lastAction){
     if(await this.reconcilePending(this.lastAction,t,valid)){this.reason='';this.readFailures=0;return {retryAfter:1000,phase:'checking next profile'}}
     return this.pendingWait();
    }
    if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
+   // A previous step may have rejected this form because its profile changed.
+   // Reopen Discover so every submitted Like is bound to a new verified review.
+   if(this.resumableLike(observed)){
+    const after=await this.refreshKnownFeed(observed,t,valid);this.assert(t,valid);
+    return this.resumableLike(after)
+     ? {retryAfter:Math.max(1000,this.nextFeedRefreshAt-this.session.now()),phase:'waiting to reopen Discover'}
+     : {retryAfter:1000,phase:'checking next profile'};
+   }
    const prepared=await this.review(t,sleep);this.assert(t,valid);
    await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
    this.readFailures=0;this.reason='';
@@ -146,26 +174,31 @@ class MobileController{
  }
  async pauseFor(ms,t,sleep){if(sleep){if(!await sleep(ms,'photos'))throw Error('Session stopped during profile review.')}else await this.wait(ms,t.signal);this.assert(t)}
  async dismissBumbleReminder(s,t,valid=()=>true){
-  if(!['chatReminder','promoOffer'].includes(s.kind))return s;
+  if(!dismissibleBumbleScreens.has(s.kind))return s;
   await this.tap(s,s.controls.dismiss,t,valid);await this.pauseFor(700,t);this.assert(t,valid);
   const after=await this.read(t);this.assert(t,valid);
-  if(['chatReminder','promoOffer'].includes(after.kind))throw Error('Bumble popup did not close. No further action was attempted.');
+  if(dismissibleBumbleScreens.has(after.kind))throw Error('Bumble popup did not close. No further action was attempted.');
   return after;
  }
  async reviewBumble(t,sleep){
-  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.dismissBumbleReminder(await this.read(t),t);const contexts=new Set();
-  const verify=()=>{if(s.kind!=='profile')throw transientError(s.reason||'Bumble profile review was interrupted.');contexts.add(s.context?.bio||'')};verify();
-  const move=async(direction,fraction)=>{
-   if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
+  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.dismissBumbleReminder(await this.read(t),t);const contexts=new Set();let original;
+  const verify=()=>{if(s.kind!=='profile')throw transientError(s.reason||'Bumble profile review was interrupted.');if(original&&((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator)))throw transientError('Bumble profile changed during review.');contexts.add(s.context?.bio||'')};verify();
+  const move=async(direction,fraction,dwell=true)=>{
+   if(dwell&&this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
    await this.android.scrollProfile({fraction,direction,duration:Math.round(300+this.random()*400)},()=>{try{this.assert(t);return true}catch{return false}});this.assert(t);await this.pauseFor(450,t,sleep);s=await this.read(t);verify();
   };
   // A session may begin halfway down a profile. Return to its main photo first.
-  for(let i=0;!s.controls.like&&i<8;i++)await move('down',.65);
+  for(let i=0;!s.controls.like&&i<24;i++)await move('down',.65,false);
   this.supported(s,['profile']);if(!s.controls.like)throw transientError("Could not verify Bumble’s main profile photo.");
-  const original=s;
+  original=s;
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move('up',this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
-  for(let i=0;!s.controls.like&&i<8;i++)await move('down',.65);
+  // Session review and voting share one serialized device operation. Recheck
+  // its last observed screen before continuing toward the ordinary voting row.
+  if(sleep&&original.actionStrategy==='footer'&&s.actionStrategy==='footer'){
+   return {...original,reviewEndpoint:s};
+  }
+  for(let i=0;!s.controls.like&&i<24;i++)await move('down',.65,false);
   if(!s.controls.like||s.identity!==original.identity)throw transientError("Bumble profile changed during review. Nothing was swiped.");
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name:s.name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  }
@@ -176,7 +209,15 @@ class MobileController{
   await this.verifyBinding(t);this.assert(t,valid);
   // Observe the stalled original card again. No swipe, Like, or message is retried.
   const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||(this.platform==='bumble'&&distinctBumbleProfile(original,observed)))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
-  const current=await this.read(t);this.assert(t,valid);
+  let current=await this.read(t);this.assert(t,valid);
+  if(this.platform==='bumble')current=await this.dismissBumbleReminder(current,t,valid);
+  // A footer has no name/photo. Recover observation by scrolling only, retaining
+  // the durable action guard until two main-card observations prove transition.
+  if(this.platform==='bumble')for(let i=0;current.kind==='profile'&&current.actionStrategy==='footer'&&!current.identity&&i<24;i++){
+   await this.fresh(current,t,valid);this.assert(t,valid);
+   await this.android.scrollProfile({fraction:.65,direction:'down',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
+   await this.pauseFor(450,t);this.assert(t,valid);current=await this.read(t);this.assert(t,valid);
+  }
   const late=changeKey(current);
   if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;this.lastAction=null;this.persist();return true;}
   if(!this.android.refreshFeed||this.session.now()<(this.nextFeedRefreshAt||0))return false;
@@ -199,6 +240,21 @@ class MobileController{
   }
   return false;
  }
+ async footerBumble(kind,original,t,valid,commit){
+  if(this.config.mode!=='like')throw Error('Choose plain Likes for Bumble.');
+  let s=await this.fresh(original.reviewEndpoint||original,t,valid);const key=kind==='like'?'profileLike':'profilePass';
+  for(let i=0;!s.controls?.[key]&&i<24;i++){
+   this.assert(t,valid);await this.android.scrollProfile({fraction:.65,direction:'up',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
+   await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+   if(s.kind!=='profile'||s.actionStrategy!=='footer')throw transientError('Bumble footer review was interrupted.');
+   if((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator))throw transientError('Bumble profile changed during footer review.');
+  }
+  if(!s.controls?.[key])throw transientError('Bumble ordinary Like footer was not reached within the review limit.');
+  s=await this.fresh(s,t,valid);this.assert(t,valid);
+  this.reserveAction({identity:original.identity,name:original.name,profileDiscriminator:original.profileDiscriminator||null});
+  let issued=false;try{await this.finalTap(s.controls[key],t,valid,()=>{issued=true},kind);this.assert(t,valid);await this.transition(original,t,valid)}finally{if(issued)commit()}
+  return this.snapshot();
+ }
  async swipeBumble(kind,s,t,valid,commit){
   if(this.config.mode!=='like')throw Error('Bumble Compliment/comment automation is not verified. Choose plain Likes.');
   this.supported(s,['profile']);const control=kind==='like'?s.controls.like:s.controls.skip,direction=kind==='like'?'right':'left';
@@ -215,7 +271,7 @@ class MobileController{
     let stable=0,retrySafe=true,candidate=null,candidateReads=0;
     for(let i=0;i<5;i++){
      await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
-     if(['chatReminder','promoOffer'].includes(after.kind)){
+     if(dismissibleBumbleScreens.has(after.kind)){
       retrySafe=false;if(reminderDismissed)throw Error('Bumble popup reappeared. No further action was attempted.');
       reminderDismissed=true;after=await this.dismissBumbleReminder(after,t,valid);
      }
@@ -253,7 +309,7 @@ class MobileController{
  }
  async review(t,sleep){
   if(this.platform==='bumble')return this.reviewBumble(t,sleep);
-  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.identifyProfile(await this.read(t),t);this.supported(s,['profile']);
+  this.reviewContext=null;this.selectedPhoto=null;this.selectedPrompt=null;await this.load(t);let s=await this.identifyProfile(await this.read(t),t);this.supported(s,['profile']);
   const name=s.name,contexts=new Set([s.context?.bio||'']);
   const move=async (fraction,direction='up')=>{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
@@ -265,29 +321,32 @@ class MobileController{
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move(this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
   // Random depth selects a different part of the profile; small bounded adjustments expose a full photo.
-  let candidates=(s.photos||[]).filter(p=>p.like);
+  const targets=()=>{const photos=(s.photos||[]).filter(p=>p.like);return photos.length?photos:(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}))};
+  let candidates=targets();
   let direction='up';
   const reveal=()=>s.photos?.find(p=>['up','down'].includes(p.revealDirection))?.revealDirection;
-  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,reveal()||direction);candidates=(s.photos||[]).filter(p=>p.like);if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
+  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,reveal()||direction);candidates=targets();if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
   // Reaching a photo at the search boundary still permits two small alignment moves.
-  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<2&&reveal();i++){await move(.2,reveal());candidates=(s.photos||[]).filter(p=>p.like);}
+  for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<2&&reveal();i++){await move(.2,reveal());candidates=targets();}
   // Videos can keep the screen revision changing at the bottom of a profile.
   // Once forward search is exhausted, return toward earlier photos with a fixed budget.
   const returnToPhotos=!s.photos?.length;
   for(let i=0;!candidates.length&&returnToPhotos&&this.config.swipe.scrollProfile&&i<10;i++){
    await move(reveal() ? .2 : .6,reveal()||'down');
-   candidates=(s.photos||[]).filter(p=>p.like);
+   candidates=targets();
   }
   if(!candidates.length)throw transientError("No fully visible photo found within the review limit. Scroll manually and read again.");
-  this.selectedPhoto=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];
+  const selected=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];this.selectedPhoto=selected.type==='prompt'?null:selected;this.selectedPrompt=selected.type==='prompt'?selected:null;
   this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  } async record(kind){await this.service.request('record',{kind,detail:this.platform==='hinge'?'Hinge desktop':'Bumble desktop'})}
  async transition(before,t,valid=()=>true,allowOffer=false){
-  let offerHandled=false,evidenceChecked=false,last;
+  let offerHandled=false,evidenceChecked=false,last,candidate=null,candidateReads=0;
   for(let i=0;i<(allowOffer?6:3);i++){
    await this.wait(700,t.signal);this.assert(t,valid);let after=await this.read(t);this.assert(t,valid);
    if(!evidenceChecked&&after.kind==='profile'&&!after.identity&&after.name&&after.name!==before.name){evidenceChecked=true;after=await this.identifyProfile(after,t,valid);}
+   if(this.platform==='bumble'&&dismissibleBumbleScreens.has(after.kind))after=await this.dismissBumbleReminder(after,t,valid);
    last=after;
+   if(this.platform==='bumble'&&distinctBumbleProfile(before,after)){const key=JSON.stringify([after.identity,after.profileDiscriminator]);candidateReads=key===candidate?candidateReads+1:1;candidate=key;if(candidateReads>=2){this.lastAction=null;return}}else{candidate=null;candidateReads=0}
    if(after.kind==='empty'){this.lastAction=null;return}
    if(after.kind==='likeOffer'&&allowOffer&&!offerHandled){
     offerHandled=true;if(this.lastAction){this.lastAction.offerKey=after.screenKey;this.persist();}
@@ -315,7 +374,7 @@ class MobileController{
    // A late transition must be independently re-read before releasing its guard.
    s=await this.fresh(s,t,valid);if(!distinctBumbleProfile(this.lastAction,s))throw Error('Profile evidence changed; the previous action remains uncertain.');this.lastAction=null;
   }
-  if(this.platform==='bumble')return this.swipeBumble(kind,s,t,valid,commit);
+  if(this.platform==='bumble')return s.actionStrategy==='footer'?this.footerBumble(kind,s,t,valid,commit):this.swipeBumble(kind,s,t,valid,commit);
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;
   if(kind==='pass'){
@@ -323,7 +382,7 @@ class MobileController{
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
   if(s.kind==='profile'){
-   const photo=this.selectedPhoto&&s.photos.find(p=>p.key===this.selectedPhoto.key)||s.photos?.filter(p=>p.like)[Math.floor(this.random()*(s.photos?.filter(p=>p.like).length||1))];
+   const photo=this.selectedPhoto&&s.photos.find(p=>p.key===this.selectedPhoto.key)||s.photos?.filter(p=>p.like)[Math.floor(this.random()*(s.photos?.filter(p=>p.like).length||1))]||s.prompts?.filter(p=>p.like).find(p=>p.key===this.selectedPrompt?.key)||s.prompts?.find(p=>p.like);
    if(!photo?.like)throw Error('No supported fully visible photo. Scroll or review again before liking.');this.selectedPhoto=photo;
    await this.tap(s,photo.like,t,valid);await this.pauseFor(900,t);s=await this.read(t);
    // Native keyboard/form animation can briefly expose conflicting background controls.
@@ -331,8 +390,9 @@ class MobileController{
    if(s.kind==='blocked'&&s.reason==='An unfamiliar Like control requires user attention.'){await this.pauseFor(750,t);this.assert(t,valid);s=await this.read(t);}
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
+   const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
    const samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
-   if(s.name!==original.name||(s.identity!==original.identity&&!samePhoto))throw transientError("Could not verify the selected profile/photo in the Like confirmation.");
+   if(s.name!==original.name||(photo.text?!samePrompt:(s.identity!==original.identity&&!samePhoto)))throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
   }
   if(s.composerTextVerified===false)throw Error('The comment field cannot be verified. Nothing was sent.');
   if(s.composerText?.trim())throw Error('An existing comment is present. Review or clear it manually first.');
@@ -378,7 +438,7 @@ class MobileController{
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
    if(action==='config'){if(this.session.status==='running')throw Error('Pause the session before editing its settings.');const next=Config.normalize(data,this.config);this.assert(t);await this.service.request('save',{mobileConfig:{[this.platform]:next}});this.assert(t);this.config=next;this.openerArmed=next.autoOpeners===true;return this.snapshot()}
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(s.kind!=='empty'){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!this.resumableLike(s)){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }

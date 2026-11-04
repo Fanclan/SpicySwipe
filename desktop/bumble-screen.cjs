@@ -18,6 +18,42 @@ module.exports=function readBumble(xml,options,h){
    result.kind='chatReminder';result.controls.dismiss=control(close[0],true);return result;
   }
  }
+ const feedbackTitle = find('Enjoying Bumble?');
+ const feedbackBody = find('We’d love your feedback.');
+ if (feedbackTitle.length || feedbackBody.length) {
+  const yes = find('Yes'), no = find('No');
+  const invalid = () => block('The Bumble feedback prompt requires attention.');
+  if (![feedbackTitle, feedbackBody, yes, no, close].every(matches => matches.length === 1)) return invalid();
+  const heading = feedbackTitle[0], body = feedbackBody[0], dismiss = close[0], sheet = dismiss.parent;
+  const allowedLabels = new Set([heading, body, yes[0], no[0], dismiss]);
+  const choices = [yes[0].parent, no[0].parent];
+  const allowedClicks = new Set([dismiss, ...choices]);
+  const allowedButtons = new Set();
+  if (sheet?.a.class !== 'android.view.View' || !fullyVisible(sheet) || heading.parent !== sheet || body.parent !== sheet) return invalid();
+  if (![heading, body, yes[0], no[0]].every(n => n.a.class === 'android.widget.TextView' && n.a.text === label(n) && !n.a['content-desc'] && n.a.clickable === 'false' && n.enabled && fullyVisible(n))) return invalid();
+  for (const choice of choices) {
+   if (choice?.parent !== sheet || choice.a.class !== 'android.view.View' || choice.a.clickable !== 'true' || !choice.enabled || !fullyVisible(choice)) return invalid();
+   const children = visible.filter(n => n.parent === choice);
+   const native = children.find(n => n.a.class === 'android.widget.Button');
+   if (children.length !== 2 || !native || label(native) || native.a.clickable !== 'false' || !native.enabled || !fullyVisible(native) || native.a.bounds !== choice.a.bounds) return invalid();
+   allowedButtons.add(native);
+  }
+  if (visible.some(n => (label(n) && !allowedLabels.has(n)) || (n.a.clickable === 'true' && !allowedClicks.has(n)) ||
+      (n.a.class === 'android.widget.Button' && !allowedButtons.has(n)) || /(?:EditText|Dialog|PopupWindow)$/.test(n.a.class || ''))) return invalid();
+
+  // The hit area straddles the sheet's top-left corner. Only the lower half
+  // belongs to the visible sheet and is safe to use as the dismissal target.
+  const corner = bounds(dismiss), frame = bounds(sheet);
+  if (dismiss.a.class !== 'android.view.View' || dismiss.a['content-desc'] !== 'Close' || dismiss.a.text || dismiss.a.clickable !== 'true' || !dismiss.enabled || !corner ||
+      corner.x !== frame.x || corner.height !== 2 * corner.width || corner.y + corner.width !== frame.y || corner.width > frame.width / 8) return invalid();
+  const [titleBox, bodyBox, yesBox, noBox] = [heading, body, ...choices].map(bounds);
+  if (corner.y + corner.height > titleBox.y || titleBox.y + titleBox.height > bodyBox.y || bodyBox.y + bodyBox.height > yesBox.y ||
+      yesBox.y + yesBox.height > noBox.y || yesBox.x !== noBox.x || yesBox.width !== noBox.width || yesBox.height !== noBox.height) return invalid();
+  const target = { x: corner.x, y: frame.y, width: corner.width, height: corner.width };
+  result.kind = 'feedbackPrompt';
+  result.controls.dismiss = { label: 'Close', bounds: target, key: hash(['bumble-feedback-close', target]) };
+  return result;
+ }
  // Observed native SuperSwipe offer. Only Close is exposed; purchase stays inaccessible.
  const offerTitle=find('50% off 15 SuperSwipes'),offerBody=find('Really like someone? Send a SuperSwipe and you’re sure to be seen'),price=find('Normal price $34.99'),buy=find('Only $17.49'),terms=find('Terms and Conditions'),timer=visible.filter(n=>/^Offer ends in \d{1,2}:[0-5]\d$/.test(label(n)));
  if(close.length===1&&[offerTitle,offerBody,price,buy,terms,timer].every(a=>a.length===1)){
@@ -54,6 +90,8 @@ module.exports=function readBumble(xml,options,h){
  if(top.length!==1)return block('The visible Bumble card is ambiguous.');
  const root=top[0].root,lists=id('encountersGridProfile_list').filter(n=>within(n,root));
  if(lists.length!==1||!fullyVisible(lists[0])||!lists[0].enabled)return block('The Bumble profile card is unavailable.');
+ const nativeFooterLayout=[main[0],stack[0],root].every(n=>n.a.class==='android.widget.FrameLayout')&&lists[0].a.class==='androidx.recyclerview.widget.RecyclerView';
+ if(nativeFooterLayout)result.actionStrategy='footer';
  const cardNodes=visible.filter(n=>within(n,root));
  const media=cardNodes.filter(n=>/.[’']s main (?:photo|video)$/.test(label(n))&&bounds(n));
  if(media.length>1)return block('The main profile media is ambiguous.');
@@ -89,6 +127,97 @@ module.exports=function readBumble(xml,options,h){
   result.identity=result.name&&result.photos.length&&/^[a-f0-9]{16}$/.test(options.photoIdentity||'')?hash(['bumble-profile',result.name,options.photoIdentity]):null;
   if(!result.identity)result.reason='Return to the top of the profile to verify its main photo before swiping.';
  }
+ // The native summary video can omit its main-video accessibility label. Its
+ // complete player and sibling static facts still identify the foreground card.
+ if(!mainMedia&&nativeFooterLayout){
+  const summaries=cardNodes.filter(n=>n.a['resource-id']==='com.bumble.app:id/encountersGridItem_summaryContainer');
+  const players=cardNodes.filter(n=>n.a['resource-id']==='com.bumble.app:id/videoView_videoContainer');
+  if(summaries.length===1&&players.length===1){
+   const summary=summaries[0],player=players[0],content=player.parent?.parent?.parent,click=content?.parent,outer=click?.parent,box=bounds(lists[0]);
+   const sameBox=n=>{const b=n&&bounds(n);return b&&b.x===box.x&&b.y===box.y&&b.width===box.width&&b.height===box.height&&n.enabled&&fullyVisible(n)};
+   if(summary.a.class==='androidx.compose.ui.platform.ComposeView'&&summary.parent===lists[0]&&player.a.class==='android.widget.FrameLayout'&&player.parent?.a.class==='android.view.ViewGroup'&&content?.a.class==='android.view.View'&&click?.a.class==='android.view.View'&&click.a.clickable==='true'&&outer?.a.class==='android.view.View'&&outer.parent===summary&&[summary,outer,click,content,player.parent.parent,player.parent,player].every(sameBox)){
+    const texts=cardNodes.filter(n=>within(n,content)&&!within(n,player)&&n.a.class==='android.widget.TextView'&&n.a.text);
+    const headers=texts.filter(n=>/^.+, \d+$/.test(n.a.text)),header=headers[0],match=header&&/^(.+), ([1-9]\d{1,2})$/.exec(header.a.text),panel=header?.parent;
+    const staticText=n=>n.enabled&&fullyVisible(n)&&n.a.clickable!=='true'&&(!n.a['content-desc']||n.a['content-desc']===n.a.text);
+    if(headers.length===1&&match&&Number(match[2])>=18&&Number(match[2])<=120&&panel?.a.class==='android.view.View'&&panel.parent===content&&fullyVisible(panel)&&staticText(header)){
+     const details=texts.filter(n=>n!==header&&n.parent===panel&&staticText(n)&&label(n).length>=3&&bounds(n).y>=bounds(header).y+bounds(header).height).map(label);
+     if(details.length){
+      result.name=match[1];result.context.name=result.name;result.identity=hash(['bumble-main-video',result.name,header.a.text,[...new Set(details)].sort()]);
+      result.profileDiscriminator=hash(['bumble-static-profile',result.name,Number(match[2])]);result.reason='';
+     }
+    }
+   }
+  }
+ }
  if(result.identity){const b=bounds(lists[0]);result.controls.like={key:hash(['bumble-right',b]),bounds:b,direction:'right',label:'Swipe right to Like'};result.controls.skip={key:hash(['bumble-left',b]),bounds:b,direction:'left',label:'Swipe left to pass'};}
+ // Native voting controls are separate from main-card gesture evidence. Scrolling
+ // removes the main photo, so only the controller's verified review can bind identity.
+ const footers=id('encountersGridItem_votingContainer').filter(n=>within(n,root));
+ if(footers.length&&nativeFooterLayout){
+  if(footers.length!==1)return block('The Bumble voting footer is ambiguous.');
+  const footer=footers[0],footerNodes=cardNodes.filter(n=>within(n,footer)),labels=['Not for me','Send SuperSwipe','Like'];
+  if(footer.a.class!=='androidx.compose.ui.platform.ComposeView'||footer.parent!==lists[0]||!footer.enabled||footer.a.clickable==='true'||label(footer))return block('The Bumble voting footer is unavailable.');
+  const unavailable = () => block('The Bumble footer control bounds are not verified.');
+  const children = parent => footerNodes.filter(n => n.parent === parent);
+  const wrappers = children(footer), rows = wrappers.length === 1 ? children(wrappers[0]) : [];
+  const wrapper = wrappers[0], row = rows[0];
+  if (rows.length !== 1 || [wrapper, row].some(n => n.a.class !== 'android.view.View' || n.a.clickable === 'true' || label(n))) return unavailable();
+
+  const host = bounds(footer), outer = bounds(wrapper), inner = bounds(row), viewport = bounds(lists[0]);
+  if (!host || !outer || !inner) return unavailable();
+  const bottom = box => box.y + box.height;
+  const right = box => box.x + box.width;
+  const equalBounds = (a,b) => a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  const contains = (a,b) => b.x >= a.x && right(b) <= right(a) && b.y >= a.y && bottom(b) <= bottom(a);
+  const overlaps = (a,b) => a && b && a.x < right(b) && right(a) > b.x && a.y < bottom(b) && bottom(a) > b.y;
+  const visibleTop = Math.max(outer.y, viewport.y), visibleBottom = Math.min(bottom(outer), bottom(viewport));
+  const visibleRow = { x: outer.x, y: visibleTop, width: outer.width, height: visibleBottom - visibleTop };
+  // Classify clipping from the native containers alone. Android may truncate
+  // a child's bounds a second time at the display edge, or omit it entirely.
+  const clipped = visibleRow.height > 0 && visibleRow.height < outer.height && contains(viewport, visibleRow) &&
+   (equalBounds(host, outer) || equalBounds(host, visibleRow)) && inner.y === outer.y && inner.height === outer.height && contains(outer, inner);
+
+  const actions = new Map(), reportedBoxes = [];
+  for (const button of children(row)) {
+   const parts = children(button), box = bounds(button);
+   if (button.a.class !== 'android.view.View' || button.a.clickable !== 'true' || label(button) || parts.length > 2) return unavailable();
+   const markers = parts.filter(n => n.a.class === 'android.view.View');
+   const roles = parts.filter(n => n.a.class === 'android.widget.Button');
+   if (markers.length > 1 || roles.length > 1 || parts.length !== markers.length + roles.length ||
+       parts.some(n => children(n).length || n.a.clickable !== 'false') || roles.some(label)) return unavailable();
+   const marker = markers[0], role = roles[0], text = marker && label(marker);
+   if (text && (!labels.includes(text) || actions.has(text))) return block('An unfamiliar Bumble footer control requires attention.');
+   if (box && text !== 'Send SuperSwipe') reportedBoxes.push(box);
+   if (clipped) {
+    // Only an offscreen control may lose its semantic label. A shifted child
+    // outside its parent column is inconsistent with vertical clipping.
+    if (!text && (!box || overlaps(box, visibleRow))) return unavailable();
+    if (box && parts.some(n => { const child = bounds(n); return child && (child.x < box.x || right(child) > right(box)); })) return unavailable();
+   } else if (!text || !role || ![button, marker, role].every(n => n.enabled && fullyVisible(n)) ||
+              !equalBounds(box, bounds(marker)) || !equalBounds(box, bounds(role))) return unavailable();
+   if (text) actions.set(text, { button, box });
+  }
+
+  const bars = id('mainApp_navigationTabBar'), bar = bars.length === 1 ? bars[0] : null;
+  const verifiedBar = clipped && bar?.a.class === 'android.widget.FrameLayout' && within(bar, main[0]) &&
+   !within(bar, stack[0]) && within(people[0], bar) && fullyVisible(bar) && bounds(bar).y >= bottom(viewport);
+  const protectedAreas = clipped ? [visibleRow, ...reportedBoxes] : reportedBoxes;
+  const overlay = visible.some(n => (label(n) || n.a.clickable === 'true') &&
+   !within(n, footer) && !within(footer, n) && !entries.some(e => e.root !== root && within(n, e.root)) &&
+   !(verifiedBar && within(n, bar) && fullyVisible(n)) && protectedAreas.some(area => overlaps(bounds(n), area)));
+  if (overlay) return block('An overlay covers the Bumble voting controls.');
+  if (clipped) {
+   result.controls.like = null;
+   result.controls.skip = null;
+   return result;
+  }
+  if (!fullyVisible(footer) || actions.size !== labels.length) return unavailable();
+  const [pass, paid, like] = labels.map(text => actions.get(text));
+  const square = action => action.box.width === action.box.height;
+  if (![pass, paid, like].every(square) || pass.box.y !== like.box.y || pass.box.width !== like.box.width ||
+      right(pass.box) >= paid.box.x || right(paid.box) >= like.box.x || paid.box.y >= pass.box.y) return block('The Bumble footer voting layout is not verified.');
+  result.controls.profilePass = { ...control(pass.button, true), label: 'Not for me' };
+  result.controls.profileLike = { ...control(like.button, true), label: 'Like' };
+ }
  return result;
 };

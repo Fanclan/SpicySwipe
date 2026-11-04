@@ -3,7 +3,7 @@ const { createHash } = require('node:crypto');
 const PACKAGE = 'co.hinge.app';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const profileContentLabels = new Set(['Like','Like photo','Like prompt','Like video','Like video prompt','Like photo prompt','Unmute video','Play Voice Prompt','Like voice prompt','Show caption','Hide caption']);
-const blankControls = () => ({ skip: null, like: null, sendLike: null, comment: null, composer: null, sendMessage: null });
+const blankControls = () => ({ skip: null, like: null, sendLike: null, comment: null, composer: null, sendMessage: null, retry: null });
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 function decode(value) {
  if (/[<]/.test(value) || /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[\da-fA-F]+;)/.test(value)) throw new Error('Invalid XML attribute.');
@@ -92,7 +92,7 @@ function control(node, allowCompose = false) {
  return { key: hash([label(node), node.a['resource-id'], bounds(node)]), bounds: bounds(node), label: label(node) };
 }
 function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commentText } = {}) {
- const result = { platform, kind: 'blocked', name: '', identity: null, screenKey: null, context: { name: '', bio: '', history: '' }, photos: [], controls: blankControls(), composerText: '', composerTextVerified: false, emptyConversation: false, reason: '' };
+ const result = { platform, kind: 'blocked', name: '', identity: null, screenKey: null, context: { name: '', bio: '', history: '' }, photos: [], prompts: [], controls: blankControls(), composerText: '', composerTextVerified: false, emptyConversation: false, reason: '' };
  const block = reason => ({ ...result, kind: 'blocked', controls: blankControls(), reason });
  if(platform==='bumble')return require('./bumble-screen.cjs')(xml,{foreground,photoIdentity},{parse,bounds,fullyVisible,label,control,hash,result,block});
  if (platform !== 'hinge') return { ...result, kind: 'unsupported', reason: 'Screen reading is not verified for this platform.' };
@@ -124,6 +124,32 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const action=control(normalButton,true);if(!action)return block('The normal Like button is outside the visible sheet.');
   result.kind='likeOffer';result.identity=hash(['hinge-rose-offer',result.screenKey]);result.controls.sendLike={...action,label:'Send Like anyway'};
   result.reason='Rose offer: continue with a normal Like.';return result;
+ }
+ const errorTitle='Something went wrong',errorBody="Oops, something's gone wrong. Let's give it another try.";
+ if(find(errorTitle).length||find(errorBody).length||find('Try again').length){
+  const required=[errorTitle,errorBody,'Try again'],navigation=['Discover','Standouts','Likes You','Matches','Profile Hub'];
+  const expected=new Set([...required,...navigation]);
+  if(required.some(text=>find(text).length!==1)||visible.some(n=>(label(n)&&!expected.has(label(n)))||/EditText/.test(n.a.class||'')))return block('The Discover retry screen is not verified.');
+  const title=find(errorTitle)[0],body=find(errorBody)[0],retry=find('Try again')[0],button=retry.parent,sheet=button?.parent;
+  const inertText=n=>n.a.class==='android.widget.TextView'&&n.a.clickable==='false'&&n.enabled&&fullyVisible(n);
+  if(![title,body,retry].every(inertText)||sheet?.a.class!=='android.widget.ScrollView'||title.parent?.parent!==sheet||body.parent!==sheet||button.a.class!=='android.view.View'||button.a.clickable!=='true'||!button.enabled||!fullyVisible(button))return block('The native Discover retry control is unavailable.');
+  const children=visible.filter(n=>n.parent===button),native=children.filter(n=>n.a.class==='android.widget.Button');
+  const b=bounds(button),s=bounds(sheet),t=bounds(title),bodyBox=bounds(body),nativeBox=native.length===1&&bounds(native[0]);
+  if(children.length!==2||native.length!==1||native[0].a.clickable!=='false'||label(native[0])||!native[0].enabled||!fullyVisible(native[0])||!nativeBox||nativeBox.x!==b.x||nativeBox.y!==b.y||nativeBox.width!==b.width||Math.abs(nativeBox.height-b.height)>1||t.y+t.height>bodyBox.y||bodyBox.y+bodyBox.height>b.y)return block('The native Discover retry bounds are not verified.');
+  const discover=find('Discover'),headers=discover.filter(n=>n.a.class==='android.widget.TextView'),tabs=discover.filter(n=>n.a.class==='android.view.View');
+  if(discover.length!==2||headers.length!==1||tabs.length!==1||!inertText(headers[0])||bounds(headers[0]).y+bounds(headers[0]).height>s.y)return block('The Discover retry header is not verified.');
+  const discoverTab=tabs[0].parent,nav=discoverTab?.parent,clicks=new Set([button]);
+  let previousRight=null,navTop=null,navHeight=null;
+  for(const [index,text]of navigation.entries()){
+   const matches=index===0?tabs:find(text);
+   if(matches.length!==1)return block('The Discover retry navigation is ambiguous.');
+   const item=matches[0],tab=item.parent,box=bounds(item),tabBox=tab&&bounds(tab);
+   if(item.a.class!=='android.view.View'||item.a.clickable!=='false'||!item.enabled||!fullyVisible(item)||tab?.a.class!=='android.view.View'||tab.parent!==nav||!tab.enabled||!fullyVisible(tab)||tab.a.clickable!==(index===0?'false':'true')||(index===0?tab.a.selected!=='true':tab.a.selected==='true')||!box||!tabBox||box.x!==tabBox.x||box.y!==tabBox.y||box.width!==tabBox.width||box.height!==tabBox.height||box.y<s.y+s.height||(index>0&&(box.x!==previousRight||box.y!==navTop||box.height!==navHeight)))return block('The Discover retry navigation is not verified.');
+   previousRight=box.x+box.width;navTop=box.y;navHeight=box.height;if(index>0)clicks.add(tab);
+  }
+  if(visible.some(n=>(n.a.clickable==='true'&&!clicks.has(n))||(/Button$/.test(n.a.class||'')&&n!==native[0])))return block('An unfamiliar control covers the Discover retry screen.');
+  const action=control(button,true);if(!action)return block('The Discover retry target is unavailable.');
+  result.kind='feedError';result.controls.retry={...action,label:'Try again'};result.reason='Discover could not load. Retry is available.';return result;
  }
  const emptyTitle="You've seen everyone for now",emptyBody='Try changing your filters so more people match your criteria—or check back later!';
  if(find(emptyTitle).length){
@@ -158,6 +184,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const photoSuffix = "'s photo";
  const pictures = visible.filter(n => label(n).endsWith(photoSuffix) && clean(label(n).slice(0,-photoSuffix.length)) === result.name && n.a.class === 'android.widget.ImageView' && bounds(n));
  const prompts = [...new Set(visible.map(label).filter(text => /^Prompt: .+\. Answer: .+/.test(text)))];
+ const staticPrompts=visible.filter(n=>n.a.class==='android.view.View'&&n.enabled&&n.a.clickable==='false'&&/^Prompt: .+\. Answer: .+$/.test(label(n))&&bounds(n));
  const detailLabels = new Set(['Age', 'Gender', 'Sexuality', 'Height', 'Religion', 'Politics', 'Languages Spoken', 'Dating Intentions']);
  const details = [];
  for (const n of visible.filter(n => detailLabels.has(label(n)) && fullyVisible(n))) {
@@ -169,14 +196,20 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  result.identity = prompts.length ? hash(['hinge-profile', result.name, [...prompts].sort()]) : /^[a-f0-9]{16}$/.test(photoIdentity || '') && pictures.some(fullyVisible) ? hash(['hinge-photo', result.name, photoIdentity]) : null;
  const comment = find('Edit comment'), priority = [...find('Send priority like'),...find('Send priority like with message')], ordinary = [...find('Send like'),...find('Send like with message')];
  if (comment.length || priority.length || ordinary.length || find('Send a Rose').length) {
-  if (comment.length !== 1 || !pictures.length) return block('Unrecognized Like confirmation. Return to Discover.');
+  if (comment.length !== 1) return block('Unrecognized Like confirmation. Return to Discover.');
   const editor=bounds(comment[0]);
   const confirmation=pictures.filter(n=>{const b=bounds(n);return editor&&b.x===editor.x&&b.width===editor.width&&b.y+b.height<=editor.y;});
-  if(confirmation.length!==1)return block('The selected confirmation photo is ambiguous.');
-  const photoBounds=bounds(confirmation[0]);
+  // The observed prompt preview and comment form are siblings in one card.
+  const promptConfirmation=staticPrompts.filter(n=>{
+   const b=bounds(n),wrapper=n.parent,card=wrapper?.parent,form=comment[0].parent,w=wrapper&&bounds(wrapper),f=form&&bounds(form);
+   return fullyVisible(n)&&editor&&b.x===editor.x&&b.width===editor.width&&b.y+b.height<=editor.y&&wrapper?.a.class==='android.view.View'&&w&&w.x===b.x&&w.y===b.y&&w.width===b.width&&w.height===b.height&&card?.a.class==='android.view.View'&&card===form?.parent&&form.a.class==='android.view.View'&&f?.y===b.y+b.height;
+  });
+  if(confirmation.length+promptConfirmation.length!==1)return block('The selected confirmation content is ambiguous.');
+  if(promptConfirmation.length&&[...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')].some(n=>n.parent!==comment[0].parent))return block('The prompt Like controls must belong to its comment form.');
+  const photoBounds=confirmation.length?bounds(confirmation[0]):null;
   const photoCaptionControl=n=>{
    const b=bounds(n),p=photoBounds;
-   if(n.a.class!=='android.widget.Button'||!['Show caption','Hide caption'].includes(label(n))||!b||b.x<p.x||b.x+b.width>p.x+p.width||b.y+b.height>p.y+p.height)return false;
+   if(!p||n.a.class!=='android.widget.Button'||!['Show caption','Hide caption'].includes(label(n))||!b||b.x<p.x||b.x+b.width>p.x+p.width||b.y+b.height>p.y+p.height)return false;
    if(b.y>=p.y)return true;
    // Compose can leave the caption's bounds above the photo's clipped top edge.
    // Ignore it only inside that image's own wrapper and original square, never as a target.
@@ -192,7 +225,26 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const knownButtons=new Set(['Info','More','Send a Rose','Send a Rose with message','Send priority like','Send priority like with message','Send like','Send like with message']);
   const formBounds=[comment[0],...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')].map(bounds);
   const formBottom=formBounds.length&&formBounds.every(Boolean)?Math.max(...formBounds.map(b=>b.y+b.height)):Infinity;
-  const backgroundControl=n=>n.a.class==='android.widget.Button'&&(profileContentLabels.has(label(n))||friendTake(n))&&bounds(n)?.y>=formBottom;
+  const promptBackgroundControl=n=>{
+   if(n.a.class!=='android.widget.Button')return false;
+   const action=label(n),photoControl=['Like photo','Like photo prompt','Show caption','Hide caption'].includes(action),videoControl=['Like video','Like video prompt','Unmute video'].includes(action);
+   if(!photoControl&&!videoControl&&action!=='Like prompt')return false;
+   const selectedCard=promptConfirmation[0].parent.parent,selected=bounds(selectedCard),button=bounds(n);
+   if(!selected||!button)return false;
+   for(let card=n.parent;card;card=card.parent){
+    const b=bounds(card);
+    // Ignore only another native content card in the same feed, wholly outside the form.
+    if(card.parent!==selectedCard.parent||card.a.class!=='android.view.View'||card.parent?.a.scrollable!=='true'||!b||b.x!==selected.x||b.width!==selected.width||!(b.y+b.height<=selected.y||b.y>=selected.y+selected.height)||button.x<b.x||button.y<b.y||button.x+button.width>b.x+b.width||button.y+button.height>b.y+b.height)continue;
+    return visible.filter(content=>{
+     const owned=photoControl?pictures.includes(content):videoControl?content.a.class==='android.view.View'&&content.a.clickable==='false'&&label(content)===result.name+"'s video":staticPrompts.includes(content),box=bounds(content);
+     if(!owned||!content.enabled||!box||box.x!==b.x||box.width!==b.width||box.y<b.y||box.y+box.height>b.y+b.height)return false;
+     for(let parent=content.parent;parent;parent=parent.parent)if(parent===card)return true;
+     return false;
+    }).length===1;
+   }
+   return false;
+  };
+  const backgroundControl=n=>promptConfirmation.length?promptBackgroundControl(n):n.a.class==='android.widget.Button'&&(profileContentLabels.has(label(n))||friendTake(n))&&bounds(n)?.y>=formBottom;
   if(visible.some(n=>n.enabled && /Button$/.test(n.a.class||'') && (label(n)||n.a.clickable==='true') && !knownButtons.has(label(n)) && n!==skips[0]&&!backgroundControl(n)&&!photoCaptionControl(n)))return block('An unfamiliar Like control requires user attention.');
   result.kind = 'like'; result.controls.comment = control(comment[0], true);
   // HingeX automatically gives ordinary Likes priority. Roses are never selected.
@@ -204,6 +256,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   if(result.identity && result.composerTextVerified && final.length===1 && Boolean(commentText.trim())===label(final[0]).endsWith(' with message') && final[0].a.class==='android.widget.Button')result.controls.sendLike=control(final[0],true);
   result.reason=result.controls.sendLike?'':'Like submission requires verified comment contents and an unambiguous ordinary Like button.';
   result.photos = confirmation.map(n => ({ key: hash(['photo', label(n),bounds(n)]), bounds: bounds(n), like: null }));
+  result.prompts = promptConfirmation.map(n=>({key:hash(['prompt',label(n),bounds(n)]),text:label(n),bounds:bounds(n),like:null}));
   return result;
  }
  const allowedLabels = new Set([...profileContentLabels, 'Undo last skip', 'More', 'Selfie Verified', 'Dating Preferences']);
@@ -214,6 +267,13 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  result.photos = pictures.map(n => {
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });
   return { key: hash(['photo', label(n), b]), bounds: b, revealDirection: photoRevealDirection(n), like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
+ });
+ result.prompts=staticPrompts.map(n=>{
+  const b=bounds(n),matching=find('Like prompt').filter(button=>{
+   const p=bounds(button);
+   return p&&sharesPhotoCard(n,button)&&p.x>=b.x&&p.y>=b.y&&p.x+p.width<=b.x+b.width&&p.y+p.height<=b.y+b.height&&staticPrompts.filter(other=>sharesPhotoCard(other,button)).length===1;
+  });
+  return {key:hash(['prompt',label(n),b]),text:label(n),bounds:b,like:result.identity&&fullyVisible(n)&&matching.length===1?control(matching[0]):null};
  });
  result.controls.skip = result.identity ? control(skips[0]) : null;
  result.controls.like = result.photos.find(photo => photo.like)?.like || null;
