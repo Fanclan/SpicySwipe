@@ -1,0 +1,4 @@
+services:
+  spicyswipe:
+    ports:
+      - "${SPICYSWIPE_LAN_IP:?Set the server LAN address}:${SPICYSWIPE_PORT:-8187}:8080"

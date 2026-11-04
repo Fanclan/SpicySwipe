@@ -9,7 +9,7 @@ From this checkout, with Docker Compose installed, generate secrets once and sta
 docker compose up -d --build
 ```
 
-On your computer run `ssh -N -L 8187:127.0.0.1:8187 user@server`, then open [the workspace](http://127.0.0.1:8187). Enter the workspace password (`SPICYSWIPE_PASSWORD` in the server’s .env file). The browser stays signed in for up to 12 hours. Choose **Sign out** to lock the workspace on that browser. Restarting the service also ends browser sessions. For a domain, route an HTTPS reverse proxy to the private service port and disable buffering for /api/events. The supplied Compose mapping only listens on server loopback.
+On your computer run `ssh -N -L 8187:127.0.0.1:8187 user@server`, then open [the workspace](http://127.0.0.1:8187). Enter the workspace password (`SPICYSWIPE_PASSWORD` in the server’s .env file). The browser stays signed in for up to 12 hours. Choose **Sign out** to lock the workspace on that browser. Restarting the service also ends browser sessions. For a domain, route an HTTPS reverse proxy to the private service port and disable buffering for /api/events. The base Compose file listens on server loopback. To also serve devices on your LAN, set `SPICYSWIPE_LAN_IP` to the server’s LAN IPv4 address and `COMPOSE_FILE=compose.yaml:compose.lan.yaml` in .env, then run `docker compose up -d`. On the same network, open `http://<server-LAN-IP>:8187`. This direct connection uses HTTP.
 
 Use **Show Tinder** to sign in to the server's browser. Click the Tinder image to tap, type, paste, or scroll. Location requests default to denied. Sign-in methods requiring a local hardware device, camera or passkey need separate validation.
 
