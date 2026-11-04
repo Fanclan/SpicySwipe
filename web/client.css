@@ -1,0 +1,3 @@
+#tinder-frame img { display:block; width:100%; height:auto; cursor:pointer; }
+#tinder-frame {overflow:auto}
+#popout-device, #sdk-folder { display:none }

@@ -58,6 +58,8 @@ Installers do not require Node.js. They are **unsigned previews**; Mac builds ar
 
 ## Quick start
 
+For a browser workspace hosted on your own server, follow the [Docker Compose setup](docs/WEB.md).
+
 Install [Git](https://git-scm.com/downloads) and [Node.js 24 LTS](https://nodejs.org/en/download) (24.15.0+; Node 22.22.2+ on the 22.x line is also supported), then run:
 
 ```sh

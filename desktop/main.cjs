@@ -18,6 +18,8 @@ function mobileSession(platform){if(!Object.hasOwn(dedicatedAvds,platform))throw
 const uiURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 let locationPermission;
 let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
+const webMode = process.env.SPICYSWIPE_WEB === '1';
+let webServer, loginPopup, webVisible = false;
 const pending = new Map();
 let androidPreferences={},androidPreferenceWrites=Promise.resolve();
 async function persistAndroid(patch,platform){
@@ -40,10 +42,10 @@ function getMobile(platform=activePlatform){
  }
  return mobileControllers.get(platform);
 }
-const send = (type,data) => { if (window && !window.isDestroyed()) window.webContents.send('desktop:event',{type,data}); };
+const send = (type,data) => { webServer?.emit({type,data}); if (window && !window.isDestroyed()) window.webContents.send('desktop:event',{type,data}); };
 function trusted(event) { return window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame && P.isTrustedUI(event.senderFrame.url,uiURL); }
 function trustedTinder(event) { return tinder && !tinder.webContents.isDestroyed() && event.sender === tinder.webContents && event.senderFrame === event.sender.mainFrame && P.isTinderURL(event.senderFrame.url); }
-function tinderSettings(data) { return {...data,desktopActive:true,desktopHost:true,desktopVisible:!!window&&!window.isMinimized?.()&&window.isVisible?.()!==false}; }
+function tinderSettings(data) { return {...data,desktopActive:true,desktopHost:true,desktopVisible:webMode ? webVisible : !!window&&!window.isMinimized?.()&&window.isVisible?.()!==false}; }
 function cancelPending() { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('Tinder navigated or closed. Refresh its context before continuing.')); } pending.clear(); }
 function page(action,data) {
   if (!['context','insert','send','start','pause','stop','discover','dismissDraft'].includes(action)) return Promise.reject(Error('Unknown page action.'));
@@ -63,7 +65,10 @@ function guardNavigation(contents, local = false) {
     if (local && /^https:\/\//.test(url)) shell.openExternal(url).catch(()=>{});
     return {action:'deny'};
   });
-  contents.on('did-create-window', child => guardNavigation(child.webContents));
+  contents.on('did-create-window', child => {
+    guardNavigation(child.webContents);
+    if(webMode && !local) loginPopup = child;
+  });
 }
 function ensureTinder() {
   if (tinder && !tinder.webContents.isDestroyed()) return;
@@ -212,25 +217,48 @@ async function createWindow() {
   for(const event of ['minimize','hide'])window.on(event,()=>{if(tinder)service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',{...tinderSettings(settings),desktopVisible:false}));for(const c of mobileControllers.values())c.request('visibility',{visible:false});});
   for(const event of ['restore','show'])window.on(event,()=>{if(tinder)service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',{...tinderSettings(settings),desktopVisible:true}));for(const c of mobileControllers.values())c.request('visibility',{visible:true});});
   window.on('closed',()=>{invalidateMobile('Workspace closed.');closeAndroidWindow();cancelPending();if(tinder&&!tinder.webContents.isDestroyed())tinder.webContents.close();tinder=null;window=null;});
+  if(webMode){window.show();return;}
   await window.loadFile(path.join(__dirname,'index.html'));
 }
 if(!app.requestSingleInstanceLock())app.quit();
 else {
  app.on('second-instance',()=>{if(window){if(window.isMinimized())window.restore();window.focus();}});
  app.whenReady().then(async()=>{
-  service = new Service({file:path.join(app.getPath('userData'),'settings.json'),safeStorage,fetchImpl:(input,init)=>net.fetch(input,{...init,credentials:'omit',bypassCustomProtocolHandlers:true}),onChange:data=>{send('settings',data);if(tinder&&!tinder.webContents.isDestroyed()&&P.isTinderURL(tinder.webContents.getURL()))tinder.webContents.send('tinder:settings',tinderSettings(data));}});
+  service = new Service({file:path.join(app.getPath('userData'),'settings.json'),safeStorage:webMode ? require('../web/server.cjs').credentialStore(process.env.SPICYSWIPE_STORAGE_KEY) : safeStorage,fetchImpl:(input,init)=>net.fetch(input,{...init,credentials:'omit',bypassCustomProtocolHandlers:true}),onChange:data=>{send('settings',data);if(tinder&&!tinder.webContents.isDestroyed()&&P.isTinderURL(tinder.webContents.getURL()))tinder.webContents.send('tinder:settings',tinderSettings(data));}});
   let androidConfig={};try{androidConfig=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'android.json'),'utf8'));}catch{}
   androidPreferences={...(typeof androidConfig.sdkRoot==='string'?{sdkRoot:androidConfig.sdkRoot}:{}),...(typeof androidConfig.preferredSerial==='string'?{preferredSerial:androidConfig.preferredSerial}:{}),...(typeof androidConfig.preferredAvd==='string'?{preferredAvd:androidConfig.preferredAvd}:{})};
   androidPreferences.platforms=androidConfig.platforms||{hinge:{preferredSerial:androidConfig.preferredSerial,preferredAvd:androidConfig.preferredAvd}};
   locationPermission=new LocationPermission({file:path.join(app.getPath('userData'),'location-permission.json'),fsImpl:fs,getContents:()=>tinder?.webContents,
-   prompt:async()=>{const result=await dialog.showMessageBox(window,{type:'question',title:'Tinder location access',message:'Allow Tinder to use your location?',detail:'Tinder uses your device location to show nearby profiles. SpicySwipe will remember your approval. You can turn access off in the Privacy menu.',buttons:['Not now','Allow location'],defaultId:0,cancelId:0});return result.response===1;},
+   prompt:async()=>{if(webMode)return false;const result=await dialog.showMessageBox(window,{type:'question',title:'Tinder location access',message:'Allow Tinder to use your location?',detail:'Tinder uses your device location to show nearby profiles. SpicySwipe will remember your approval. You can turn access off in the Privacy menu.',buttons:['Not now','Allow location'],defaultId:0,cancelId:0});return result.response===1;},
    onChange:allowed=>{const item=Menu.getApplicationMenu()?.getMenuItemById('tinder-location');if(item)item.checked=allowed;},
    onError:error=>dialog.showErrorBox('Location permission could not be saved',error.message)
   });
   await locationPermission.load();
   Menu.setApplicationMenu(Menu.buildFromTemplate([...(process.platform==='darwin'?[{label:'SpicySwipe',submenu:[{role:'about'},{type:'separator'},{role:'hide'},{role:'quit'}]}]:[]),{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Privacy',submenu:[{id:'tinder-location',label:'Allow Tinder location',type:'checkbox',checked:locationPermission.allowed,click:async item=>{const revoking=!item.checked;try{await locationPermission.setAllowed(item.checked);}catch(error){item.checked=locationPermission.allowed;dialog.showErrorBox('Location permission could not be saved',error.message+' Your change may not survive restarting SpicySwipe.');}finally{if(revoking&&tinder&&!tinder.webContents.isDestroyed())tinder.webContents.reload();}}}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{role:'close'}]}]));
-  await createWindow();scheduleMobileWatch();
- }).catch(error=>{dialog.showErrorBox('SpicySwipe could not start',error.message);app.quit();});
+  await createWindow();
+  if(webMode){
+    webServer = await require('../web/server.cjs').start({password:process.env.SPICYSWIPE_PASSWORD,onPresence:visible=>{
+      webVisible=visible;
+      if(!visible)for(const c of mobileControllers.values())c.request('visibility',{visible:false}).catch(()=>{});
+      if(tinder&&!tinder.webContents.isDestroyed())service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',tinderSettings(settings))).catch(()=>{});
+    },request:async(action,data)=>{
+      if(['android:sdk','android:docs','android:popout','android:dock'].includes(action))throw Error('This action requires a desktop window.');
+      if(action==='web:frame'||action==='web:input'){
+        const target=loginPopup && !loginPopup.isDestroyed()?loginPopup.webContents:tinder?.webContents;
+        return require('../web/tinder.cjs')(action,data,target);
+      }
+      if(action==='web:visibility'){
+        webVisible=data.visible===true;
+        if(tinder&&!tinder.webContents.isDestroyed())tinder.webContents.send('tinder:settings',tinderSettings(await service.request('load')));
+        return {ok:true};
+      }
+      if(action==='bounds')data={...data,x:0,y:0,width:Math.max(360,Math.min(1000,data.width||600)),height:780};
+      if(action==='android:status' && data.platform==='tinder')data={...data,platform:'hinge'};
+      return dispatch(action,data);
+    }});
+  }
+  scheduleMobileWatch();
+ }).catch(error=>{if(webMode){console.error(error.message);app.exit(1);}else{dialog.showErrorBox('SpicySwipe could not start',error.message);app.quit();}});
  app.on('activate',()=>{if(!window&&service)createWindow();});
  app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
  app.on('before-quit',()=>{quitting=true;clearTimeout(mobileWatchTimer);invalidateMobile('Application closed.');for(const state of mobileSessions.values())state.device.dispose();});
