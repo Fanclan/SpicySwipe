@@ -1,3 +1,315 @@
-#tinder-frame img { display:block; width:100%; height:auto; cursor:pointer; }
-#tinder-frame {overflow:auto}
-#popout-device, #sdk-folder { display:none }
+/* Loaded only by the web shell. The shared desktop/extension components use the
+   tokens on .ss-app; the browser chrome and Android panels use the same palette. */
+:root {
+  --paper: #f7f3ee;
+  --card: #fffcf8;
+  --ink-web: #32232e;
+  --quiet: #6f6269;
+  --line: #dfd5cf;
+  --wash: #eee5df;
+  --spice: #a34231;
+  --blush: #f8e4d9;
+  --leaf: #e8eee4;
+  --display: Georgia, 'Times New Roman', serif;
+  --interface: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, 'Liberation Sans', sans-serif;
+  font-family: var(--interface);
+  background: var(--paper);
+  color: var(--ink-web);
+}
+
+:root:has(.ss-app[data-theme=dark]) {
+  --paper: #221c22;
+  --card: #2c242b;
+  --ink-web: #f8efe8;
+  --quiet: #c5b4ba;
+  --line: #4d4149;
+  --wash: #3c3039;
+  --spice: #ffa38a;
+  --blush: #4b3231;
+  --leaf: #333d35;
+  color-scheme: dark;
+}
+
+#workspace .ss-app {
+  --bg: var(--paper);
+  --surface: var(--card);
+  --ink: var(--ink-web);
+  --muted: var(--quiet);
+  --border: var(--line);
+  --accent: var(--spice);
+  --accent-strong: var(--spice);
+  --peach: var(--blush);
+  --soft: var(--wash);
+  --sage: var(--leaf);
+  --shadow: 0 3px 14px #371c2907;
+  --radius: 17px;
+  font-family: var(--interface);
+}
+body { background: var(--paper); }
+body :focus-visible { outline: 3px solid var(--spice); outline-offset: 3px; }
+body button:disabled { cursor: not-allowed; }
+body :where(input, textarea, select, progress) { accent-color: var(--spice); }
+::selection { background: #eea087; color: #2e2027; }
+
+/* One product masthead, then platform and workspace navigation. */
+.desktop-bar {
+  min-height: 72px; height: auto; padding: 12px clamp(16px, 2.5vw, 42px);
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px;
+  color: var(--ink-web); border-color: var(--line); background: var(--card);
+}
+.desktop-brand { gap: 9px; }
+.desktop-brand img { width: 31px; height: 31px; }
+.desktop-brand strong {
+  font: 700 28px/.95 var(--display); letter-spacing: -1.6px;
+}
+.desktop-brand strong span { font-weight: 400; font-style: italic; }
+.desktop-label {
+  color: var(--quiet); background: transparent; border: 1px solid var(--line);
+  padding: 4px 7px; border-radius: 100px; font-size: 9px; letter-spacing: .1em;
+}
+.platforms {
+  background: var(--wash); padding: 4px; border: 1px solid var(--line);
+  border-radius: 100px; gap: 2px;
+}
+.platforms button {
+  min-width: 80px; min-height: 35px; padding: 7px 13px; font-size: 12px;
+  border-radius: 100px; color: var(--quiet);
+}
+.platforms button:hover { background: var(--card); color: var(--ink-web); }
+.platforms button[aria-pressed=true] {
+  background: #392735; color: #fff7f1; border-color: #392735; box-shadow: none;
+}
+body:has(.ss-app[data-theme=dark]) .platforms button[aria-pressed=true] {
+  background: #f7ddcc; color: #382732; border-color: #f7ddcc;
+}
+.platforms button[data-status=idle]::after { display: none; }
+.platforms button[data-status=running]::after { color: inherit; text-decoration: underline; }
+.platform-dot { background: #ef896f; }
+.desktop-actions { justify-self: end; gap: 5px; }
+.desktop-actions button, .mode-bar button {
+  padding: 8px 10px; background: transparent; border: 1px solid transparent;
+  color: var(--ink-web); font: 600 12px/1.25 var(--interface);
+}
+.desktop-actions button:hover, .mode-bar button:hover { background: var(--wash); }
+.desktop-actions #sign-out { border-color: var(--line); }
+#machine-label { display: none; }
+.mode-bar {
+  height: 43px; padding: 0 clamp(16px, 2.5vw, 42px); gap: 8px;
+  background: var(--paper); color: var(--quiet); border-bottom: 1px solid var(--line);
+}
+.mode-bar button { font-size: 11px; padding: 6px 8px; }
+#tinder-layout { height: calc(100dvh - 115px); }
+#tinder-frame { overflow: auto; min-width: min(390px, 42%); background: var(--wash); border-color: var(--line); }
+#tinder-frame img { display: block; width: 100%; height: auto; cursor: pointer; }
+#workspace .topbar { height: 48px; background: var(--card); border-color: var(--line); }
+#workspace .top-actions .avatar { display: none; }
+#workspace .nav-rail { background: var(--card); }
+#workspace .nav-rail .brand { display: none; }
+#workspace .nav-label { margin-top: 0; color: var(--spice); }
+#workspace .nav-item { min-height: 42px; color: var(--quiet); }
+#workspace .nav-item.selected { color: var(--ink); background: var(--blush); }
+#workspace .nav-item.selected .icon { color: var(--spice); }
+#workspace .main { width: 100%; }
+#workspace .page-heading h1, .mobile-heading h1 {
+  font: 500 clamp(30px, 3vw, 44px)/1.08 var(--display); letter-spacing: -.045em;
+}
+#workspace .page-heading p, #workspace .hero p, #workspace .workflow-card p {
+  font-size: 13px; line-height: 1.6;
+}
+.eyebrow, #workspace .eyebrow { color: var(--spice); letter-spacing: .14em; }
+#workspace .btn.primary, body .primary {
+  background: #a34231; color: #fffaf6; border-color: #a34231; box-shadow: none;
+}
+#workspace .btn.primary:hover, body .primary:hover { background: #843224; border-color: #843224; }
+#workspace .btn { white-space: normal; }
+
+/* A dark illustration plate anchors the overview; its rings echo the sign-in art. */
+#workspace .hero {
+  background: #392735; border: 1px solid #543843; color: #fff4e9;
+  padding: clamp(25px, 3vw, 42px); isolation: isolate; align-items: center;
+}
+#workspace .hero-copy { padding: 0; }
+#workspace .hero-tag { color: #efb7a2; font-size: 9px; }
+#workspace .hero h2 { font: 400 clamp(36px, 3.6vw, 54px)/1 var(--display); letter-spacing: -.055em; }
+#workspace .hero h2 em { color: #ffae91; }
+#workspace .hero p { color: #f1ddd7; max-width: 33ch; }
+#workspace .hero .primary { background: #ffe6d5; border-color: #ffe6d5; color: #472d34; }
+#workspace .hero .primary:hover { background: white; }
+#workspace .hero-secondary { color: #ffe5d9; }
+#workspace .hero-secondary:hover { background: #503444; }
+#workspace .hero-art { opacity: 1; width: 38%; }
+#workspace .orbit {
+  width: 354px; height: 490px; top: -90px; right: -50px; transform: rotate(-27deg);
+  border: 0; background: repeating-radial-gradient(ellipse closest-side, transparent 0 9px, #e9a68b3b 10px 11px);
+}
+#workspace .orbit-two { width: 210px; height: 290px; right: 50px; top: -23px; transform: rotate(20deg); }
+#workspace .bubble-back { right: 17%; top: 16%; background: #ed9d81; color: #613548; }
+#workspace .bubble-front { right: 37%; top: 41%; color: #97533e; background: #fff2df; }
+#workspace .bubble-front span { color: #6c4050; }
+#workspace .art-star, #workspace .art-caption { color: #efb395; }
+#workspace .art-star {
+  width: 18px; height: 18px; font-size: 0; background: #f3bf9d;
+  clip-path: polygon(50% 0,60% 38%,100% 50%,60% 62%,50% 100%,40% 62%,0 50%,40% 38%);
+}
+#workspace .star-one { right: 78%; width: 12px; height: 12px; }
+#workspace .star-two { right: 6%; }
+#workspace .art-caption { bottom: 7%; right: 12%; }
+#workspace .metric>strong { font: 500 34px/1 var(--display); letter-spacing: -.045em; }
+#workspace .metric-label { font-weight: 600; font-size: 12px; }
+#workspace .panel, #workspace .workflow-card, #workspace .metric { border-color: var(--line); }
+#workspace .workflow-card h3, #workspace .section-heading h2 {
+  font: 500 23px/1.15 var(--display); letter-spacing: -.035em;
+}
+#workspace .tip-card { background: var(--wash); border-color: var(--line); color: var(--ink); }
+#workspace .tip-card :is(p,.tip-label,span:last-child) { color: var(--quiet); }
+#workspace .tip-card em { color: var(--spice); }
+#workspace .provider-option.chosen { box-shadow: inset 0 0 0 1px var(--spice); }
+#workspace :is(.provider-option,.btn,.panel,.metric,.welcome-dialog,.confirm-dialog) { border-color: var(--line); }
+#workspace input:not([type=checkbox]):not([type=range]),
+#workspace select, #workspace textarea, #android-area :is(input,select,textarea), dialog :is(select,input) {
+  background: var(--card); color: var(--ink-web); border-color: var(--line); border-radius: 9px;
+}
+#workspace :is(input,select,textarea):focus-visible, #android-area :is(input,select,textarea):focus-visible,
+dialog :is(input,select):focus-visible { outline: 2px solid var(--spice); outline-offset: 2px; }
+
+/* First-run consent, confirmations, and device setup share one dialog language. */
+#workspace .modal-layer, dialog::backdrop { background: #26192388; backdrop-filter: blur(4px); }
+#workspace :is(.welcome-dialog,.confirm-dialog), #devices-dialog {
+  border: 1px solid var(--line); border-radius: 22px;
+  box-shadow: 0 26px 80px #24142040; background: var(--card); color: var(--ink-web);
+}
+#workspace .welcome-dialog { border-top: 5px solid #df846a; padding: clamp(22px, 3vw, 38px); }
+#workspace .welcome-dialog .brand-mark { background: #583645; color: #ffd5b9; border-radius: 12px; }
+#workspace .welcome-dialog h2, #workspace .confirm-dialog h2, .dialog-top h2 {
+  color: var(--ink-web); font: 400 clamp(30px, 3.1vw, 43px)/1.04 var(--display); letter-spacing: -.048em;
+}
+#workspace .welcome-features { padding: 16px 0; }
+#workspace .welcome-dialog .consent-copy { font-size: 12px; line-height: 1.65; }
+#devices-dialog { width: min(530px,calc(100% - 28px)); padding: clamp(22px, 3vw, 34px); max-height: 90dvh; }
+#devices-dialog :is(p,#device-issues,.eyebrow) { color: var(--quiet); }
+#sdk-details, .setup-tip { background: var(--wash); color: var(--ink-web); }
+
+/* Device screens and copilot panels sit on the same paper as the dashboard. */
+#android-area { height: calc(100dvh - 72px); }
+.mobile-heading { max-width: 1660px; margin: auto; padding: 20px 26px 16px; gap: 16px; }
+.mobile-heading h1, .mobile-automation h2, .draft-panel h2, .mobile-note h3 { color: var(--ink-web); }
+.mobile-heading h1 em, .mobile-automation .ma-context strong { color: var(--spice); }
+.mobile-heading p, .capability-pill, .device-toolbar, #preview-status, .device-footnote,
+.draft-panel>p, .draft-panel small, .mobile-note p, .mobile-automation .ma-hint,
+.mobile-automation .ma-reason, .mobile-automation summary, .manual-assistant>summary { color: var(--quiet); }
+.device-panel, .draft-panel, .mobile-automation .ma-card {
+  background: var(--card); border-color: var(--line); box-shadow: 0 3px 14px #371c2907;
+}
+.device-toolbar, .capability-pill, .mobile-automation details { border-color: var(--line); }
+.mobile-automation h3 { color: var(--ink-web); }
+.mobile-automation .ma-context { background: var(--wash); }
+.mobile-automation .ma-session { background: var(--leaf); color: var(--ink-web); border-color: var(--line); }
+.mobile-automation .ma-check input { accent-color: var(--spice); }
+#android-area button:not(.primary), #devices-dialog button:not(.primary) {
+  background: var(--card); color: var(--ink-web); border-color: var(--line);
+}
+#android-area button:not(.primary):hover, #devices-dialog button:not(.primary):hover { background: var(--wash); }
+.phone-stage {
+  height: clamp(370px,calc(100dvh - 266px),840px); min-height: 0;
+  background: radial-gradient(ellipse at 50% 72%,#533346,#332430 75%);
+}
+#phone-empty h2, #phone-detached { color: #fff1de; }
+#phone-empty p { color: #e6cfd5; }
+.phone-outline { color: #f2b094; border-color: #dc9b85; transform: rotate(-4deg); }
+#android-area.device-theater { height: 100dvh; background: var(--paper); }
+#popout-device, #sdk-folder { display: none; }
+#notice { background: #3c2b37; color: #fff4e9; }
+#notice.error { background: #893323; }
+
+#workspace .welcome-dialog [data-action=signOut] {
+  display: block; width: 100%; margin-top: 8px; border: 0; background: transparent;
+  color: var(--quiet); text-align: center;
+}
+#workspace .welcome-dialog [data-action=signOut]:hover { color: var(--spice); }
+#workspace .welcome-dialog, #workspace .confirm-dialog { max-height: min(92dvh, 760px); }
+#workspace .ss-app:has(.modal-layer:not([hidden])) { container-type: normal; }
+
+/* The desktop shell assumes a fixed window. On phones, let the document scroll
+   and place platform and workspace navigation on separate, thumb-sized rows. */
+@container workspace (max-width: 950px) {
+  #workspace .nav-rail nav { margin-top: 0; }
+}
+@container workspace (max-width: 740px) {
+  #workspace .hero-art { width: 31%; right: -16px; opacity: .72; }
+  #workspace .art-caption, #workspace .star-one { display: none; }
+  #workspace .bubble-front { width: 100px; height: 82px; }
+  #workspace .bubble-back { width: 75px; height: 90px; }
+}
+@container workspace (max-width: 540px) {
+  #workspace .nav-rail { height: auto; padding: 4px 12px; }
+  #workspace .nav-rail nav { margin: 0; gap: 3px; }
+  #workspace .nav-item { padding: 8px 4px; border-radius: 8px; font-size: 11px; }
+  #workspace .nav-rail .nav-label, #workspace .nav-new { display: none; }
+  #workspace .hero-art { display: none; }
+  #workspace .hero {
+    min-height: auto;
+    background: radial-gradient(ellipse at 105% 115%, #674353, transparent 68%), #392735;
+  }
+  #workspace .hero-copy { max-width: none; }
+  #workspace .hero-actions { flex-wrap: wrap; }
+  #workspace .workflow-grid, #workspace .secondary-column { grid-template-columns: 1fr; }
+  #workspace .workflow-card { padding: 20px; }
+  #workspace .workflow-card h3, #workspace .workflow-card p { min-height: 0; }
+  #workspace .workflow-card p { max-width: 40ch; }
+  #workspace .card-bottom { flex-direction: row; align-items: center; }
+}
+@media (max-width: 860px) {
+  .desktop-bar { grid-template-columns: 1fr auto; row-gap: 9px; padding-block: 10px; }
+  .desktop-actions { grid-column: 2; grid-row: 1; }
+  .platforms { grid-column: 1/-1; justify-self: center; }
+  #tinder-layout { height: calc(100dvh - 150px); }
+  #android-area { height: calc(100dvh - 108px); }
+}
+@media (max-width: 700px) {
+  #tinder-layout, #workspace, #workspace .ss-app, #workspace .workspace-shell,
+  #workspace .workspace-body, #workspace .main, #android-area { height: auto; }
+  #workspace .main, #android-area { overflow: visible; }
+  #tinder-layout { display: flex; flex-direction: column; }
+  #workspace { width: 100%; }
+  #tinder-layout.split #tinder-frame {
+    order: -1; flex: none; width: 100%; max-height: 64dvh; min-width: 0;
+    border: 0; border-bottom: 1px solid var(--line); text-align: center;
+  }
+  #tinder-frame img { width: auto; max-width: 100%; max-height: 60dvh; margin: auto; }
+  .desktop-brand strong { font-size: 25px; }
+  .desktop-brand img { width: 25px; height: 25px; }
+  .desktop-label { display: none; }
+  .desktop-actions { gap: 1px; }
+  .desktop-actions button { padding: 7px; font-size: 11px; min-height: 36px; white-space: nowrap; }
+  .platforms { width: 100%; }
+  .platforms button { flex: 1; min-width: 0; padding-inline: 6px; }
+  .mode-bar { height: auto; min-height: 42px; padding: 4px 12px; }
+  #workspace-label { flex: 1; min-width: 60px; font-size: 11px; }
+  .mode-bar>div { display: flex; justify-content: end; flex-wrap: wrap; }
+  .mode-bar button { min-height: 32px; font-size: 10px; }
+  #workspace .nav-rail { align-self: start; }
+  #workspace .topbar { height: 43px; }
+  #tinder-layout.split .nav-item { padding-inline: 5px; }
+  .mobile-heading { padding: 20px 16px 14px; }
+  .mobile-grid { grid-template-columns: minmax(0,1fr); padding: 0 12px 20px; }
+  .device-controls { flex-wrap: wrap; }
+  .phone-stage { height: clamp(310px,58dvh,570px); }
+  #phone-empty { padding: 14px; }
+  #notice { max-width: calc(100vw - 28px); width: max-content; }
+  .mobile-options { grid-template-columns: 1fr; }
+  #workspace .welcome-dialog, #workspace .confirm-dialog { padding: 23px; }
+  #workspace .ss-app:has(.modal-layer:not([hidden])) .workspace-shell { display: flex; flex-direction: column; }
+}
+@media (max-width: 540px) {
+  #workspace .nav-rail, #tinder-layout.split .nav-rail { width: 100%; min-width: 0; }
+  #tinder-layout.split .nav-item>span:not(.nav-new) { display: block; }
+}
+@media (max-width: 360px) {
+  .desktop-bar { padding-inline: 10px; column-gap: 4px; }
+  .desktop-brand { gap: 4px; }
+  .desktop-actions button { font-size: 10px; }
+  #workspace .draft-actions { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root *, :root *::before, :root *::after { transition-duration: 0s !important; animation-duration: 0s !important; scroll-behavior: auto !important; }
+}

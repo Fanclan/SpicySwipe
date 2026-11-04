@@ -1,8 +1,37 @@
 'use strict';
 (() => {
   const events = new EventSource('/api/events');
+  function returnToSignIn() {
+    events.close();
+    window.location.replace('/login');
+  }
+  events.addEventListener('signed-out', returnToSignIn);
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) window.location.reload();
+  });
+  const signOut = document.createElement('button');
+  signOut.type = 'button';
+  signOut.id = 'sign-out';
+  signOut.textContent = 'Sign out';
+  document.querySelector('.desktop-actions').append(signOut);
+  signOut.addEventListener('click', async () => {
+    signOut.disabled = true;
+    try {
+      const response = await fetch('/api/logout', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+      });
+      if (!response.ok && response.status !== 401) throw Error();
+      returnToSignIn();
+    } catch {
+      const notice = document.querySelector('#notice');
+      notice.textContent = 'Could not sign out. Check your connection and try again.';
+      notice.hidden = false;
+      signOut.disabled = false;
+    }
+  });
   async function request(action,data = {}) {
     const response = await fetch('/api/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,data})});
+    if (response.status === 401) { returnToSignIn(); throw Error('Sign in to continue.'); }
     const body = await response.json();
     if (!response.ok) throw Error(body.error || 'Request failed.');
     return body.result;
@@ -47,6 +76,8 @@
   }
   setTimeout(refresh,650);
   window.spicyDesktop = {
+    web: true,
+    signOut: () => signOut.click(),
     request(action,data){
       if(action==='android:docs'){window.open('https://developer.android.com/studio/run/managing-avds','_blank','noopener');return Promise.resolve();}
       return request(action,data);

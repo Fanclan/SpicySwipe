@@ -16,7 +16,7 @@
   $('#tinder-area').hidden=!showTinder;$('#android-area').hidden=showTinder;
   $('#tinder-frame').hidden=!live||settingsOpen||platform!=='tinder';
   $('#tinder-layout').classList.toggle('split',live&&!settingsOpen&&platform==='tinder');
-  $('#toggle-tinder').textContent=live?'Hide Tinder':'Open Tinder alongside workspace ↗';
+  $('#toggle-tinder').textContent=live?'Hide Tinder':api.web?'Show Tinder':'Open Tinder alongside workspace ↗';
   $('#reload-tinder').hidden=!live||platform!=='tinder';$('#toggle-tinder').hidden=platform!=='tinder';$('#workspace-label').textContent=settingsOpen?'Shared AI settings':'Your Tinder workspace';$('#settings-button').textContent=settingsOpen?'Back to app':'AI settings';
   $('#platform-name').textContent=platform==='bumble'?'Bumble':'Hinge';
   document.querySelectorAll('[data-platform]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.platform===platform)));
@@ -25,7 +25,7 @@
   requestAnimationFrame(bounds);scheduleScreen(0);
  }
  async function openTinder(){if(platform!=='tinder')await choosePlatform('tinder');settingsOpen=false;await request('openTinder');live=true;layout();}
- const bridge={desktop:true,version:'3.0',load:()=>request('load'),save:data=>request('save',data),authorizeOllama:()=>Promise.resolve({granted:true}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},page:(action,data)=>request('page',{action,data}),request:(action,data)=>action==='openTinder'?openTinder():action==='dashboard'?Promise.resolve():request(action,data)};
+ const bridge={desktop:true,web:api.web===true,signOut:api.signOut,version:'3.0',load:()=>request('load'),save:data=>request('save',data),authorizeOllama:()=>Promise.resolve({granted:true}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},page:(action,data)=>request('page',{action,data}),request:(action,data)=>action==='openTinder'?openTinder():action==='dashboard'?Promise.resolve():request(action,data)};
  let workspace, mobileAutomation;
  try{workspace=await SSWorkspace.mount($('#workspace'),bridge);}catch(error){notice(error.message,true);$('#workspace').textContent='Unable to open your saved workspace: '+error.message;return;}
  mobileAutomation=SSMobileAutomation.mount($('#mobile-automation'),{platform,notify:notice,prepareStart:prepareSession,request:(action,data)=>platform==='tinder'?Promise.resolve(null):request('mobile:request',{action,data})});
