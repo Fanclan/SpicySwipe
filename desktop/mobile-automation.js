@@ -123,12 +123,13 @@
       el('start').textContent=starting?'Starting…':'Start session';
       disable('resume', !['hinge','bumble'].includes(current) || (!connected&&!prepareStart) || pending>0 || state.busy || active || !paused);
       el('resume').hidden = !paused; el('start').hidden = paused;
-      disable('save', !idle); disable('like', !idle || !recognized || !['profile', 'like','likeOffer'].includes(s.kind) || !available(s.kind !== 'profile' ? controls.sendLike : controls.like));
+      const promptLike = current === 'hinge' && s?.kind === 'profile' && !controls.like && s.prompts?.some(prompt => available(prompt.like));
+      disable('save', !idle); disable('like', !idle || !recognized || !['profile', 'like','likeOffer'].includes(s.kind) || !(available(s.kind !== 'profile' ? controls.sendLike : controls.like) || promptLike));
       disable('skip', !idle || !recognized || s.kind !== 'profile' || !available(controls.skip));
       // Cancellation is always available, including while a read or AI request is pending.
       disable('pause', !connected&&!pending); disable('stop', !connected&&!pending);
       disable('generate', !idle || !recognized || s.kind==='likeOffer');
-      el('like').textContent=current==='bumble'?'Like profile':s?.kind==='likeOffer'?'Send normal Like':'Like selected photo';
+      el('like').textContent=current==='bumble'?'Like profile':s?.kind==='likeOffer'?'Send normal Like':promptLike?'Like text prompt':'Like selected photo';
       field('mode').querySelector('[value=comment]').disabled=current==='bumble';
       const text = field('draft').value, draft = state.draft, bound = draft && draft.identity === s?.identity && recognized;
       disable('copy', !text.trim());

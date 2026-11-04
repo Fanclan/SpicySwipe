@@ -138,3 +138,19 @@ test('disconnected Start connects and starts once without manual review',async t
 test('Bumble Start is enabled and only applies plain Likes with comments and openers unavailable',async t=>{const f=await fixture(t);f.ui.setPlatform('bumble');await tick();f.respond(action=>snapshot({platform:'bumble',screen:null}));assert.equal(f.el('start').disabled,false);assert.equal(f.field('mode').querySelector('[value="comment"]').disabled,true);f.field('mode').value='comment';await f.click('start');const config=f.calls.findLast(c=>c.action==='config');assert.equal(config.data.mode,'like');assert.equal(config.data.autoOpeners,false);assert.equal(config.data.autoSend,false);assert.equal(f.calls.findLast(c=>c.action==='start').action,'start');});
 
 test('recovery phases clearly show checks rather than implying active Likes',async t=>{const f=await fixture(t);for(const phase of ['verifying previous action','recovering screen','waiting for supported screen','checking swipe result']){f.ui.handleState(snapshot({session:{status:'running',phase,count:7,limit:1000,endsAt:Date.now()+60000,nextActionAt:Date.now()+30000}}));const text=f.el('session').textContent;assert.doesNotMatch(text,/running/i);assert.match(text,/Next check/);assert.match(text,/7 \/ 1000/);assert.equal(f.el('like').disabled,true);}});
+
+test('manual Hinge Like can use a verified prompt when no photo Like is available', async t => {
+  const f = await fixture(t), state = snapshot();
+  state.screen.photos = [];
+  state.screen.controls.like = null;
+  state.screen.prompts = [{ text: 'Example prompt', like: { ...control, enabled: false } }];
+  f.ui.handleState(state);
+  assert.equal(f.el('like').disabled, true);
+  state.screen.prompts[0].like = control;
+  f.ui.handleState(state);
+  assert.equal(f.el('like').disabled, false);
+  assert.match(f.el('like').textContent, /prompt/i);
+  await f.click('like');
+  assert.equal(f.calls.at(-1).action, 'act');
+  assert.equal(f.calls.at(-1).data.kind, 'like');
+});
