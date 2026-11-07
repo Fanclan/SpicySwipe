@@ -2,11 +2,13 @@ services:
   spicyswipe:
     build: .
     init: true
+    stop_grace_period: 60s
     restart: unless-stopped
     shm_size: 512m
     security_opt:
       - seccomp=./web/chromium-seccomp.json
     environment:
+      SPICYSWIPE_MANAGED_ANDROID: ${SPICYSWIPE_MANAGED_ANDROID:-1}
       SPICYSWIPE_PASSWORD: ${SPICYSWIPE_PASSWORD:?Set a strong password in .env}
       SPICYSWIPE_STORAGE_KEY: ${SPICYSWIPE_STORAGE_KEY:?Set a persistent 32-byte hex key in .env}
     ports:

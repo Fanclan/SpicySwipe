@@ -21,13 +21,15 @@ async function fixture(t, options = {}) {
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   w.HTMLDialogElement.prototype.close = function () { this.open = false; w.queueMicrotask(() => this.dispatchEvent(new w.Event('close'))); };
   w.SSWorkspace = { mount: async el => { el.innerHTML = '<div class="modal-layer" hidden></div>'; return { navigate() {} }; } };
-  w.spicyDesktop = { subscribe(fn) { receive = fn; }, request: async (action, data) => {
+  w.spicyDesktop = { web: options.web, subscribe(fn) { receive = fn; }, request: async (action, data) => {
     calls.push({ action, data });
     if(action==='platform')selectedPlatform=data.platform;
     if(action==='mobile:request'&&data.action==='status'&&options.mobileStatus)return options.mobileStatus(data.platform);
     if(action==='mobile:request'&&data.action==='context')return options.context?options.context():{platform:selectedPlatform,screen:{kind:'profile',name:'Ready example',identity:'ready-profile',context:{bio:'Ready context'},controls:{}},session:{status:'idle'}};
     if (action === 'android:sdk') return options.sdk?options.sdk():{};
-    if (action === 'android:status') return status();
+    if (action === 'android:status') return status(data.platform);
+    if (action === 'android:prepareManaged') return options.prepare(data.platform);
+    if (action === 'android:useManaged') return options.useManaged?.();
     if (action === 'android:start') return start();
     if (action === 'android:boot') return boot();
     if (action === 'android:screenshot') return capture();
@@ -385,4 +387,98 @@ test('adopting a connected session restores its context and unsent draft',async 
  assert.match(f.w.document.querySelector('[data-mobile="context"]').textContent,/Existing review/);
  assert.equal(f.w.document.querySelector('#mobile-automation [name="draft"]').value,'Unsent draft');
  assert.equal(f.calls.some(c=>['android:select','android:open'].includes(c.action)),false);
+});
+
+function webAndroidStatus(platform, extra = {}) {
+  return { architecture: 'x64', recommendedAbi: 'x86_64', sdkRoot: '/sdk', avds: [], devices: [], issues: [],
+    managedSerial: platform === 'hinge' ? 'emulator-5554' : 'emulator-5556', managedSerials: ['emulator-5554', 'emulator-5556'], usesManagedDevice: true, ...extra };
+}
+
+test('web prepares the platform phone inline and allows interactive Play Store installation', async t => {
+  const startup = deferred();
+  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus, prepare: () => startup.promise });
+  const doc = f.w.document;
+  assert.equal(doc.querySelector('#devices-dialog').open, false);
+  assert.ok(f.calls.some(c => c.action === 'android:prepareManaged' && c.data.platform === 'hinge'));
+  assert.match(doc.querySelector('#phone-empty h2').textContent, /Hinge/);
+  assert.equal(doc.querySelector('#managed-progress').hidden, false);
+  startup.resolve({ ready: true, serial: 'emulator-5554', needsInstall: true, detail: 'Install Hinge from Google Play.' });
+  await tick();
+  await f.runTimer();
+  assert.equal(f.image.hidden, false);
+  assert.match(doc.querySelector('#phone-install-note').textContent, /Install Hinge/);
+  assert.equal(doc.querySelector('#devices-dialog').open, false);
+  assert.ok(!f.calls.some(c => c.action === 'android:boot' || c.action === 'android:select'));
+  f.setInspect(() => ({ serial: 'emulator-5554', apps: { hinge: true } }));
+  await f.click('#launch-app');
+  assert.ok(f.calls.some(c => c.action === 'android:open' && c.data.platform === 'hinge'));
+  assert.equal(doc.querySelector('#phone-install-note').hidden, true);
+});
+
+test('web ignores a late Hinge boot response after switching to Bumble', async t => {
+  const hinge = deferred();
+  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus,
+    prepare: platform => platform === 'hinge' ? hinge.promise : { ready: true, serial: 'emulator-5556' } });
+  await f.click('[data-platform="bumble"]');
+  hinge.resolve({ ready: true, serial: 'emulator-5554', needsInstall: true }); await tick();
+  assert.match(f.w.document.querySelector('#device-label').textContent, /Bumble/);
+  assert.equal(f.w.document.querySelector('#phone-install-note').hidden, true);
+  assert.equal(f.w.document.querySelector('#devices-dialog').open, false);
+});
+
+test('web honors an offline custom phone until the operator restores the assigned phone', async t => {
+  let custom = true;
+  const f = await fixture(t, { web: true, seamless: true,
+    status: platform => webAndroidStatus(platform, { usesManagedDevice: !custom, preferredSerial: custom ? 'usb-123' : '' }),
+    useManaged: () => { custom = false; }, prepare: () => ({ ready: true, serial: 'emulator-5554' }) });
+  const doc = f.w.document;
+  assert.equal(doc.querySelector('#devices-dialog').open, false);
+  assert.match(doc.querySelector('#phone-empty p').textContent, /usb-123/);
+  assert.ok(!f.calls.some(c => c.action === 'android:prepareManaged'));
+  await f.click('#device-button');
+  assert.equal(doc.querySelector('#devices-dialog').open, true);
+  await f.click('#use-managed-device');
+  assert.ok(f.calls.some(c => c.action === 'android:useManaged' && c.data.platform === 'hinge'));
+  assert.ok(f.calls.some(c => c.action === 'android:prepareManaged'));
+  assert.equal(doc.querySelector('#devices-dialog').open, false);
+});
+
+test('web polls boot progress and lists only external devices in advanced settings', async t => {
+  let booting = true;
+  const f = await fixture(t, { web: true, seamless: true,
+    status: platform => webAndroidStatus(platform, { devices: ['emulator-5554', 'emulator-5556', 'external'].map(id => ({ id, state: 'device' })) }),
+    prepare: () => booting ? { ready: false, phase: 'booting', detail: 'Android is starting.' } : { ready: true, serial: 'emulator-5554' } });
+  const doc = f.w.document;
+  assert.match(doc.querySelector('#phone-empty p').textContent, /Android is starting/);
+  booting = false;
+  const [key, timer] = [...f.timers].find(([, timer]) => timer.ms === 2500);
+  f.timers.delete(key); timer.fn(); await tick(); await f.runTimer();
+  assert.equal(f.image.hidden, false);
+  await f.click('#device-button');
+  assert.deepEqual(Array.from(doc.querySelector('#serial-select').options, option => option.value), ['external']);
+  assert.equal(doc.querySelector('#sdk-folder').hidden, true);
+  assert.equal(doc.querySelector('#start-emulator').hidden, true);
+});
+
+test('web adopts a connected external device without relaunching or reselecting it', async t => {
+  const f = await fixture(t, { web: true, seamless: true, status: platform => webAndroidStatus(platform, {
+    usesManagedDevice: false, preferredSerial: 'usb-123', selectedSerial: 'usb-123', devices: [{ id: 'usb-123', state: 'device' }]
+  }), inspect: () => ({ serial: 'usb-123', apps: { hinge: true } }) });
+  await f.runTimer();
+  assert.equal(f.image.hidden, false);
+  assert.match(f.w.document.querySelector('#device-label').textContent, /usb-123/);
+  assert.ok(!f.calls.some(c => ['android:prepareManaged','android:select','android:open','android:store'].includes(c.action)));
+});
+
+test('web notices a completed managed app installation without another click', async t => {
+  let missing = true;
+  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus,
+    prepare: () => ({ ready: true, serial: 'emulator-5554', needsInstall: missing }) });
+  const doc = f.w.document;
+  assert.equal(doc.querySelector('#phone-install-note').hidden, false);
+  missing = false;
+  const [key, timer] = [...f.timers].find(([, timer]) => timer.ms === 10000);
+  f.timers.delete(key); timer.fn(); await tick();
+  assert.equal(doc.querySelector('#phone-install-note').hidden, true);
+  assert.match(doc.querySelector('#launch-app').textContent, /Open Hinge/);
 });
