@@ -513,3 +513,23 @@ test('feed refresh rejects explicit activity errors without treating them as amb
   f.setHandler(args=>{if(args.includes('resolve-activity'))return 'co.hinge.app/.MainActivity';if(args.includes('start'))return 'Error type 3: Activity class does not exist';});
   await assert.rejects(f.android.refreshFeed('hinge',()=>true,async()=>{}),/reopen/i);assert.equal(f.calls.filter(c=>c.args.includes('activities')).length,0);
 });
+test('a supervised phone waits for its assigned emulator to restart', async t => {
+  const f = fixture(t);
+  await f.android.select('emulator-5554');
+  f.setDevices('List of devices attached\n');
+  let polls = 0;
+  f.setHandler(args => {
+    if (args.includes('name')) return 'Pixel_6_API_34\nOK';
+    if (args.includes('getprop')) return '1';
+  });
+  const result = await f.android.recover({
+    platform:'hinge', avd:'Pixel_6_API_34', supervised:true, valid:()=>true,
+    wait:async () => {
+      polls++;
+      const serial = polls === 1 ? 'emulator-5560' : 'emulator-5554';
+      f.setDevices('List of devices attached\n' + serial + ' device\n');
+    }
+  });
+  assert.equal(result.serial, 'emulator-5554');
+  assert.equal(f.children.length, 0);
+});

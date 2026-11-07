@@ -123,6 +123,26 @@ class Android {
     return { avd, phase: 'waiting' };
   }
 
+  async managedBoot(serial, avd) {
+    const devices = await this._devices();
+    if (!devices.some(device => device.id === serial && device.state === 'device')) {
+      return { phase: 'waiting', detail: 'Waiting for the assigned phone to connect.' };
+    }
+    const read = (...args) => this._run(this.adb, ['-s', serial, 'shell', ...args]).then(value => value.trim());
+    if (await read('getprop', 'sys.boot_completed') !== '1') {
+      return { phase: 'booting', detail: 'Android is starting.' };
+    }
+    const identity = await this._run(this.adb, ['-s', serial, 'emu', 'avd', 'name']);
+    const name = identity.split(/\r?\n/)[0].trim();
+    if (name !== avd) throw Error('The assigned Android phone has an unexpected identity. Check its device configuration in Advanced settings.');
+    const bootId = await read('cat', '/proc/sys/kernel/random/boot_id');
+    return { phase: 'ready', bootId };
+  }
+
+  async isAppInstalled(platform) {
+    return this._installed(await this._selected(), this._app(platform));
+  }
+
   async start(avd, {valid=()=>true} = {}) {
     const check=()=>{if(this.disposed||!valid())throw Error('Emulator start canceled.');};check();
     if (typeof avd !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(avd)) throw new Error('Choose a valid existing AVD.');
@@ -224,7 +244,7 @@ class Android {
     return (await this._on(serial, ['shell', 'pm', 'list', 'packages', app])).split(/\r?\n/).some(line => line.trim() === 'package:' + app);
   }
 
-  async recover({avd,platform,valid,wait}) {
+  async recover({avd,platform,valid,wait,supervised=false}) {
     const serial=this.serial,epoch=this.inputEpoch;
     const check=()=>{if(this.disposed||this.inputEpoch!==epoch||!valid())throw Error('Device recovery canceled.');};
     check();
@@ -247,10 +267,12 @@ class Android {
     // mistake that dying child for an already-running replacement.
     for(let i=0;this.children.has(avd)&&i<10;i++){await wait(1000);check();}
     if(this.children.has(avd))throw Error('Emulator process is still shutting down. Resume after it exits.');
-    check();await this.start(avd,{valid:()=>{check();return true}});check();
+    check();
+    if(!supervised)await this.start(avd,{valid:()=>{check();return true}});
+    check();
     for(let i=0;i<30;i++){
       await wait(2000);check();const boot=await this.bootStatus(avd);check();
-      if(boot.phase!=='ready')continue;
+      if(boot.phase!=='ready'||(supervised&&boot.serial!==serial))continue;
       this.serial=boot.serial;
       await this.openApp(platform);check();await wait(1500);check();return {restarted:true,serial:boot.serial}
     }

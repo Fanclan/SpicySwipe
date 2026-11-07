@@ -125,7 +125,6 @@
   status.setAttribute('role','status');
   frame.replaceChildren(image,status);
   addLocationControl(frame);
-  document.querySelector('.setup-tip').textContent = 'Select a device connected to the server. For simultaneous sessions, connect a separate device for each app.';
   const report = error => {status.textContent = error.message;};
   let current, queue = Promise.resolve();
   function input(data) {

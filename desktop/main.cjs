@@ -7,18 +7,26 @@ const {randomUUID} = require('node:crypto');
 const Service = require('./service.cjs');
 const Android = require('./android.cjs');
 const MobileController = require('./mobile-controller.cjs');
+const { phones, usesManagedPhone, ManagedPhone } = require('./managed-phone.cjs');
 const P = require('./policy.cjs');
 const LocationPermission = require('./location-permission.cjs');
 const androidURL = pathToFileURL(path.join(__dirname,'android.html')).href;
 let androidWindow, popoutSerial, popoutPlatform;
 let mobileWatchTimer, quitting=false;
 const mobileSessions=new Map();
-const dedicatedAvds={hinge:"SpicySwipe_Phone_API_36",bumble:"SpicySwipe_Bumble_API_36"};
-function mobileSession(platform){if(!Object.hasOwn(dedicatedAvds,platform))throw Error("Choose Hinge or Bumble first.");if(!mobileSessions.has(platform))mobileSessions.set(platform,{device:new Android({sdkRoot:androidPreferences.sdkRoot,graphicsMode:androidPreferences.platforms?.[platform]?.graphicsMode}),commands:Promise.resolve(),revision:0});return mobileSessions.get(platform);}
+function mobileSession(platform) {
+  if (!Object.hasOwn(phones, platform)) throw Error('Choose Hinge or Bumble first.');
+  if (!mobileSessions.has(platform)) {
+    const device = new Android({sdkRoot:androidPreferences.sdkRoot, graphicsMode:androidPreferences.platforms?.[platform]?.graphicsMode});
+    mobileSessions.set(platform, {device, managed:new ManagedPhone(platform,device), commands:Promise.resolve(), revision:0});
+  }
+  return mobileSessions.get(platform);
+}
 const uiURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 let locationPermission;
 let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
 const webMode = process.env.SPICYSWIPE_WEB === '1';
+const managedAndroid = webMode && process.env.SPICYSWIPE_MANAGED_ANDROID === '1';
 let webServer, loginPopup, webVisible = false;
 const webLocation = webMode ? new (require('../web/location.cjs'))({getContents:()=>tinder?.webContents}) : null;
 const pending = new Map();
@@ -37,7 +45,7 @@ function getMobile(platform=activePlatform){
  if(!['hinge','bumble'].includes(platform))throw Error('Choose Hinge or Bumble first.');
  if(!mobileControllers.has(platform)){
   const device=mobileSession(platform).device;
-  mobileControllers.set(platform,new MobileController({android:device,service,platform:platform,recoverDevice:options=>device.recover(options),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
+  mobileControllers.set(platform,new MobileController({android:device,service,platform:platform,recoverDevice:options=>device.recover({...options,supervised:managedAndroid&&device.serial===phones[platform].serial}),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
    const picture=nativeImage.createFromDataURL(await device.screenshot());
    return require('./mobile-vision.cjs').evidence(picture,screen,{signal,fromBitmap:(bytes,size)=>nativeImage.createFromBitmap(bytes,size)});  }}));
  }
@@ -146,7 +154,44 @@ async function dispatch(action,data={}) {
     if(data.action==='context'&&(activePlatform!=='tinder'||!tinder||tinder.webContents.isDestroyed()))return {connected:false,context:{},session:{status:'idle'}};
     return page(data.action,data.data);
   }
-  if(action==='android:status') return {...await android.status(),preferredSerial:androidPreferences.platforms?.[platform]?.preferredSerial||null,preferredAvd:androidPreferences.platforms?.[platform]?.preferredAvd||dedicatedAvds[platform]};
+  if(action==='android:status') {
+    const preference=androidPreferences.platforms?.[platform];
+    return {...await android.status(),preferredSerial:preference?.preferredSerial||null,preferredAvd:preference?.preferredAvd||phones[platform].avd,
+      managedSerial:managedAndroid?phones[platform].serial:null,managedSerials:managedAndroid?Object.values(phones).map(phone=>phone.serial):[],
+      usesManagedDevice:usesManagedPhone(platform,preference,managedAndroid)};
+  }
+  if(action==='android:prepareManaged') {
+    const current=()=>usesManagedPhone(platform,androidPreferences.platforms?.[platform],managedAndroid)&&!session.selectionToken;
+    if(!current())throw Error('Choose the managed phone in Advanced settings first.');
+    if(session.preparing)return session.preparing;
+    const revision=session.revision;
+    const preparation=session.commands.then(async()=>{
+      const statusFile=path.join(process.env.HOME,'android-runtime','status');
+      const stage=await fs.readFile(statusFile,'utf8').then(s=>s.trim()).catch(()=>'');
+      const detail={
+        installing:'Downloading and verifying Android for the first installation. Both phones will start automatically.',
+        retrying:'The Android download failed. The server will retry automatically.',
+        unsupported:'The managed Android image requires an x86-64 server.'
+      }[stage];
+      if(detail)return {ready:false,phase:stage,detail,serial:phones[platform].serial,needsInstall:false};
+      return session.managed.prepare(()=>revision===session.revision&&current());
+    });
+    session.commands=preparation.catch(()=>{});
+    session.preparing=preparation;
+    try{return await preparation;}finally{if(session.preparing===preparation)session.preparing=null;}
+  }
+  if(action==='android:useManaged') {
+    if(!managedAndroid)throw Error('Managed phones are unavailable on this installation.');
+    invalidateMobile('Device changed.',false,platform);
+    const revision=session.revision;
+    android.cancelInput();
+    await drainMobile(platform);
+    if(revision!==session.revision)throw Error('Device selection changed.');
+    android.serial=null;
+    session.managed.opened=null;
+    await persistAndroid({deviceChoice:'managed',preferredSerial:null,preferredAvd:phones[platform].avd},platform);
+    return {ok:true};
+  }
   if(action==='android:sdk') {
     const result=await dialog.showOpenDialog(window,{title:'Choose Android SDK folder',properties:['openDirectory']});
     if(result.canceled)return {canceled:true};
@@ -155,17 +200,24 @@ async function dispatch(action,data={}) {
     invalidateMobile('Android SDK changed.');await drainMobile();closeAndroidWindow();for(const state of mobileSessions.values())state.device.dispose();mobileSessions.clear();mobileControllers.clear();
     await persistAndroid({sdkRoot:status.sdkRoot});return status;
   }
-  if(action==='android:start'){const result=await android.start(data.avd);await persistAndroid({preferredAvd:data.avd},platform);return result;}
+  if(action==='android:start'){
+    if(managedAndroid&&Object.values(phones).some(phone=>phone.avd===data.avd))throw Error('Assigned phones start automatically.');
+    const result=await android.start(data.avd);await persistAndroid({preferredAvd:data.avd},platform);return result;
+  }
   if(action==='android:boot')return android.bootStatus(data.avd);
   if(action==='android:select'){
+    if(managedAndroid&&Object.entries(phones).some(([key,phone])=>key!==platform&&phone.serial===data.serial))throw Error('This phone is reserved for the other app.');
     if([...mobileSessions].some(([key,state])=>key!==platform&&(state.device.serial===data.serial||state.pendingSerial===data.serial)))throw Error('This device belongs to another platform. Choose its dedicated emulator.');
     const selectionToken={};session.selectionToken=selectionToken;session.pendingSerial=data.serial;
     invalidateMobile('Device changed.',false,platform);const revision=session.revision,device=android;
     try{
+      android.cancelInput();
       await drainMobile(platform);
       if(revision!==session.revision)throw Error('Device selection changed.');if(popoutPlatform===platform)closeAndroidWindow();
       const result=await device.select(data.serial);if(revision!==session.revision||device.serial!==data.serial)throw Error('Device selection changed.');
-      await persistAndroid({preferredSerial:data.serial},platform);return result;
+      session.managed.opened=null;
+      const choice=managedAndroid?{deviceChoice:data.serial===phones[platform].serial?'managed':'custom'}:{};
+      await persistAndroid({preferredSerial:data.serial,...choice},platform);return result;
     }finally{if(session.selectionToken===selectionToken){session.pendingSerial=null;session.selectionToken=null;}}
   }
   if(action==='android:popout'){invalidateMobile('Android window changed.',false,platform);await drainMobile(platform);return openAndroidWindow(platform);}

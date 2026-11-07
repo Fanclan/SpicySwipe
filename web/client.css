@@ -217,6 +217,11 @@ dialog :is(input,select):focus-visible { outline: 2px solid var(--spice); outlin
 }
 #phone-empty h2, #phone-detached { color: #fff1de; }
 #phone-empty p { color: #e6cfd5; }
+#managed-progress { width: min(100%, 12rem); height: 5px; accent-color: #f2b094; }
+.device-controls { flex-wrap: wrap; }
+#phone-install-note { flex-basis: 100%; margin: 0 5px 5px; padding: 9px 12px; color: var(--ink-web); background: var(--leaf); border-radius: 8px; font: 13px/1.45 var(--interface); }
+#use-managed-device { margin-top: 10px; }
+#devices-dialog label[hidden], #managed-progress[hidden] { display: none; }
 .phone-outline { color: #f2b094; border-color: #dc9b85; transform: rotate(-4deg); }
 #android-area.device-theater { height: 100dvh; background: var(--paper); }
 #popout-device, #sdk-folder { display: none; }
