@@ -15,6 +15,12 @@ cleanup() {
   trap '' TERM INT
   kill -TERM -- "-$web" "-$phones" 2>/dev/null || true
   wait "$web" "$phones" 2>/dev/null || true
+  # The emulator outlives its supervisor shell while it flushes the guest disk.
+  # Keep PID 1 alive during that shutdown, within Compose's 60-second grace.
+  for ((i=0; i<100; i++)); do
+    if ! kill -0 -- "-$phones" 2>/dev/null; then break; fi
+    sleep 0.5
+  done
 }
 trap 'cleanup; exit 0' TERM INT
 status=0
