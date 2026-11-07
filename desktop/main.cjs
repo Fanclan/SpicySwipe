@@ -124,6 +124,10 @@ async function dispatch(action,data={}) {
   const platform=data.platform??activePlatform;
   const session=(action.startsWith('android:')&&!['android:docs','android:sdk'].includes(action))||action==='mobile:request'?mobileSession(platform):null;
   const android=session?.device;
+  if (session && (data.expectedSerial !== undefined || action === 'android:checkInstallation') &&
+      (!data.expectedSerial || data.expectedSerial !== android.serial || session.selectionToken)) {
+    throw Error('The selected Android device changed. Reconnect the phone.');
+  }
 
   if(action==='revoke'||(action==='save'&&data.sidebarConsentGiven===false))invalidateMobile('Consent revoked.',true);
   if (['load','save','models','test','generate','record','clearActivity','revoke'].includes(action)) return service.request(action,data);
@@ -227,6 +231,7 @@ async function dispatch(action,data={}) {
   if(action==='android:popout'){invalidateMobile('Android window changed.',false,platform);await drainMobile(platform);return openAndroidWindow(platform);}
   if(action==='android:dock'){invalidateMobile('Android window changed.',false,platform);android.cancelInput();closeAndroidWindow();return {ok:true};}
   if(action==='android:inspect')return android.inspect();
+  if(action==='android:checkInstallation')return {installed:await android.isAppInstalled(platform)};
   if(action==='android:screenshot')return android.screenshot();
   if(action==='android:docs'){await shell.openExternal('https://developer.android.com/studio/run/managing-avds');return {ok:true};}
   const mutations={

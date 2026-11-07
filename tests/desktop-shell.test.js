@@ -8,7 +8,7 @@ async function setup(androidConfig,checkpoints={},permissions={}){
  class Window extends EventEmitter{constructor(options){super();this.options=options;this.webContents=new Contents();this.contentView={addChildView:()=>{}};windows.push(this);}async loadFile(file){this.webContents.mainFrame.url=require('node:url').pathToFileURL(file).href;}getContentSize(){return [1200,800]}isDestroyed(){return Boolean(this.destroyed)}show(){} focus(){} close(){this.destroyed=true;this.emit('closed');} }
  class View{constructor(){this.webContents=new Contents();views.push(this)}setVisible(v){this.visible=v}setBounds(b){this.bounds=b}}
  class Service{async request(action){return settings}}
- class Android{constructor(options){androidOptions.push(options);this.serial=null;this.inputEpoch=0}cancelInput(){this.inputEpoch++}async type(text){commands.push(text);if(commandGate)await commandGate;return {ok:true}}async select(serial){this.serial=serial;return {serial}}async inspect(){if(!this.serial)throw Error('Select a device');return {serial:this.serial}}async screenshot(){return 'frame'}async key(key){commands.push(key);return {key}}async status(){return {devices:[]}}dispose(){}}
+ class Android{constructor(options){androidOptions.push(options);this.serial=null;this.inputEpoch=0}cancelInput(){this.inputEpoch++}async type(text){commands.push(text);if(commandGate)await commandGate;return {ok:true}}async select(serial){this.serial=serial;return {serial}}async inspect(){if(!this.serial)throw Error('Select a device');return {serial:this.serial}}async screenshot(){return 'frame'}async isAppInstalled(platform){return platform==='hinge'}async key(key){commands.push(key);return {key}}async status(){return {devices:[]}}dispose(){}}
  const app=new EventEmitter();Object.assign(app,{requestSingleInstanceLock:()=>true,whenReady:()=>Promise.resolve(),getPath:()=>'/tmp/spicy-test',getVersion:()=> '3.0.0',quit:()=>{}});
  const electron={app,BrowserWindow:Window,WebContentsView:View,ipcMain:{handle:(name,fn)=>handlers[name]=fn,on:(name,fn)=>events[name]=fn},safeStorage:{},shell:{openExternal:async url=>opened.push(url)},dialog:{showMessageBox:async()=>{promptCount++;return {response:promptAnswer}},showErrorBox:()=>{}},Menu:{buildFromTemplate:x=>x,setApplicationMenu:value=>menu=value,getApplicationMenu:()=>({getMenuItemById:id=>(menu||[]).flatMap(x=>x.submenu||[]).find(x=>x.id===id)})}};
  const filename=path.resolve('desktop/main.cjs');const context={require:name=>name==='node:fs/promises'?{readFile:async file=>{const name=path.basename(file);if(name==='android.json'&&androidConfig)return JSON.stringify(androidConfig);if(permissionFiles.has(name))return permissionFiles.get(name);throw Error('No saved setup')},writeFile:async(file,text)=>{if(path.basename(file)==='android.json')savedAndroid.push(JSON.parse(text));else permissionFiles.set(path.basename(file),text)},rename:async(from,to)=>{permissionFiles.set(path.basename(to),permissionFiles.get(path.basename(from)));permissionFiles.delete(path.basename(from))},unlink:async file=>permissionFiles.delete(path.basename(file))}:name==='electron'?electron:name==='./service.cjs'?Service:name==='./android.cjs'?Android:name==='./managed-phone.cjs'?require('../desktop/managed-phone.cjs'):name==='./policy.cjs'?P:name==='./location-permission.cjs'?require('../desktop/location-permission.cjs'):name==='./mobile-checkpoint.cjs'?class {constructor(file){this.key=path.basename(file,'.json')}read(){return checkpoints[this.key]??null}write(value){checkpoints[this.key]=structuredClone(value)}}:name==='./mobile-controller.cjs'?require('../desktop/mobile-controller.cjs'):require(name),__dirname:path.dirname(filename),process,setTimeout,clearTimeout,console};
@@ -103,4 +103,26 @@ test('explicit location approval survives relaunch and Privacy can revoke it',as
  const item=reopened.menu.find(x=>x.label==='Privacy').submenu.find(x=>x.type==='checkbox');assert.equal(item.checked,true);item.checked=false;await item.click(item);
  assert.equal(remote.permissionCheck(remote,'geolocation','https://tinder.com',{isMainFrame:true}),false);
  assert.equal(JSON.parse(reopened.permissionFiles.get('location-permission.json')).tinderGeolocation,false);assert.equal(remote.reloadCount,1);
+});
+
+
+test('a resumed preview and its input remain bound to the expected phone', async () => {
+ const x = await setup();
+ const expected = {platform:'hinge', expectedSerial:'first'};
+ await x.call('android:select', {platform:'hinge', serial:'first'});
+ assert.equal(await x.call('android:screenshot', expected), 'frame');
+ await x.call('android:select', {platform:'hinge', serial:'second'});
+ await assert.rejects(x.call('android:screenshot', expected), /selected Android device changed/);
+ await assert.rejects(x.call('android:key', {...expected,key:'Enter'}), /selected Android device changed/);
+ assert.deepEqual(x.commands, []);
+});
+
+test('checking an installation only reads the package on the expected phone', async () => {
+ const x = await setup();
+ await x.call('android:select', {platform:'hinge',serial:'first'});
+ await assert.rejects(x.call('android:checkInstallation',{platform:'hinge'}));
+ await assert.rejects(x.call('android:checkInstallation',{platform:'hinge',expectedSerial:'wrong'}));
+ const result = await x.call('android:checkInstallation',{platform:'hinge',expectedSerial:'first'});
+ assert.equal(result.installed, true);
+ assert.deepEqual(x.commands, []);
 });

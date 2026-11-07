@@ -29,7 +29,6 @@ class ManagedPhone {
     const boot = await this.device.managedBoot(serial, avd);
     check();
     if (boot.phase !== 'ready') {
-      this.opened = null;
       return { ready: false, phase: boot.phase, detail: boot.detail, serial, needsInstall: false };
     }
     if (this.device.serial !== serial) {
