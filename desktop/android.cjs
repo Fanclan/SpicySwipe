@@ -67,7 +67,7 @@ class Android {
     if (this.disposed) return Promise.reject(new Error('Android connection has closed. Reopen SpicySwipe.'));
     if (!fs.existsSync(file)) return Promise.reject(new Error('Android SDK tool is missing. Install Android Studio and its SDK platform-tools and emulator.'));
     return new Promise((resolve, reject) => {
-      this.execFile(file, args, { shell: false, windowsHide: true, timeout: 15000, maxBuffer: binary ? 25 * 1024 * 1024 : 1024 * 1024, encoding: binary ? null : 'utf8' }, (error, stdout) => {
+      this.execFile(file, args, { shell: false, windowsHide: true, timeout: binary ? 45000 : 15000, maxBuffer: binary ? 25 * 1024 * 1024 : 1024 * 1024, encoding: binary ? null : 'utf8' }, (error, stdout) => {
         if (this.disposed) return reject(new Error('Android connection has closed. Reopen SpicySwipe.'));
         if (error) {
           const diagnostics = commandDiagnostics(args, error);
@@ -356,6 +356,13 @@ class Android {
     return { opened: 'store', platform };
   }
 
+  async openSettings() {
+    const epoch = this.inputEpoch, serial = await this._selected();
+    const result = await this._inputOn(serial, ['shell','am','start','-a','android.settings.SETTINGS'], epoch);
+    if (/error|exception/i.test(result)) throw Error('Android could not open settings on this phone.');
+    return {opened:'settings'};
+  }
+
   async screenshot() {
     const serial = await this._selected();
     const { bytes } = await this._capture(serial);
@@ -513,3 +520,4 @@ class Android {
 }
 
 module.exports = Android;
+module.exports.transientCommandFailure = transientCommandFailure;

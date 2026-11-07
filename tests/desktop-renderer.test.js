@@ -482,3 +482,22 @@ test('web notices a completed managed app installation without another click', a
   assert.equal(doc.querySelector('#phone-install-note').hidden, true);
   assert.match(doc.querySelector('#launch-app').textContent, /Open Hinge/);
 });
+
+test('web Android settings opens on the connected phone and retains its Google Play controls', async t => {
+  const f = await fixture(t, { web: true, seamless: true, status: platform => webAndroidStatus(platform, { devices: [{ id:'emulator-5554', state:'device' }] }),
+    prepare: () => ({ ready: true, serial: 'emulator-5554', needsInstall: true }) });
+  const doc = f.w.document;
+  await f.click('#device-button');
+  assert.equal(doc.querySelector('#open-android-settings').hidden, false);
+  await f.click('#open-android-settings');
+  assert.equal(doc.querySelector('#devices-dialog').open, false);
+  assert.ok(f.calls.some(c => c.action === 'android:settings' && c.data.platform === 'hinge'));
+  assert.equal(doc.querySelector('#install-app').hidden, false);
+  assert.ok(doc.querySelector('.device-controls #install-app'));
+  await f.click('#install-app');
+  assert.ok(f.calls.some(c => c.action === 'android:store' && c.data.platform === 'hinge'));
+  f.setInspect(() => ({ serial: 'emulator-5554', apps: { hinge: true } }));
+  await f.click('#launch-app');
+  assert.equal(doc.querySelector('#install-app').hidden, true);
+  assert.equal(doc.querySelector('#launch-app').textContent, 'Open Hinge');
+});

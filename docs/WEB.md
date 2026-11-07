@@ -14,6 +14,8 @@ Use **Show Tinder** to sign in to the server's browser. Click the Tinder image t
 
 Choose **Hinge** or **Bumble** in the workspace. Each app opens its own persistent Android phone. The phone pane shows boot progress, then the app itself or its Google Play listing. On first use, sign in to Google Play on that phone and install the app. Leave the tab open to launch it when installation finishes, or choose **Check installation**. Sign in to Hinge or Bumble directly on the phone. If setup reports an error, choose **Try again**.
 
+To change Android preferences on the connected phone, choose **Advanced settings** and **Open Android settings**. Use **Reopen Google Play** to return to the listing during installation, or **Open Hinge** or **Open Bumble** to return to an installed app.
+
 To use an external Android device, connect it to ADB on the server, select the app tab, then open **Advanced settings** and choose the online device. That app keeps the selected device across reloads. **Use assigned phone** switches it back. For a phone with wireless debugging, run these commands in the Coolify application terminal using the pairing and debugging addresses from the phone:
 
 ```sh

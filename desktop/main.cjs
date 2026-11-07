@@ -174,7 +174,11 @@ async function dispatch(action,data={}) {
         unsupported:'The managed Android image requires an x86-64 server.'
       }[stage];
       if(detail)return {ready:false,phase:stage,detail,serial:phones[platform].serial,needsInstall:false};
-      return session.managed.prepare(()=>revision===session.revision&&current());
+      return session.managed.prepare(()=>revision===session.revision&&current()).catch(error=>{
+        // ADB can briefly disconnect while Android restarts system services on first boot.
+        if(!Android.transientCommandFailure(error)&&error.code!=='ANDROID_DEVICE_UNAVAILABLE')throw error;
+        return {ready:false,phase:'booting',detail:'Android is reconnecting. Your phone will open automatically.',serial:phones[platform].serial,needsInstall:false};
+      });
     });
     session.commands=preparation.catch(()=>{});
     session.preparing=preparation;
@@ -227,6 +231,7 @@ async function dispatch(action,data={}) {
   if(action==='android:docs'){await shell.openExternal('https://developer.android.com/studio/run/managing-avds');return {ok:true};}
   const mutations={
     'android:open':device=>device.openApp(platform),'android:store':device=>device.openStore(platform),
+    'android:settings':device=>device.openSettings(),
     'android:tap':device=>device.tap(data.x,data.y),'android:swipe':device=>device.swipe(data.direction),
     'android:back':device=>device.back(),'android:key':device=>device.key(data.key),'android:type':device=>device.type(data.text)
   };

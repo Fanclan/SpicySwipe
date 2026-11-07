@@ -533,3 +533,10 @@ test('a supervised phone waits for its assigned emulator to restart', async t =>
   assert.equal(result.serial, 'emulator-5554');
   assert.equal(f.children.length, 0);
 });
+test('Advanced settings opens Android Settings only on the selected phone', async t => {
+  const f = fixture(t);
+  await assert.rejects(f.android.openSettings(), /select/i);
+  await f.android.select('emulator-5554');
+  assert.deepEqual(await f.android.openSettings(), {opened:'settings'});
+  assert.deepEqual(f.calls.at(-1).args, ['-s','emulator-5554','shell','am','start','-a','android.settings.SETTINGS']);
+});

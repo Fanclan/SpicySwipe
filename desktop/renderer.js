@@ -26,6 +26,8 @@
    $('#connect-device').hidden=true;$('#popout-device').hidden=true;
    $('#launch-app').textContent=needsInstall?'Check installation':'Open '+appName(platform);
    $('#phone-install-note').hidden=!needsInstall;
+   $('#install-app').hidden=!selected||!needsInstall;
+   $('#open-android-settings').hidden=!selected;
   }
   document.querySelectorAll('[data-platform]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.platform===platform)));
   mobileAutomation?.setConnected(selected);
@@ -117,12 +119,13 @@
   $('#phone-empty').hidden=false;$('#phone-screen').hidden=true;
   $('#managed-progress').hidden=retry;$('#retry-phone').hidden=!retry;
   $('#phone-install-note').hidden=true;
+  $('#install-app').hidden=true;$('#open-android-settings').hidden=true;
  }
  function setInstallState(required,detail){
   clearTimeout(installTimer);
   needsInstall=required;
   $('#phone-install-note').textContent=required?detail:'';
-  $('#phone-install-note').hidden=!required;
+  $('#phone-install-note').hidden=!required;$('#install-app').hidden=!required;
   $('#launch-app').textContent=required?'Check installation':'Open '+appName(platform);
  }
  function watchInstallation(setup){
@@ -212,6 +215,7 @@
   renderStartup();
   $('#device-issues').textContent=status.issues.join(' ');
   if(selected&&!status.devices.some(d=>d.state==='device'&&d.id===(rememberedSerial||status.selectedSerial))){selected=false;mobileAutomation?.setConnected(false);deviceEpoch++;$('#phone-screen').hidden=true;$('#phone-empty').hidden=false;$('#device-label').textContent='Device disconnected';}
+  if(api.web)$('#open-android-settings').hidden=!selected;
   return status;
  }
  async function openDevices({knownStatus,setup}={}){
@@ -223,9 +227,10 @@
  if(api.web){
   const dialog=$('#devices-dialog');
   $('.device-toolbar > div:last-child').append($('#device-button'));
+  $('#launch-app').before($('#install-app'));$('#install-app').textContent='Reopen Google Play';
   $('.dialog-top h2').textContent='Advanced settings';$('.dialog-top .eyebrow').textContent='Android device';
   $('#devices-dialog > p').textContent='Choose another online Android device for this app, or return to its assigned phone.';
-  for(const selector of ['#sdk-details','#sdk-folder','#android-help','#avd-select','#start-emulator','.setup-tip','#install-app']){
+  for(const selector of ['#sdk-details','#sdk-folder','#android-help','#avd-select','#start-emulator','.setup-tip']){
    const element=dialog.querySelector(selector);(element.closest('label')||element).hidden=true;
   }
   $('#phone-empty').setAttribute('aria-live','polite');
@@ -385,14 +390,17 @@
    if(revision!==setupEpoch)return;
    if(info.serial!==rememberedSerial)throw Error('The phone changed. Reopen the app tab to reconnect.');
    if(!info.apps?.[platform]){
-    await deviceAction('android:store');
-    if(revision===setupEpoch)notice('Finish installing '+appName(platform)+' in Google Play first.');
+    notice('Finish installing '+appName(platform)+' in Google Play first.');
     return;
    }
    await deviceAction('android:open');if(revision===setupEpoch)setInstallState(false,'');return;
   }
   await deviceAction('android:open');
- });bind('#install-app',async()=>{await deviceAction('android:store');closeDevicesProgrammatically();layout();});
+ });
+ bind('#open-android-settings',async()=>{
+  await deviceAction('android:settings');closeDevicesProgrammatically();layout();
+ });
+ bind('#install-app',async()=>{await deviceAction('android:store');closeDevicesProgrammatically();layout();});
  document.querySelectorAll('[data-scroll]').forEach(el=>el.addEventListener('click',()=>deviceAction('android:swipe',{direction:el.dataset.scroll}).catch(e=>notice(e.message,true))));
  document.querySelectorAll('[data-device]').forEach(el=>el.addEventListener('click',()=>deviceAction('android:'+el.dataset.device).catch(e=>notice(e.message,true))));
  bind('#mobile-generate',async()=>{const context=$('#mobile-context').value.trim();if(!context)throw Error('Add a profile detail or conversation first.');const current=platform,epoch=deviceEpoch;const result=await request('generate',{context:{name:current==='bumble'?'Bumble conversation':'Hinge conversation',bio:context,history:[]},options:{tone:$('#mobile-tone').value,instruction:$('#mobile-instruction').value}});if(platform!==current||epoch!==deviceEpoch)return;$('#mobile-draft').value=result.response;notice('Draft ready. Review it before using it.');});
