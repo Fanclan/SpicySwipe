@@ -5,6 +5,11 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
     shm_size: 512m
+    # A host without KVM keeps its standard /dev/null device and app group.
+    devices:
+      - "${SPICYSWIPE_KVM_DEVICE:-/dev/null}:${SPICYSWIPE_KVM_DEVICE:-/dev/null}:rw"
+    group_add:
+      - "${SPICYSWIPE_KVM_GID:-10001}"
     security_opt:
       - seccomp=./web/chromium-seccomp.json
     environment:

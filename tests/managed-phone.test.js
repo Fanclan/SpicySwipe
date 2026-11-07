@@ -47,6 +47,18 @@ test('changing the device while Android starts cancels the pending launch', asyn
   assert.deepEqual(calls, []);
 });
 
+test('reconnecting to the same boot leaves an in-progress sign-in on screen', async () => {
+  const {phone,device,calls} = fixture('hinge');
+  const prepare = () => phone.prepare(() => true);
+  device.boot = {phase:'ready',bootId:'same-boot'};
+  await prepare();
+  device.boot = {phase:'waiting'};
+  assert.equal((await prepare()).ready, false);
+  device.boot = {phase:'ready',bootId:'same-boot'};
+  assert.equal((await prepare()).ready, true);
+  assert.deepEqual(calls, ['select','store hinge']);
+});
+
 test('defaults use distinct managed phones and preserve legacy device overrides', () => {
   assert.equal(usesManagedPhone('hinge', undefined, false), false);
   assert.equal(usesManagedPhone('hinge', undefined, true), true);

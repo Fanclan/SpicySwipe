@@ -29,10 +29,11 @@ async function fixture(t, options = {}) {
     if (action === 'android:sdk') return options.sdk?options.sdk():{};
     if (action === 'android:status') return status(data.platform);
     if (action === 'android:prepareManaged') return options.prepare(data.platform);
+    if (action === 'android:checkInstallation') return {installed: options.installed?.(data.platform) ?? false};
     if (action === 'android:useManaged') return options.useManaged?.();
     if (action === 'android:start') return start();
     if (action === 'android:boot') return boot();
-    if (action === 'android:screenshot') return capture();
+    if (action === 'android:screenshot') return capture(data);
     if (['android:tap','android:back','android:type','android:key'].includes(action)) return input();
     if (action === 'android:inspect') return inspect();
     if (action === 'info') return { version: '3.0.0', arch: 'arm64' };
@@ -472,12 +473,12 @@ test('web adopts a connected external device without relaunching or reselecting 
 
 test('web notices a completed managed app installation without another click', async t => {
   let missing = true;
-  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus,
+  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus, installed: () => !missing,
     prepare: () => ({ ready: true, serial: 'emulator-5554', needsInstall: missing }) });
   const doc = f.w.document;
   assert.equal(doc.querySelector('#phone-install-note').hidden, false);
   missing = false;
-  const [key, timer] = [...f.timers].find(([, timer]) => timer.ms === 10000);
+  const [key, timer] = [...f.timers].find(([, timer]) => timer.ms === 30000);
   f.timers.delete(key); timer.fn(); await tick();
   assert.equal(doc.querySelector('#phone-install-note').hidden, true);
   assert.match(doc.querySelector('#launch-app').textContent, /Open Hinge/);
@@ -500,4 +501,85 @@ test('web Android settings opens on the connected phone and retains its Google P
   await f.click('#launch-app');
   assert.equal(doc.querySelector('#install-app').hidden, true);
   assert.equal(doc.querySelector('#launch-app').textContent, 'Open Hinge');
+});
+
+
+test('web returns to a connected phone without setup and keeps each preview isolated', async t => {
+  const prepared = platform => ({ready:true, serial:platform === 'hinge' ? 'emulator-5554' : 'emulator-5556'});
+  const f = await fixture(t, {web:true, seamless:true, status:webAndroidStatus, prepare:prepared});
+  const doc = f.w.document, gate = deferred();
+  f.setCapture(({platform}) => 'data:image/png;base64,' + platform);
+  await f.runTimer();
+  assert.equal(f.image.src, 'data:image/png;base64,hinge');
+
+  f.setCapture(({platform}) => platform === 'hinge' ? gate.promise : 'data:image/png;base64,bumble');
+  await f.runTimer();
+  await f.click('[data-platform="bumble"]');
+  await f.runTimer();
+  assert.equal(f.image.src, 'data:image/png;base64,bumble', 'Bumble can capture while Hinge is busy');
+  gate.resolve('data:image/png;base64,old-hinge'); await tick();
+  assert.equal(f.image.src, 'data:image/png;base64,bumble');
+
+  const fresh = deferred();
+  f.setCapture(() => fresh.promise);
+  const before = f.calls.length;
+  await f.click('[data-platform="hinge"]');
+  assert.equal(f.image.hidden, false);
+  assert.equal(f.image.src, 'data:image/png;base64,hinge');
+  assert.equal(doc.querySelector('#phone-empty').hidden, true);
+  assert.match(doc.querySelector('#preview-status').textContent, /updat|refresh/i);
+  assert.equal(f.calls.slice(before).some(c => ['android:status','android:prepareManaged','android:select','android:open','android:store'].includes(c.action)), false);
+  await f.tap(); assert.equal(f.calls.some(c => c.action === 'android:tap'), false, 'cached frame is read-only');
+  await f.runTimer();
+  fresh.resolve('data:image/png;base64,live-hinge'); await tick();
+  await f.tap();
+  const tap = f.calls.find(c => c.action === 'android:tap');
+  assert.equal(tap?.data.platform, 'hinge');
+  assert.equal(tap.data.expectedSerial, 'emulator-5554');
+  assert.ok(f.calls.slice(before).some(c => c.action === 'android:screenshot' && c.data.expectedSerial === 'emulator-5554'));
+});
+
+test('web resumes install checks only for the active phone, without reopening its Play login', async t => {
+  const prepared = platform => ({ready:true, serial:platform === 'hinge' ? 'emulator-5554' : 'emulator-5556', needsInstall:platform === 'hinge', detail:'Finish the Hinge install.'});
+  const f = await fixture(t, {web:true, seamless:true, status:webAndroidStatus, prepare:prepared});
+  await f.click('[data-platform="bumble"]');
+  const before = f.calls.length;
+  await f.click('[data-platform="hinge"]');
+  const note = f.w.document.querySelector('#phone-install-note');
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, 'Finish the Hinge install.');
+  const [id, timer] = [...f.timers].find(([,timer]) => timer.ms === 30000);
+  f.timers.delete(id); timer.fn(); await tick();
+  const calls = f.calls.slice(before);
+  assert.ok(calls.some(c => c.action === 'android:checkInstallation' && c.data.platform === 'hinge' && c.data.expectedSerial === 'emulator-5554'));
+  assert.equal(calls.some(c => ['android:prepareManaged','android:store','android:open'].includes(c.action)), false);
+});
+
+test('web rechecks the phone assignment if a resumed preview has been rebound', async t => {
+  let external = false;
+  const f = await fixture(t, {
+    web:true, seamless:true,
+    status:platform => webAndroidStatus(platform, external ? {
+      usesManagedDevice:false, preferredSerial:'usb-phone', selectedSerial:'usb-phone',
+      devices:[{id:'usb-phone',state:'device'}]
+    } : {}),
+    inspect:() => ({serial:'usb-phone',apps:{hinge:true}}),
+    prepare:() => ({ready:true,serial:'emulator-5554'})
+  });
+  await f.runTimer();
+  await f.click('[data-platform="tinder"]');
+  external = true;
+  f.setCapture(({expectedSerial}) => {
+    if (expectedSerial !== 'usb-phone') throw Error('The selected Android device changed. Reconnect the phone.');
+    return 'data:image/png;base64,external';
+  });
+  await f.click('[data-platform="hinge"]');
+  await f.tap();
+  assert.equal(f.calls.some(c => c.action === 'android:tap'), false);
+  await f.runTimer();
+  await f.runTimer();
+  assert.equal(f.image.src, 'data:image/png;base64,external');
+  await f.tap();
+  assert.equal(f.calls.find(c => c.action === 'android:tap')?.data.expectedSerial, 'usb-phone');
+  assert.equal(f.calls.some(c => ['android:select','android:open','android:store'].includes(c.action)), false);
 });

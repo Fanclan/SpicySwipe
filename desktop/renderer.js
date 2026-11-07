@@ -2,15 +2,17 @@
  'use strict';
  const api=window.spicyDesktop,$=s=>document.querySelector(s);
  let platform='tinder', live=false, settingsOpen=false, selected=false, deviceBusy=false, deviceEpoch=0, toastTimer;
- let frameTask=null, frameRequested=false, previewTimer, previewFailed=false, popoutOpen=false;
+ let previewTimer, previewFailed=false, previewReadOnly=false, popoutOpen=false;
+ const previews=new Map();
  let bootAttempt=null, bootTimer, bootPollTask=null, devicesStatus=null, connectingDevice=false, devicesRefreshEpoch=0;
  let setupEpoch=0, rememberedSerial='', rememberedAvd='', connectingSetup=null, programmaticDeviceCloses=0, preparingMobile=null;
  const listeners=new Set(), mobileDrafts={}, deviceStates={}, sessionStates={};
  const appName=target=>target==='bumble'?'Bumble':'Hinge';
- let needsInstall=false, installTimer;
+ let needsInstall=false, installTimer, pendingPlatformChange;
  const dedicatedAvds={hinge:"SpicySwipe_Phone_API_36",bumble:"SpicySwipe_Bumble_API_36"};
  function notice(message,error=false){const inDialog=$('#devices-dialog').open,el=$(inDialog?'#device-notice':'#notice');el.textContent=message;el.classList.toggle('error',error);el.hidden=false;clearTimeout(toastTimer);if(inDialog){el.scrollIntoView?.({block:'nearest'});return;}toastTimer=setTimeout(()=>el.hidden=true,error?9000:4500);}
  const request=(action,data)=>api.request(action,action.startsWith('android:')||action==='mobile:request'?{...data,platform:data?.platform||platform}:data);
+ const deviceRequest=(action,data)=>request(action,api.web?{...data,expectedSerial:rememberedSerial}:data);
  function bind(id,fn){$(id).addEventListener('click',async event=>{const button=event.currentTarget;if(button.disabled)return;button.disabled=true;try{await fn();}catch(e){notice(e.message,true);}finally{button.disabled=false;}});}
  async function bounds(){const el=$('#tinder-frame'),r=el.getBoundingClientRect();await request('bounds',{x:r.x,y:r.y,width:r.width,height:r.height,visible:platform==='tinder'&&live&&!$('#devices-dialog').open&&!settingsOpen&&Boolean($('#workspace .modal-layer')?.hidden)}).catch(()=>{});}
  function layout(){
@@ -38,7 +40,7 @@
  const bridge={desktop:true,web:api.web===true,signOut:api.signOut,version:'3.0',load:()=>request('load'),save:data=>request('save',data),authorizeOllama:()=>Promise.resolve({granted:true}),subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},page:(action,data)=>request('page',{action,data}),request:(action,data)=>action==='openTinder'?openTinder():action==='dashboard'?Promise.resolve():request(action,data)};
  let workspace, mobileAutomation;
  try{workspace=await SSWorkspace.mount($('#workspace'),bridge);}catch(error){notice(error.message,true);$('#workspace').textContent='Unable to open your saved workspace: '+error.message;return;}
- mobileAutomation=SSMobileAutomation.mount($('#mobile-automation'),{platform,notify:notice,prepareStart:prepareSession,request:(action,data)=>platform==='tinder'?Promise.resolve(null):request('mobile:request',{action,data})});
+ mobileAutomation=SSMobileAutomation.mount($('#mobile-automation'),{platform,notify:notice,prepareStart:prepareSession,request:(action,data)=>platform==='tinder'?Promise.resolve(null):request('mobile:request',{action,data,...(api.web&&selected?{expectedSerial:rememberedSerial}:{})})});
  api.subscribe(event=>{if(event.type==='page'){const tab=document.querySelector('[data-platform="tinder"]');if(tab)tab.dataset.status=event.data.session?.status||'idle';}if(event.type==='mobile:state'){sessionStates[event.data.platform]=event.data;mobileAutomation.handleState(event.data);const tab=document.querySelector('[data-platform="'+event.data.platform+'"]');if(tab){tab.dataset.status=event.data.session?.status||'idle';tab.setAttribute('title',event.data.platform+': '+tab.dataset.status)}}if(event.type==='android:popout'){popoutOpen=event.data.open;deviceEpoch++;$('#phone-screen').hidden=true;$('#phone-empty').hidden=popoutOpen||selected;$('#phone-detached').hidden=!popoutOpen;$('#popout-device').textContent=popoutOpen?'Show window ↗':'Pop out ↗';$('#preview-status').textContent=popoutOpen?'Open in separate window':'Connecting…';scheduleScreen(0);}listeners.forEach(fn=>fn(event));if(event.type==='notice')notice(event.data.message,event.data.error);});
  function closeDevicesProgrammatically(){
   if(!$('#devices-dialog').open)return;
@@ -48,17 +50,50 @@
  function setupCurrent(setup){return setup.epoch===setupEpoch&&setup.platform===platform&&platform!=='tinder'}
  async function choosePlatform(next){
   if(deviceBusy)throw Error('Wait for the current device action to finish.');
-  if(next===platform&&((api.web&&preparingMobile)||bootAttempt?.auto&&bootBusy()))return;
+  if(api.web&&!pendingPlatformChange&&next===platform&&platform!=='tinder'&&(selected||preparingMobile)){
+   if(settingsOpen){settingsOpen=false;layout();}
+   return;
+  }
+  if(next===platform&&bootAttempt?.auto&&bootBusy())return;
   const revision=++setupEpoch;devicesRefreshEpoch++;clearTimeout(installTimer);
   if(bootAttempt?.auto){bootAttempt=null;clearTimeout(bootTimer);renderStartup()}
   closeDevicesProgrammatically();
-  await request('platform',{platform:next});if(revision!==setupEpoch)return;
+  pendingPlatformChange=revision;
+  try{await request('platform',{platform:next});}finally{if(pendingPlatformChange===revision)pendingPlatformChange=null;}
+  if(revision!==setupEpoch)return;
   if(platform!=='tinder')mobileDrafts[platform]=Object.fromEntries(['context','instruction','draft','tone'].map(key=>[key,$('#mobile-'+key).value]));
-  if(platform!=='tinder')deviceStates[platform]={selected,rememberedSerial,rememberedAvd,needsInstall};
-  platform=next;({selected=false,rememberedSerial='',rememberedAvd='',needsInstall=false}=deviceStates[platform]||{});mobileAutomation.setPlatform(platform);mobileAutomation.setConnected(selected);
+  if(platform!=='tinder')deviceStates[platform]={selected,rememberedSerial,rememberedAvd,needsInstall,devicesStatus,installNote:$('#phone-install-note').textContent};
+  platform=next;
+  const previous=deviceStates[platform]||{};
+  ({selected=false,rememberedSerial='',rememberedAvd='',needsInstall=false}=previous);
+  if(api.web){devicesStatus=previous.devicesStatus||null;preparingMobile=null;}
+  mobileAutomation.setPlatform(platform);mobileAutomation.setConnected(selected);
   for(const key of ['context','instruction','draft','tone'])$('#mobile-'+key).value=mobileDrafts[platform]?.[key]||(key==='tone'?'friendly':'');
-  settingsOpen=false;deviceEpoch++;$('#phone-screen').hidden=true;$('#phone-empty').hidden=false;layout();
-  if(platform!=='tinder'){if(selected&&!api.web){mobileAutomation.handleState(sessionStates[platform]);$('#device-label').textContent=rememberedSerial;}else await prepareMobile({epoch:revision,platform});}
+  settingsOpen=false;deviceEpoch++;previewReadOnly=false;previewFailed=false;
+  $('#phone-screen').hidden=true;$('#phone-screen').inert=false;$('#phone-screen').removeAttribute('src');$('#phone-empty').hidden=false;
+  if(selected&&api.web)resumeWebPhone(previous,{epoch:revision,platform});
+  layout();
+  if(platform!=='tinder'){
+   if(selected){mobileAutomation.handleState(sessionStates[platform]);if(!api.web)$('#device-label').textContent=rememberedSerial;}
+   else await prepareMobile({epoch:revision,platform});
+  }
+ }
+ function resumeWebPhone(previous,setup){
+  const managed=previous.devicesStatus?.usesManagedDevice!==false;
+  $('#device-label').textContent=appName(platform)+' · '+(managed?'Assigned phone':rememberedSerial);
+  setInstallState(needsInstall,previous.installNote);
+  if(managed&&needsInstall)watchInstallation(setup);
+  const last=previews.get(platform);
+  if(last?.serial===rememberedSerial&&last.image){
+   $('#phone-screen').src=last.image;$('#phone-screen').hidden=false;$('#phone-empty').hidden=true;
+  }else{
+   $('#phone-empty h2').textContent=appName(platform)+' phone connected';
+   $('#phone-empty p').textContent='Waiting for its screen…';
+  }
+  $('#managed-progress').hidden=true;$('#retry-phone').hidden=true;
+  $('#preview-status').textContent='Updating preview…';
+  $('#phone-screen').inert=true;
+  previewReadOnly=true;
  }
  async function prepareSession(valid){
   const revision=setupEpoch,target=platform,wasReady=selected&&!connectingDevice&&!preparingMobile;
@@ -134,15 +169,19 @@
    if(!setupCurrent(setup)||!needsInstall||!selected)return;
    if(!document.hidden&&!settingsOpen&&!$('#devices-dialog').open){
     try{
-     const result=await request('android:prepareManaged',{platform:setup.platform});
+     const check=await deviceRequest('android:checkInstallation',{platform:setup.platform});
      if(!setupCurrent(setup)||!needsInstall)return;
-     if(result.ready&&!result.needsInstall){
-      setInstallState(false,'');$('#preview-status').textContent=appName(platform)+' is open';scheduleScreen(0);return;
+     if(check.installed){
+      const result=await deviceRequest('android:prepareManaged',{platform:setup.platform});
+      if(!setupCurrent(setup)||!needsInstall)return;
+      if(result.ready&&!result.needsInstall){
+       setInstallState(false,'');$('#preview-status').textContent=appName(platform)+' is open';scheduleScreen(0);return;
+      }
      }
     }catch{/* A transient disconnect can recover on the next check. */}
    }
    if(setupCurrent(setup)&&needsInstall)watchInstallation(setup);
-  },10000);
+  },30000);
  }
  async function prepareWebPhone(setup,status){
   const name=appName(setup.platform), current=()=>setupCurrent(setup);
@@ -184,6 +223,7 @@
  }
  function retryPhone(){
   const setup={epoch:++setupEpoch,platform};
+  previews.delete(platform);
   selected=false;mobileAutomation.setConnected(false);deviceEpoch++;
   return prepareMobile(setup);
  }
@@ -318,6 +358,7 @@
   if(!setup)setup={epoch:++setupEpoch,platform};
   const current=()=>setup.epoch===setupEpoch&&setup.platform===platform;
   if(!current())return;
+  previews.delete(platform);
   connectingSetup=setup;connectingDevice=true;renderStartup();selected=false;mobileAutomation?.setConnected(false);deviceEpoch++;$('#phone-screen').hidden=true;$('#preview-status').textContent='Connecting to '+serial+'…';
   try{
    await request('android:select',{serial,platform:setup.platform});if(!current())return;
@@ -327,10 +368,10 @@
    closeDevicesProgrammatically();layout();
    if(platform==='tinder'){notice('Device connected. Choose Hinge or Bumble to open it.');return}
    let opened=false;
-   if(info.apps?.[platform]){try{await request('android:open');opened=true}catch(error){if(current())notice(error.message,true)}}
+   if(info.apps?.[platform]){try{await deviceRequest('android:open');opened=true}catch(error){if(current())notice(error.message,true)}}
    else if(api.web){
     setInstallState(true,'Install '+appName(platform)+' from Google Play, then choose Check installation.');
-    await request('android:store');if(!current())return;
+    await deviceRequest('android:store');if(!current())return;
    }
    else notice('Connected. Install '+(platform==='hinge'?'Hinge':'Bumble')+' from Play Store using Devices.');
    if(!current())return;if(api.web&&opened)setInstallState(false,'');await refreshScreen();if(!current())return;
@@ -348,35 +389,48 @@
  }
  function refreshScreen(){
   if(!previewVisible())return Promise.resolve();
-  // A user action during capture requests one fresh frame afterward, never a second parallel capture.
-  if(frameTask){frameRequested=true;return frameTask;}
+  const target=platform,serial=rememberedSerial;
+  let preview=previews.get(target);
+  if(!preview||preview.serial!==serial){
+   preview={serial,image:null,task:null,requested:false};
+   previews.set(target,preview);
+  }
+  // Coalesce requests for one phone without holding up the other phone's preview.
+  if(preview.task){preview.requested=true;return preview.task;}
   clearTimeout(previewTimer);
   const epoch=deviceEpoch;
-  frameTask=(async()=>{
+  preview.task=(async()=>{
    try{
-    const image=await request('android:screenshot');
+    const image=await deviceRequest('android:screenshot',{platform:target});
     if(epoch!==deviceEpoch||!previewVisible())return;
-    $('#phone-screen').src=image;$('#phone-screen').hidden=false;$('#phone-empty').hidden=true;
+    const screen=$('#phone-screen');screen.src=image;
+    if(previewReadOnly&&screen.decode)await screen.decode();
+    if(epoch!==deviceEpoch||!previewVisible())return;
+    if(api.web)preview.image=image;
+    screen.hidden=false;screen.inert=false;$('#phone-empty').hidden=true;previewReadOnly=false;
     $('#preview-status').textContent='Live preview';previewFailed=false;
    }catch(error){
     if(epoch===deviceEpoch&&previewVisible()){
-     $('#phone-screen').hidden=true;
+     preview.image=null;$('#phone-screen').hidden=true;
+     if(api.web&&error.message==='The selected Android device changed. Reconnect the phone.'){
+      void retryPhone();return;
+     }
      $('#preview-status').textContent='Preview interrupted — retrying…';
      if(!previewFailed)notice(error.message,true);
      previewFailed=true;
     }
     throw error;
    }finally{
-    frameTask=null;
-    const immediate=frameRequested;frameRequested=false;
-    scheduleScreen(previewFailed?1500:immediate?0:80);
+    preview.task=null;
+    const immediate=preview.requested;preview.requested=false;
+    if(platform===target&&previews.get(target)===preview)scheduleScreen(previewFailed?1500:immediate?0:80);
    }
   })();
-  return frameTask;
+  return preview.task;
  }
  const controls=SSAndroidControls.create({
-  image:$('#phone-screen'),keyboard:$('#phone-keyboard'),send:request,
-  active:()=>selected&&platform!=='tinder'&&!popoutOpen&&!settingsOpen,
+  image:$('#phone-screen'),keyboard:$('#phone-keyboard'),send:deviceRequest,
+  active:()=>selected&&!previewReadOnly&&platform!=='tinder'&&!popoutOpen&&!settingsOpen,
   epoch:()=>deviceEpoch,onBusy:value=>{deviceBusy=value;},
   onUpdate:()=>refreshScreen().catch(()=>{}),onError:error=>notice(error.message,true)
  });
@@ -407,7 +461,7 @@
  bind('#copy-mobile',async()=>{const value=$('#mobile-draft').value;if(!value.trim())throw Error('Generate or write a draft first.');await navigator.clipboard.writeText(value);notice('Draft copied.');});
  bind('#type-mobile',()=>deviceAction('android:type',{text:$('#mobile-draft').value}));
  document.addEventListener('visibilitychange',()=>{scheduleScreen(0);for(const target of ['hinge','bumble'])request('mobile:request',{platform:target,action:'visibility',data:{visible:!document.hidden}}).catch(()=>{});});
- window.addEventListener('pagehide',()=>{setupEpoch++;clearTimeout(previewTimer);clearTimeout(bootTimer);clearTimeout(installTimer);bootAttempt=null;});
+ window.addEventListener('pagehide',()=>{setupEpoch++;deviceEpoch++;previews.clear();clearTimeout(previewTimer);clearTimeout(bootTimer);clearTimeout(installTimer);bootAttempt=null;});
  const info=await request('info');$('#machine-label').textContent=`v${info.version} · ${info.arch==='arm64'?'ARM64':info.arch}`;
  layout();
 })().catch(error=>{document.getElementById('notice').textContent=error.message;document.getElementById('notice').hidden=false;});
