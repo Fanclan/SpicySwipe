@@ -46,15 +46,32 @@
     message.setAttribute('role', 'status');
     button.setAttribute('aria-describedby', message.id);
     document.querySelector('#reload-tinder').before(button);
-    frame.prepend(message);
+    const form = document.createElement('form');
+    form.id = 'tinder-location-fallback';
+    form.hidden = true;
+    form.method = 'post';
+    form.autocomplete = 'off';
+    form.setAttribute('aria-label', 'Share your approximate current location');
+    form.innerHTML = `
+      <p>Enter your current coordinates from a map. They’ll be rounded to two decimal places and shared with Tinder for up to 15 minutes.</p>
+      <label>Latitude<input name="latitude" type="number" min="-90" max="90" step="any" required></label>
+      <label>Longitude<input name="longitude" type="number" min="-180" max="180" step="any" required></label>
+      <div><button type="submit" class="primary">Share approximate location</button>
+        <button type="button" id="cancel-location-entry">Cancel</button></div>`;
+    frame.prepend(message, form);
 
     let shared = null, busy = false, revision = 0;
+    function closeEntry() {
+      form.reset();
+      form.hidden = true;
+    }
     function showState(next) {
       button.textContent = next ? 'Stop sharing' : 'Share device location';
       if (shared !== next) {
-        message.textContent = next ? 'Tinder can use this location reading for up to 15 minutes.'
+        message.textContent = next ? 'Tinder can use this location for up to 15 minutes.'
           : shared ? 'Location sharing has ended.' : 'Share one location reading with Tinder for up to 15 minutes.';
       }
+      if (next) closeEntry();
       shared = next;
       button.disabled = busy;
     }
@@ -69,46 +86,74 @@
         if (version === revision && shared === null) message.textContent = 'Could not check location sharing. Reopen Tinder to retry.';
       }
     }
-    function currentPosition() {
+    const acquisitionFailed = error => error.code === 2 || error.code === 3;
+    async function devicePosition(current) {
       if (!window.isSecureContext) throw Error('Open this workspace over HTTPS or localhost to share your device location.');
       if (!navigator.geolocation) throw Error('This browser does not support location sharing. Open the workspace in a browser with location access.');
-      return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, error => {
-        const reasons = {
-          1: 'Allow location for this workspace in your browser’s site settings and enable location access for the browser in your device settings.',
-          2: 'Your device could not determine its location. Check that location services are on, then try again.',
-          3: 'Getting your location timed out. Check your device’s location settings and try again.'
-        };
-        reject(Error(reasons[error.code] || 'Could not read your location. Check your device’s location settings and try again.'));
-      }, {maximumAge:0, timeout:20000}));
+      const read = options => new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(({coords}) => resolve(coords), reject, options));
+      try {
+        return await read({maximumAge:60000, timeout:8000});
+      } catch (error) {
+        if (!current() || !acquisitionFailed(error)) throw error;
+        message.textContent = 'Trying for a fresh location reading…';
+        return read({enableHighAccuracy:true, maximumAge:0, timeout:15000});
+      }
     }
-    button.addEventListener('click', async () => {
+    async function changeSharing(entered) {
       if (busy || shared === null || frame.hidden) return;
       busy = true;
       button.disabled = true;
+      for (const control of form.elements) control.disabled = true;
       const version = ++revision;
+      const current = () => !frame.hidden && version === revision;
       try {
         if (shared) {
           showState((await request('web:locationStop')).shared);
         } else {
-          message.textContent = 'Waiting for your browser to share this device’s location…';
-          const {coords} = await currentPosition();
-          if (frame.hidden || version !== revision) return;
+          if (!entered) closeEntry();
+          message.textContent = entered ? 'Sharing your approximate location…' : 'Waiting for your device’s location…';
+          const coords = entered || await devicePosition(current);
+          if (!current()) return;
           const {latitude, longitude, accuracy} = coords;
           showState((await request('web:location', {latitude, longitude, accuracy})).shared);
         }
       } catch (error) {
-        if (!frame.hidden) message.textContent = error.message;
+        if (!current()) return;
+        if (acquisitionFailed(error)) {
+          message.textContent = 'Your browser couldn’t get a location reading. You can retry or enter your current coordinates below.';
+          form.hidden = false;
+        } else if (error.code === 1) {
+          message.textContent = 'Allow location for this site and enable location access for your browser in your device settings.';
+        } else {
+          message.textContent = error.message || 'Could not share your location. Try again.';
+        }
       } finally {
         busy = false;
         button.disabled = shared === null;
+        for (const control of form.elements) control.disabled = false;
         if (version !== revision) sync();
       }
+    }
+    button.addEventListener('click', () => changeSharing());
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (form.hidden || busy || shared !== false || !window.isSecureContext || !form.reportValidity()) return;
+      const latitude = form.elements.latitude.valueAsNumber;
+      const longitude = form.elements.longitude.valueAsNumber;
+      changeSharing({latitude:Number(latitude.toFixed(2)), longitude:Number(longitude.toFixed(2)), accuracy:1000});
+    });
+    form.querySelector('#cancel-location-entry').addEventListener('click', () => {
+      closeEntry();
+      message.textContent = 'Location sharing is off.';
+      button.focus();
     });
     button.disabled = true;
     button.textContent = 'Share device location';
     new MutationObserver(() => {
       if (frame.hidden !== button.hidden) {
         revision++;
+        if (frame.hidden) closeEntry();
         sync();
       }
     }).observe(frame, {attributes:true, attributeFilter:['hidden']});
