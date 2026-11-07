@@ -100,6 +100,13 @@ body:has(.ss-app[data-theme=dark]) .platforms button[aria-pressed=true] {
 .mode-bar button { font-size: 11px; padding: 6px 8px; }
 .mode-bar #tinder-location { border-color: var(--line); color: var(--spice); }
 #tinder-location-note { margin: 0; padding: 8px 12px; color: var(--ink-web); background: var(--card); border-bottom: 1px solid var(--line); font: 13px/1.45 var(--interface); text-align: start; }
+#tinder-location-fallback:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#tinder-location-fallback { padding: 12px; background: var(--card); border-bottom: 1px solid var(--line); }
+#tinder-location-fallback p, #tinder-location-fallback div { grid-column: 1 / -1; }
+#tinder-location-fallback p { margin: 0; font-size: 13px; color: var(--quiet); }
+#tinder-location-fallback label { margin: 0; color: var(--ink-web); }
+#tinder-location-fallback input { margin-top: 4px; color: var(--ink-web); background: var(--paper); border-color: var(--line); }
+#tinder-location-fallback div { display: flex; flex-wrap: wrap; gap: 8px; }
 #tinder-layout { height: calc(100dvh - 115px); }
 #tinder-frame { overflow: auto; min-width: min(390px, 42%); background: var(--wash); border-color: var(--line); }
 #tinder-frame img { display: block; width: 100%; height: auto; cursor: pointer; }
