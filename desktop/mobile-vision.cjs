@@ -27,7 +27,7 @@ function withoutCaret(input,{width,height}){
    for(const [nx,ny]of [[a-1,b],[a+1,b],[a,b-1],[a,b+1]]){const j=ny*width+nx;if(nx>=0&&nx<width&&ny>=0&&ny<height&&!seen[j]&&dark(j)){seen[j]=1;queue.push(j)}}
   }
   const w=right-left+1,h=bottom-top+1;
-  if(w<=Math.max(3,Math.round(height*.045))&&h>=height*.28&&h<=height*.6&&queue.length/(w*h)>.8){
+  if(w<=Math.max(3,Math.round(height*.045))&&h>=Math.round(height*.28)&&h<=height*.6&&queue.length/(w*h)>.8){
    for(let b=Math.max(0,top-1);b<=Math.min(height-1,bottom+1);b++)for(let a=Math.max(0,left-1);a<=Math.min(width-1,right+1);a++)for(let c=0;c<3;c++)out[(b*width+a)*4+c]=255;
   }
  }
