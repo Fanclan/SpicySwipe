@@ -34,7 +34,7 @@ Build: `npm run desktop:win`. The NSIS installer allows choosing an installation
 
 Build on Apple Silicon with `npm run desktop:mac`, or on Intel with `npm run desktop:mac:x64`. The current build configuration uses ad-hoc signing; it is not Developer ID signed or notarized. A downloaded preview may be blocked by Gatekeeper. Prefer running from reviewed source if its origin cannot be verified.
 
-Hinge automation depends on Windows OCR and is unavailable here. Android manual controls and text-based AI drafting remain available. Native Intel and extended mobile-session behavior still need validation.
+Hinge automated Likes require an OCR provider and are unavailable on the native macOS desktop. Android manual controls and text-based AI drafting remain available. Native Intel and extended mobile-session behavior still need validation.
 
 ## Linux
 
@@ -45,7 +45,7 @@ Hinge automation depends on Windows OCR and is unavailable here. Android manual 
 
 Build with `npm run desktop:linux`. Mark the resulting AppImage executable before launching. AppImage support and system libraries vary by distribution; see [Electron's prerequisites](https://www.electronjs.org/docs/latest/tutorial/tutorial-prerequisites) and [AppImage documentation](https://docs.appimage.org/user-guide/run-appimages.html). Do not launch Electron as root or disable its sandbox to work around setup problems.
 
-Linux is a packaging target, not a claim of completed native end-to-end testing. Hinge's Windows OCR path is unavailable.
+When running the current source on Linux, Hinge uses Tesseract to read the comment field before sending a Like. Set the Hinge app language to English. On Debian, install `tesseract-ocr` and `tesseract-ocr-eng` on the computer running SpicySwipe. The web image includes both packages. Native Linux end-to-end testing is still pending.
 
 ## After launch
 

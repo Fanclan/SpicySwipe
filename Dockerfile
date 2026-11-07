@@ -6,7 +6,7 @@ COPY . .
 RUN npm run desktop:build && npm test
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth adb curl unzip util-linux libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libsecret-1-0 fonts-liberation ca-certificates dbus-x11 && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth adb curl unzip util-linux libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libsecret-1-0 fonts-liberation ca-certificates dbus-x11 tesseract-ocr tesseract-ocr-eng && rm -rf /var/lib/apt/lists/* \
  && useradd -m -u 10001 spicy && install -d -o spicy -g spicy /data && install -d /opt/android/platform-tools && ln -s /usr/bin/adb /opt/android/platform-tools/adb \
  && ln -s /data/android-runtime/sdk/emulator /opt/android/emulator && ln -s /data/android-runtime/sdk/system-images /opt/android/system-images
 WORKDIR /app
