@@ -22,6 +22,30 @@ test('local cursor removal erases only a tall thin caret, preserving letter stro
  paint(80,30,4,60);paint(140,0,4,53);paint(40,40,4,40);const out=withoutCaret(bytes,{width,height});assert.equal(out[(40*width+80)*4],255);assert.equal(out[(10*width+140)*4],255);assert.equal(out[(40*width+40)*4],10);assert.equal(bytes[(40*width+80)*4],10);
 });
 
+test('caret removal rounds the minimum height to a pixel and preserves shorter strokes and typed letters', () => {
+ const {withoutCaret} = require('../desktop/mobile-vision.cjs');
+ const width = 160, height = 136;
+ const original = Buffer.alloc(width * height * 4, 255);
+ const paint = (bitmap, left, top, w, h, value) => {
+  for (let y = top; y < top + h; y++) {
+   for (let x = left; x < left + w; x++) {
+    const start = (y * width + x) * 4;
+    bitmap.fill(value, start, start + 3);
+   }
+  }
+ };
+ paint(original, 15, 30, 4, 38, 20);
+ paint(original, 35, 30, 4, 37, 20);
+ // A typed H remains dark even though both vertical strokes are as tall as the caret.
+ paint(original, 65, 30, 4, 38, 20);
+ paint(original, 83, 30, 4, 38, 20);
+ paint(original, 69, 47, 14, 4, 20);
+ const expected = Buffer.from(original);
+ paint(expected, 15, 30, 4, 38, 255);
+ assert.ok(withoutCaret(original, {width, height}).equals(expected),
+  'Only the 38-pixel caret should be cleared');
+});
+
 function patternedPicture(){const crops=[];return {crops,getSize:()=>({width:1200,height:1400}),crop:b=>{crops.push(b);return {resize:({width,height})=>({toBitmap:()=>{const out=Buffer.alloc(width*height*4,255);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const a=b.x+(x+.5)*b.width/width,c=b.y+(y+.5)*b.height/height,v=Math.round(127+60*Math.sin(a*.021+c*.009)+60*Math.cos(c*.025-a*.017));for(let k=0;k<3;k++)out[(y*width+x)*4+k]=v;}return out;}})}}};}
 test('top-clipped Hinge square photo preserves its original hash using only visible pixels',()=>{const {fingerprint,squareFingerprint}=require('../desktop/mobile-vision.cjs');const p=patternedPicture(),full={x:100,y:100,width:800,height:800},clipped={x:100,y:200,width:800,height:700};const expected=fingerprint(p,full);assert.notEqual(fingerprint(p,clipped),expected);p.crops.length=0;assert.equal(squareFingerprint(p,clipped),expected);assert.ok(p.crops.every(b=>b.x>=clipped.x&&b.y>=clipped.y&&b.x+b.width<=clipped.x+clipped.width&&b.y+b.height<=clipped.y+clipped.height));});
 test('square comparison refuses insufficient visible content and does not authorize a different image',()=>{const {fingerprint,squareFingerprint}=require('../desktop/mobile-vision.cjs');const p=patternedPicture();assert.equal(squareFingerprint(p,{x:100,y:350,width:800,height:550}),null);assert.notEqual(squareFingerprint(p,{x:180,y:200,width:800,height:700}),fingerprint(p,{x:100,y:100,width:800,height:800}));});
