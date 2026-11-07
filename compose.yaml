@@ -11,7 +11,10 @@ services:
       SPICYSWIPE_STORAGE_KEY: ${SPICYSWIPE_STORAGE_KEY:?Set a persistent 32-byte hex key in .env}
     ports:
       - "127.0.0.1:${SPICYSWIPE_PORT:-8187}:8080"
+      - "${SPICYSWIPE_LAN_IP:?Set the server LAN address}:${SPICYSWIPE_PORT:-8187}:8080"
     volumes:
       - workspace:/data
 volumes:
   workspace:
+    external: true
+    name: spicyswipe_workspace

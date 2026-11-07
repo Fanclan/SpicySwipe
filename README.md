@@ -1,15 +1,15 @@
 <div align="center">
   <img src="assets/logo.svg" alt="SpicySwipe lightning logo" width="96" height="96">
-  <h1>SpicySwipe</h1>
+  <h1>SpicySwipeWeb</h1>
   <p><strong>One workspace. Three dating apps. Your AI.</strong></p>
-  <p>Tinder, Hinge, and Bumble sessions, profile review, and AI drafts in a desktop app.</p>
+  <p>A private browser workspace for Tinder, Hinge, and Bumble, based on the SpicySwipe desktop app.</p>
   <p>
-    <a href="https://github.com/Fanclan/SpicySwipe/actions/workflows/ci.yml"><img src="https://github.com/Fanclan/SpicySwipe/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+    <a href="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml"><img src="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
     <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/Node.js-24_LTS-43853d" alt="Node.js 24 LTS"></a>
     <a href="License"><img src="https://img.shields.io/badge/license-personal%20%2F%20noncommercial-e87560" alt="Personal and non-commercial license"></a>
     <a href="https://fanclan.io"><img src="https://img.shields.io/badge/maintained%20by-Fanclan-292524" alt="Maintained by Fanclan"></a>
   </p>
-  <p><a href="#quick-start">Quick start</a> · <a href="docs/SETUP.md">Platform setup</a> · <a href="docs/ANDROID.md">Android devices</a> · <a href="docs/AI.md">AI setup</a> · <a href="CONTRIBUTING.md">Contribute</a></p>
+  <p><a href="docs/WEB.md">Deploy with Coolify</a> · <a href="#quick-start">Quick start</a> · <a href="docs/SETUP.md">Platform setup</a> · <a href="docs/ANDROID.md">Android devices</a> · <a href="docs/AI.md">AI setup</a> · <a href="CONTRIBUTING.md">Contribute</a></p>
 </div>
 
 ---
@@ -21,7 +21,7 @@
 
 **Public preview.** Windows is the primary tested platform. macOS and Linux build targets are included; see the support table below. Dating apps change frequently, so an unrecognized screen can require a compatibility update.
 
-**License status:** this repository is publicly available under the original [SpicySwipe Personal Use License](License). It permits personal, educational, and non-commercial use and requires attribution. It is **source-available, not an OSI-approved open-source license**. Commercial use requires permission from the original rights holder. See [attribution](ATTRIBUTION.md).
+**License status:** this project uses the original [SpicySwipe Personal Use License](License). It permits personal, educational, and non-commercial use and requires attribution. It is **source-available, not an OSI-approved open-source license**. Commercial use requires permission from the original rights holder. See [attribution](ATTRIBUTION.md).
 
 ## What you can do
 
@@ -58,7 +58,7 @@ Installers do not require Node.js. They are **unsigned previews**; Mac builds ar
 
 ## Quick start
 
-For a browser workspace hosted on your own server, follow the [Docker Compose setup](docs/WEB.md).
+For a browser workspace hosted on your own server, follow the [Coolify deployment guide](docs/WEB.md).
 
 Install [Git](https://git-scm.com/downloads) and [Node.js 24 LTS](https://nodejs.org/en/download) (24.15.0+; Node 22.22.2+ on the 22.x line is also supported), then run:
 
