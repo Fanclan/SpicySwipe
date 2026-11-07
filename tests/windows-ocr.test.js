@@ -25,6 +25,64 @@ test('local OCR uses only a static hidden PowerShell script, bounded PNG temp, a
  assert.equal(text,'Add a comment');assert.equal(fs.existsSync(fileSeen),false);assert.deepEqual(fs.readdirSync(tempRoot),[]);
 });
 
+test('Linux OCR reads a private crop with local English Tesseract and removes it', async t => {
+ const tempRoot = sandbox(t);
+ const controller = new AbortController();
+ const text = await readPngText(png, {
+  platform: 'linux', tempRoot, signal: controller.signal, timeoutMs: 2000,
+  execFile: fakeExec(({file, args, settings, callback}) => {
+   assert.equal(file, '/usr/bin/tesseract');
+   const [crop, destination, ...options] = args;
+   assert.equal(destination, 'stdout');
+   assert.deepEqual(options, ['-l', 'eng', '--psm', '6']);
+   assert.equal(settings.shell, false);
+   assert.equal(settings.signal, controller.signal);
+   assert.equal(settings.timeout, 2000);
+   assert.ok(settings.maxBuffer > 0 && settings.maxBuffer <= 65536);
+   assert.equal(path.dirname(path.dirname(crop)), tempRoot);
+   assert.deepEqual(fs.readFileSync(crop), png);
+   if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(crop).mode & 0o077, 0);
+    assert.equal(fs.statSync(path.dirname(crop)).mode & 0o077, 0);
+   }
+   callback(null, 'Add a comment\n', '');
+  })
+ });
+ assert.equal(text.trim(), 'Add a comment');
+ assert.deepEqual(fs.readdirSync(tempRoot), []);
+});
+
+test('Linux OCR rejects malformed images and invalid recognized text', async t => {
+ const tempRoot = sandbox(t);
+ await assert.rejects(readPngText(Buffer.from('not a PNG'), {
+  platform: 'linux', tempRoot, execFile: () => assert.fail('Invalid image reached OCR')
+ }), {code: 'OCR_INPUT'});
+ for (const output of ['x'.repeat(8001), 'ok\u0000hidden']) {
+  await assert.rejects(readPngText(png, {
+   platform: 'linux', tempRoot, execFile: fakeExec(({callback}) => callback(null, output, ''))
+  }), {code: 'OCR_RESULT'});
+  assert.deepEqual(fs.readdirSync(tempRoot), []);
+ }
+});
+
+test('Linux OCR discards late or timed-out results and removes the crop', async t => {
+ const tempRoot = sandbox(t);
+ const aborted = new AbortController();
+ await assert.rejects(readPngText(png, {
+  platform: 'linux', tempRoot, signal: aborted.signal,
+  execFile: fakeExec(({callback}) => {
+   aborted.abort();
+   callback(null, 'late recognition', '');
+  })
+ }), {code: 'OCR_ABORTED'});
+ assert.deepEqual(fs.readdirSync(tempRoot), []);
+ await assert.rejects(readPngText(png, {
+  platform: 'linux', tempRoot,
+  execFile: fakeExec(({callback}) => callback(Object.assign(Error('private output'), {killed: true}), '', ''))
+ }), {code: 'OCR_TIMEOUT'});
+ assert.deepEqual(fs.readdirSync(tempRoot), []);
+});
+
 test('rejects unsupported platforms, malformed and oversized images before starting a process',async()=>{
  let calls=0;const options={platform:'win32',execFile:()=>{calls++;}};
  await assert.rejects(readPngText(png,{...options,platform:'darwin'}),/Windows|unsupported/i);

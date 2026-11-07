@@ -11,7 +11,7 @@
 | Both mobile sessions affect the same screen | Assign a different Android device to each platform. |
 | Profile changed or a dialog interrupted review | Pause; inspect the selected device for an overlay, loading state, or manually changed screen. Return to ordinary discovery and start a short test. If repeatable, file a sanitized bug report. |
 | A Like was submitted but the screen did not advance | Do not repeatedly click Send. Check network connectivity and the account's own limits; an uncertain outcome is not proof the action failed. |
-| Hinge OCR unavailable | Use Windows with an installed supported OCR language and English app labels. This OCR path is not implemented on macOS/Linux. |
+| Hinge OCR unavailable | Set Hinge to English. On Linux, run `tesseract --list-langs` where SpicySwipe runs and check for `eng`. On Debian, install `tesseract-ocr` and `tesseract-ocr-eng`. The current web image includes both. On Windows, install a supported Windows OCR language. The native macOS app has no Hinge OCR provider. |
 | Emulator closes, freezes, or renders incorrectly | Check virtualization and graphics in Android Studio; cold boot the affected device. Record GPU, emulator, and app versions for a bug report. |
 | Ollama model list empty | Confirm the server URL and install a chat model on that server. Model discovery lists installed models only. |
 | Cloud models list but generation fails | Check the selected model, provider permissions, billing, and quota. Discovery is not a generation test. |

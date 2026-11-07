@@ -24,7 +24,7 @@ Device preferences are stored per platform. After setup, **Start session** prepa
 
 ## Run sessions
 
-- **Hinge:** choose plain Likes (default) or opt into AI comments. Profile scrolling and photo selection are configurable. The recognized Rose offer uses **Send Like anyway**; Roses are not purchased or sent by this flow. Hinge OCR automation currently requires Windows and English screen labels.
+- **Hinge:** choose plain Likes (default) or opt into AI comments. Profile scrolling and photo selection are configurable. The recognized Rose offer uses **Send Like anyway**. Hinge verifies the comment field locally with Windows OCR or Tesseract on Linux. Use English app labels.
 - **Bumble:** right swipe means Like; left swipe means pass. The current automated flow supports these actions, not Compliments or messaging.
 - Set each app's Like ratio, action cap, timing, breaks, and session duration. Enable background operation for a session that should keep running when another platform tab is selected.
 - Start each app's session separately. Keep the desktop app open. Use its status, pause, and stop controls to manage each run.

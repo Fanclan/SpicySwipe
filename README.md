@@ -84,7 +84,7 @@ For concurrent Hinge and Bumble sessions, give each app a separate Android devic
 | --- | --- | --- | --- |
 | Desktop workspace and Tinder | Tested | Basic desktop use tested on Apple Silicon; Intel needs native testing | Build target; native use needs testing |
 | Android connection and manual controls | Tested | Available; verify on your device | Available; verify on your device |
-| Hinge automated Likes and comments | Tested with Windows OCR | Not supported by the current OCR implementation | Not supported by the current OCR implementation |
+| Hinge automated Likes and comments | Tested with Windows OCR | Unsupported on the native desktop | Current source uses Tesseract with English language data, included in the web image |
 | Bumble Like / pass sessions | Tested | Not yet validated | Not yet validated |
 | Chrome extension for Tinder | Available in Chrome | Available in Chrome | Available in Chrome |
 
