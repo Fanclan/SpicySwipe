@@ -8,7 +8,7 @@ In Coolify, set the runtime variables `SPICYSWIPE_PASSWORD`, `SPICYSWIPE_STORAGE
 
 Open `http://<server-LAN-IP>:8187` on the same network and enter the workspace password. The browser stays signed in for up to 12 hours. Choose **Sign out** to lock the workspace on that browser. Restarting the service also ends browser sessions. The direct LAN connection uses HTTP. For a domain, route an HTTPS reverse proxy to container port 8080 and disable buffering for /api/events.
 
-Use **Show Tinder** to sign in to the server's browser. Click the Tinder image to tap, type, paste, or scroll. Location requests default to denied. Sign-in methods requiring a local hardware device, camera or passkey need separate validation.
+Use **Show Tinder** to sign in to the server's browser. Click the Tinder image to tap, type, paste, or scroll. To use nearby profiles, open the workspace over HTTPS (or localhost through an SSH tunnel), choose **Share device location**, and allow your browser to use your location. Tinder reloads with a single reading from that device. The reading is available for up to 15 minutes. Choose **Stop sharing** to end access sooner. The plain HTTP LAN address does not support browser geolocation. Sign-in methods requiring a local hardware device, camera or passkey need separate validation.
 
 For Hinge or Bumble, first connect an Android device reachable from the container. For a phone with wireless debugging enabled, use the Coolify application terminal for the running service and the two addresses shown in Android's wireless debugging settings:
 
