@@ -2,7 +2,7 @@
 
 This single-user Linux service serves the workspace UI to your browser. Its API runs the same settings service, Android controllers and Tinder command handlers as the desktop app. Only Tinder and Android device views use remotely rendered images. Everyone with the workspace password controls the same accounts. Use one browser tab at a time.
 
-Deploy this application through Coolify. Use the GitHub source `Fanclan/SpicySwipeWeb`, branch `main`, the Docker Compose build pack, and `/compose.yaml`. Enable automatic deployments on push. The GitHub App must have access to the repository and deliver push events to this Coolify instance.
+Deploy this application through Coolify. Use the GitHub source `Fanclan/SpicySwipeWeb`, branch `main`, the Docker Compose build pack, and `/compose.yaml`. Enable automatic deployments on push. Keep pull request previews disabled for this application because its fixed ports and workspace volume belong to production. The GitHub App must have access to the repository and deliver push events to this Coolify instance.
 
 In Coolify, set the runtime variables `SPICYSWIPE_PASSWORD`, `SPICYSWIPE_STORAGE_KEY`, and `SPICYSWIPE_LAN_IP`. The password must contain at least 16 characters and the storage key must be 32 bytes encoded as 64 hex characters. For a migration, reuse both existing secrets and the existing Docker volume `spicyswipe_workspace` on the same server. The Compose definition mounts that external volume at `/data`. For a first installation, provision the named volume before deploying.
 
