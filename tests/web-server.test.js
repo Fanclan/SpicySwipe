@@ -2,9 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {start,credentialStore} = require('../web/server.cjs');
 const password = 'example-only-test-password';
-async function fixture(t) {
+async function fixture(t, options={}) {
   let called = 0;
-  const {server} = await start({password,host:'127.0.0.1',port:0,request:async()=>++called});
+  const {server} = await start({password,host:'127.0.0.1',port:0,request:async()=>++called,...options});
   t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
   const base = 'http://127.0.0.1:'+server.address().port;
   return {
@@ -61,4 +61,39 @@ test('encrypted provider keys survive restart and reject tampering',()=>{
   assert.equal(credentialStore(key).decryptString(bytes),'provider-key');
   bytes[bytes.length-1]^=1;
   assert.throws(()=>credentialStore(key).decryptString(bytes));
+});
+
+test('geolocation ownership ends when the sharing browser loses its last stream, even with another browser connected', {timeout:5000}, async t=>{
+  const disconnected = [];
+  let owner;
+  const {get,post} = await fixture(t,{
+    request(action,data,session) {
+      if(action==='share') owner=session;
+      return session.streams.size;
+    },
+    onSessionDisconnect(session) {disconnected.push(session);}
+  });
+  async function signIn(){
+    const login = await post('/api/login',{password});
+    return {cookie:login.headers.get('set-cookie').split(';')[0]};
+  }
+  const sender = await signIn(), other = await signIn();
+  const open = headers => get('/api/events',{headers});
+  const first = await open(sender), second = await open(sender), bystander = await open(other);
+  const share = await post('/api/request',{action:'share'},sender);
+  assert.equal((await share.json()).result,2);
+  async function waitFor(check) {
+    for(let i=0;i<150;i++) {
+      if(check()) return;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.fail('the server did not observe the event stream disconnect');
+  }
+  await first.body.cancel();
+  await waitFor(()=>owner.streams.size===1);
+  assert.equal(disconnected.includes(owner),false);
+  await second.body.cancel();
+  await waitFor(()=>disconnected.includes(owner));
+  assert.equal(disconnected.length,1,'the other browser is still connected');
+  await bystander.body.cancel();
 });

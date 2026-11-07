@@ -36,6 +36,86 @@
     if (!response.ok) throw Error(body.error || 'Request failed.');
     return body.result;
   }
+  function addLocationControl(frame) {
+    const button = document.createElement('button');
+    button.id = 'tinder-location';
+    button.type = 'button';
+    button.hidden = true;
+    const message = document.createElement('p');
+    message.id = 'tinder-location-note';
+    message.setAttribute('role', 'status');
+    button.setAttribute('aria-describedby', message.id);
+    document.querySelector('#reload-tinder').before(button);
+    frame.prepend(message);
+
+    let shared = null, busy = false, revision = 0;
+    function showState(next) {
+      button.textContent = next ? 'Stop sharing' : 'Share device location';
+      if (shared !== next) {
+        message.textContent = next ? 'Tinder can use this location reading for up to 15 minutes.'
+          : shared ? 'Location sharing has ended.' : 'Share one location reading with Tinder for up to 15 minutes.';
+      }
+      shared = next;
+      button.disabled = busy;
+    }
+    async function sync() {
+      button.hidden = frame.hidden;
+      if (frame.hidden || document.hidden || busy) return;
+      const version = ++revision;
+      try {
+        const result = await request('web:locationStatus');
+        if (version === revision) showState(result.shared);
+      } catch {
+        if (version === revision && shared === null) message.textContent = 'Could not check location sharing. Reopen Tinder to retry.';
+      }
+    }
+    function currentPosition() {
+      if (!window.isSecureContext) throw Error('Open this workspace over HTTPS or localhost to share your device location.');
+      if (!navigator.geolocation) throw Error('This browser does not support location sharing. Open the workspace in a browser with location access.');
+      return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, error => {
+        const reasons = {
+          1: 'Allow location for this workspace in your browser’s site settings and enable location access for the browser in your device settings.',
+          2: 'Your device could not determine its location. Check that location services are on, then try again.',
+          3: 'Getting your location timed out. Check your device’s location settings and try again.'
+        };
+        reject(Error(reasons[error.code] || 'Could not read your location. Check your device’s location settings and try again.'));
+      }, {maximumAge:0, timeout:20000}));
+    }
+    button.addEventListener('click', async () => {
+      if (busy || shared === null || frame.hidden) return;
+      busy = true;
+      button.disabled = true;
+      const version = ++revision;
+      try {
+        if (shared) {
+          showState((await request('web:locationStop')).shared);
+        } else {
+          message.textContent = 'Waiting for your browser to share this device’s location…';
+          const {coords} = await currentPosition();
+          if (frame.hidden || version !== revision) return;
+          const {latitude, longitude, accuracy} = coords;
+          showState((await request('web:location', {latitude, longitude, accuracy})).shared);
+        }
+      } catch (error) {
+        if (!frame.hidden) message.textContent = error.message;
+      } finally {
+        busy = false;
+        button.disabled = shared === null;
+        if (version !== revision) sync();
+      }
+    });
+    button.disabled = true;
+    button.textContent = 'Share device location';
+    new MutationObserver(() => {
+      if (frame.hidden !== button.hidden) {
+        revision++;
+        sync();
+      }
+    }).observe(frame, {attributes:true, attributeFilter:['hidden']});
+    document.addEventListener('visibilitychange', sync);
+    setInterval(sync, 15000);
+    sync();
+  }
   document.addEventListener('visibilitychange',()=>request('web:visibility',{visible:!document.hidden}).catch(()=>{}));
   const frame = document.querySelector('#tinder-frame');
   const image = document.createElement('img');
@@ -44,6 +124,7 @@
   const status = document.createElement('small');
   status.setAttribute('role','status');
   frame.replaceChildren(image,status);
+  addLocationControl(frame);
   document.querySelector('.setup-tip').textContent = 'Select a device connected to the server. For simultaneous sessions, connect a separate device for each app.';
   const report = error => {status.textContent = error.message;};
   let current, queue = Promise.resolve();

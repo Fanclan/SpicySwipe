@@ -61,7 +61,7 @@ function json(res, status, body) {
   res.writeHead(status, {'Content-Type':'application/json'}).end(JSON.stringify(body));
 }
 
-async function start({request, password, port = 8080, host = '0.0.0.0', onPresence = () => {}}) {
+async function start({request, password, port = 8080, host = '0.0.0.0', onPresence = () => {}, onSessionDisconnect = () => {}}) {
   if (!password || password.length < 16) throw Error('Set SPICYSWIPE_PASSWORD to at least 16 characters.');
   const expected = hash(password);
   const sessions = new Map();
@@ -81,6 +81,7 @@ async function start({request, password, port = 8080, host = '0.0.0.0', onPresen
     if (!session) return;
     clearTimeout(session.timer);
     sessions.delete(token);
+    onSessionDisconnect(session);
     for (const res of session.streams) res.end('event: signed-out\ndata: {}\n\n');
   }
 
@@ -152,13 +153,13 @@ async function start({request, password, port = 8080, host = '0.0.0.0', onPresen
         const {action,data = {}} = await readJson(req);
         if (!sessions.has(token)) return json(res,401,{error:'Sign in to your workspace.'});
         if (typeof action !== 'string' || !data || typeof data !== 'object' || Array.isArray(data)) throw Error('Invalid request.');
-        return json(res,200,{result:await request(action,data)});
+        return json(res,200,{result:await request(action,data,session)});
       }
       if (req.method === 'GET' && req.url === '/api/events') {
         res.writeHead(200,{'Content-Type':'text/event-stream','X-Accel-Buffering':'no'});
         res.write(': connected\n\n'); clients.add(res); session.streams.add(res); onPresence(true);
         const timer = setInterval(()=>res.write(': heartbeat\n\n'),20000);
-        res.on('close',()=>{clearInterval(timer); clients.delete(res); session.streams.delete(res); if (!clients.size) onPresence(false);});
+        res.on('close',()=>{clearInterval(timer); clients.delete(res); session.streams.delete(res); if (!session.streams.size) onSessionDisconnect(session); if (!clients.size) onPresence(false);});
         return;
       }
       if (req.method === 'GET' && assets.has(req.url.slice(1))) return await serveAsset(req.url.slice(1),res);

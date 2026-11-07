@@ -20,6 +20,7 @@ let locationPermission;
 let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
 const webMode = process.env.SPICYSWIPE_WEB === '1';
 let webServer, loginPopup, webVisible = false;
+const webLocation = webMode ? new (require('../web/location.cjs'))({getContents:()=>tinder?.webContents}) : null;
 const pending = new Map();
 let androidPreferences={},androidPreferenceWrites=Promise.resolve();
 async function persistAndroid(patch,platform){
@@ -75,8 +76,8 @@ function ensureTinder() {
   tinder = new WebContentsView({webPreferences:{preload:path.join(__dirname,'generated','tinder-preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,partition:'persist:tinder',backgroundThrottling:false}});
   window.contentView.addChildView(tinder); tinder.setVisible(false);
   guardNavigation(tinder.webContents);
-  locationPermission.attach(tinder.webContents.session);
-  tinder.webContents.on('did-start-navigation', (_event,_url,_inPlace,isMainFrame) => { if (isMainFrame) cancelPending(); });
+  (webLocation || locationPermission).attach(tinder.webContents.session);
+  tinder.webContents.on('did-start-navigation', (_event,_url,_inPlace,isMainFrame) => { if (isMainFrame) {cancelPending();if(webMode && !P.isTinderURL(_url))webLocation.stop(undefined,false);} });
   tinder.webContents.on('render-process-gone', () => {cancelPending();send('page',{connected:false,error:'Tinder closed unexpectedly. Reload it to reconnect.'});});
   tinder.webContents.on('did-fail-load', (_event,code,description,_url,isMainFrame) => {if(isMainFrame && code!==-3)send('notice',{message:'Tinder could not load: '+description,error:true});});
   tinder.webContents.loadURL('https://tinder.com/app/recs').catch(error=>send('notice',{message:error.message,error:true}));
@@ -233,7 +234,7 @@ else {
    onChange:allowed=>{const item=Menu.getApplicationMenu()?.getMenuItemById('tinder-location');if(item)item.checked=allowed;},
    onError:error=>dialog.showErrorBox('Location permission could not be saved',error.message)
   });
-  await locationPermission.load();
+  if(!webMode)await locationPermission.load();
   Menu.setApplicationMenu(Menu.buildFromTemplate([...(process.platform==='darwin'?[{label:'SpicySwipe',submenu:[{role:'about'},{type:'separator'},{role:'hide'},{role:'quit'}]}]:[]),{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Privacy',submenu:[{id:'tinder-location',label:'Allow Tinder location',type:'checkbox',checked:locationPermission.allowed,click:async item=>{const revoking=!item.checked;try{await locationPermission.setAllowed(item.checked);}catch(error){item.checked=locationPermission.allowed;dialog.showErrorBox('Location permission could not be saved',error.message+' Your change may not survive restarting SpicySwipe.');}finally{if(revoking&&tinder&&!tinder.webContents.isDestroyed())tinder.webContents.reload();}}}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{role:'close'}]}]));
   await createWindow();
   if(webMode){
@@ -241,7 +242,13 @@ else {
       webVisible=visible;
       if(!visible)for(const c of mobileControllers.values())c.request('visibility',{visible:false}).catch(()=>{});
       if(tinder&&!tinder.webContents.isDestroyed())service.request('load').then(settings=>tinder?.webContents.send('tinder:settings',tinderSettings(settings))).catch(()=>{});
-    },request:async(action,data)=>{
+    },onSessionDisconnect:session=>webLocation.stop(session),request:async(action,data,session)=>{
+      if(action==='web:location'){
+        if(!session.streams.size)throw Error('Reconnect to the workspace before sharing location.');
+        return webLocation.share(data,session);
+      }
+      if(action==='web:locationStop')return webLocation.stop();
+      if(action==='web:locationStatus')return webLocation.status();
       if(['android:sdk','android:docs','android:popout','android:dock'].includes(action))throw Error('This action requires a desktop window.');
       if(action==='web:frame'||action==='web:input'){
         const target=loginPopup && !loginPopup.isDestroyed()?loginPopup.webContents:tinder?.webContents;

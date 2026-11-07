@@ -98,6 +98,8 @@ body:has(.ss-app[data-theme=dark]) .platforms button[aria-pressed=true] {
   background: var(--paper); color: var(--quiet); border-bottom: 1px solid var(--line);
 }
 .mode-bar button { font-size: 11px; padding: 6px 8px; }
+.mode-bar #tinder-location { border-color: var(--line); color: var(--spice); }
+#tinder-location-note { margin: 0; padding: 8px 12px; color: var(--ink-web); background: var(--card); border-bottom: 1px solid var(--line); font: 13px/1.45 var(--interface); text-align: start; }
 #tinder-layout { height: calc(100dvh - 115px); }
 #tinder-frame { overflow: auto; min-width: min(390px, 42%); background: var(--wash); border-color: var(--line); }
 #tinder-frame img { display: block; width: 100%; height: auto; cursor: pointer; }
