@@ -203,7 +203,9 @@ module.exports=function readBumble(xml,options,h){
   const verifiedBar = clipped && bar?.a.class === 'android.widget.FrameLayout' && within(bar, main[0]) &&
    !within(bar, stack[0]) && within(people[0], bar) && fullyVisible(bar) && bounds(bar).y >= bottom(viewport);
   const protectedAreas = clipped ? [visibleRow, ...reportedBoxes] : reportedBoxes;
-  const overlays = visible.filter(n => (label(n) || n.a.clickable === 'true') &&
+  const extraInput = n => ['long-clickable','context-clickable','scrollable','checkable','editable'].some(key => n.a[key] === 'true');
+  const inputRole = n => /(?:Button|EditText|Switch|CheckBox|Spinner|SeekBar|RatingBar|ScrollView|RecyclerView|WebView)$/.test(n.a.class || '');
+  const overlays = visible.filter(n => (label(n) || n.a.clickable === 'true' || extraInput(n) || inputRole(n)) &&
    !within(n, footer) && !within(footer, n) && !entries.some(e => e.root !== root && within(n, e.root)) &&
    !(verifiedBar && within(n, bar) && fullyVisible(n)) && protectedAreas.some(area => overlaps(bounds(n), area)));
   if (overlays.length) {
@@ -224,7 +226,7 @@ module.exports=function readBumble(xml,options,h){
     title.parent === explanation.parent && button?.parent === title.parent && role?.parent === button &&
     button.a.class === 'android.view.View' && button.a.clickable === 'true' &&
     branch.every(n => n.enabled && n.visible && !n.a['content-desc'] && !n.a['resource-id'] &&
-     n.a['long-clickable'] !== 'true' && n.a.checkable !== 'true' && n.a.scrollable !== 'true' &&
+     !extraInput(n) &&
      (n === button || n.a.clickable === 'false') && (lines.includes(n) || (!label(n) &&
       (n === layer || n === role || n.a.class === 'android.view.View')))) &&
     overlays.every(n => n === title || n === explanation);
