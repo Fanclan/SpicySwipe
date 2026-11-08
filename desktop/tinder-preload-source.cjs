@@ -12,10 +12,17 @@ if (window.top === window && ['tinder.com','www.tinder.com'].includes(location.h
   require('../shared/session.js');
   require('../content/tinder.js');
   let ready = false;
+  const documentId = crypto.randomUUID();
   ipcRenderer.on('tinder:command', async (_event, {id,action,data}) => {
     try {
       if (!ready) throw Error('Tinder is loading. Wait a moment and try again.');
-      const result = await globalThis.SSTinder.request(action, data);
+      let result;
+      if (action === 'prepareLocationReload' || action === 'restoreLocationReload') {
+        if (data?.documentId !== documentId) throw Error('Tinder document changed during the location reload.');
+        if (action === 'prepareLocationReload') result = globalThis.SSTinder.prepareLocationReload();
+        else globalThis.SSTinder.restoreLocationReload(data.checkpoint);
+      }
+      else result = await globalThis.SSTinder.request(action, data);
       ipcRenderer.send('tinder:result', {id,result});
     } catch (error) { ipcRenderer.send('tinder:result', {id,error:error.message}); }
   });
@@ -23,6 +30,7 @@ if (window.top === window && ['tinder.com','www.tinder.com'].includes(location.h
     try {
       await globalThis.SSTinder.init(); ready = true;
       globalThis.SSTinder.subscribe(event => ipcRenderer.send('tinder:state', event.data));
+      ipcRenderer.send('tinder:ready', {documentId, reloaded:performance.getEntriesByType('navigation')[0]?.type === 'reload'});
       ipcRenderer.send('tinder:state', globalThis.SSTinder.snapshot());
     } catch (error) { ipcRenderer.send('tinder:state', {connected:false,error:error.message}); }
   }, {once:true});

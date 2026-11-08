@@ -7,6 +7,62 @@ const box={x:10,y:20,width:80,height:90};
 const control=key=>({key,label:key,bounds:box});
 const screen=(overrides={})=>({platform:'hinge',kind:'profile',name:'Example',identity:'example-prompt-one',screenKey:'first',context:{name:'Example',bio:'I enjoy hiking',history:[]},photos:[{key:'photo-one',bounds:box,like:control('photo-one')}],controls:{skip:control('skip'),like:control('photo-one'),sendLike:null,comment:null,composer:null,sendMessage:null},composerText:'',emptyConversation:false,reason:'',...overrides});
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
+
+for(const pending of [false,true]){
+ test('managed Hinge reopens from HOME without changing the session or replaying an action (pending='+pending+')',async()=>{
+  let saved=null;
+  const phone={serial:'emulator-1',avd:'assigned'},home='com.google.android.apps.nexuslauncher';
+  const x=setup(screen(),{isManagedPhone:binding=>binding?.avd===phone.avd,checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}}});
+  await x.c.request('status');
+  x.c.binding=phone;x.android.deviceIdentity=async()=>phone;
+  x.c.session.status='running';x.c.session.count=4;x.c.reservedCount=4;x.c.session.endsAt=Date.now()+1200000;
+  x.c.session.nextBreakAt=6;x.c.session.breakUntil=null;
+  const deadline=x.c.session.endsAt,guard=pending?{identity:'old',name:'Old'}:null;x.c.lastAction=guard;
+  x.android.hierarchy=async()=>({xml:screen({kind:'blocked',reason:'Foreground mismatch'}),foreground:home});
+  let launches=0;
+  x.android.reopenFromHome=async(platform,{foreground,valid,reserve})=>{
+   assert.equal(platform,'hinge');assert.equal(foreground,home);assert.equal(valid(),true);
+   reserve();assert.ok(saved.nextHomeLaunchAt>Date.now());assert.deepEqual(saved.pendingAction,guard);launches++;return true;
+  };
+  const config={...x.c.config.swipe,allowBackground:true};
+  const run=()=>x.c.sessionStep(config,()=>true,()=>assert.fail('no profile action'),async()=>true,x.c.token());
+  assert.ok((await run()).retryAfter>0);assert.equal(launches,1);
+  assert.ok((await run()).retryAfter>0);assert.equal(launches,1);
+  assert.equal(x.c.lastAction,guard);assert.equal(x.c.session.count,4);assert.equal(x.c.session.endsAt,deadline);
+  assert.equal(x.c.session.nextBreakAt,6);assert.equal(x.c.session.breakUntil,null);
+  const restored=setup();restored.c.restoreCheckpoint(saved);assert.equal(restored.c.nextHomeLaunchAt,saved.nextHomeLaunchAt);
+  assert.equal(restored.c.session.count,4);assert.deepEqual(restored.c.lastAction,guard);
+  assert.deepEqual(x.calls,[]);
+ });
+}
+test('Hinge HOME recovery stays off for ordinary Hinge screens, paused sessions, custom phones and disabled background',async()=>{
+ for(const [foreground,status,managed,background] of [
+  ['co.hinge.app','running',true,true],['launcher','paused',true,true],
+  ['launcher','running',false,true],['launcher','running',true,false],
+ ]){
+  const x=setup(screen(),{isManagedPhone:()=>managed});await x.c.request('status');
+  x.c.session.status=status;x.c.session.endsAt=Date.now()+60000;x.c.lastAction={identity:'old',name:'Old'};
+  x.c.binding={serial:'emulator-1',avd:'assigned'};x.android.deviceIdentity=async()=>x.c.binding;
+  x.android.hierarchy=async()=>({xml:screen({kind:'blocked'}),foreground});
+  let probes=0;x.android.reopenFromHome=async()=>{probes++;return false;};
+  await x.c.sessionStep({...x.c.config.swipe,allowBackground:background},()=>true,()=>assert.fail('no action'),async()=>true,x.c.token());
+  assert.equal(probes,0);assert.ok(x.c.lastAction);assert.deepEqual(x.calls,[]);
+ }
+});
+test('ambiguous HOME launch waits without escalating to a device restart or a feed force-stop',async()=>{
+ const phone={serial:'emulator-1',avd:'assigned'};
+ const x=setup(screen(),{isManagedPhone:()=>true});
+ await x.c.request('status');x.c.binding=phone;x.android.deviceIdentity=async()=>phone;
+ x.c.session.status='running';x.c.session.count=4;x.c.session.endsAt=Date.now()+600000;x.c.readFailures=2;
+ x.android.hierarchy=async()=>({xml:screen({kind:'blocked'}),foreground:'com.android.launcher3'});
+ x.android.reopenFromHome=async(_platform,{reserve})=>{
+  reserve();throw Object.assign(Error('timeout'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ let restarts=0,refreshes=0;x.c.recoverDevice=async()=>{restarts++;return {restarted:false}};x.android.refreshFeed=async()=>refreshes++;
+ const result=await x.c.sessionStep({...x.c.config.swipe,allowBackground:true},()=>true,()=>assert.fail('no count'),async()=>true,x.c.token());
+ assert.ok(result.retryAfter>0);assert.equal(restarts,0);assert.equal(refreshes,0);assert.equal(x.c.session.count,4);
+ assert.ok(x.c.nextHomeLaunchAt>Date.now());
+});
 function setup(initial=screen(),extra={}){
  let current=initial,settings={sidebarConsentGiven:true,mobileConfig:{}};
  const calls=[],changes=[];

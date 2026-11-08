@@ -27,8 +27,12 @@ let locationPermission;
 let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
 const webMode = process.env.SPICYSWIPE_WEB === '1';
 const managedAndroid = webMode && process.env.SPICYSWIPE_MANAGED_ANDROID === '1';
-let webServer, loginPopup, webVisible = false;
-const webLocation = webMode ? new (require('../web/location.cjs'))({getContents:()=>tinder?.webContents}) : null;
+let webServer, loginPopup, webVisible = false, tinderDocumentId = null;
+const locationReload = webMode ? new (require('./tinder-location-reload.cjs'))({
+  capture:()=>tinderDocumentId?sendTinderCommand('prepareLocationReload',{documentId:tinderDocumentId}):Promise.resolve(null),
+  restore:checkpoint=>sendTinderCommand('restoreLocationReload',{documentId:tinderDocumentId,checkpoint}).catch(()=>{})
+}) : null;
+const webLocation = webMode ? new (require('../web/location.cjs'))({getContents:()=>tinder?.webContents,reload:wc=>locationReload.reload(wc)}) : null;
 const pending = new Map();
 let androidPreferences={},androidPreferenceWrites=Promise.resolve();
 async function persistAndroid(patch,platform){
@@ -45,7 +49,9 @@ function getMobile(platform=activePlatform){
  if(!['hinge','bumble'].includes(platform))throw Error('Choose Hinge or Bumble first.');
  if(!mobileControllers.has(platform)){
   const device=mobileSession(platform).device;
-  mobileControllers.set(platform,new MobileController({android:device,service,platform:platform,recoverDevice:options=>device.recover({...options,supervised:managedAndroid&&device.serial===phones[platform].serial}),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
+  const isManagedPhone=binding=>usesManagedPhone(platform,androidPreferences.platforms?.[platform],managedAndroid)
+    &&device.serial===phones[platform].serial&&binding?.serial===device.serial&&binding.avd===phones[platform].avd;
+  mobileControllers.set(platform,new MobileController({android:device,service,platform,isManagedPhone,recoverDevice:options=>device.recover({...options,supervised:managedAndroid&&device.serial===phones[platform].serial}),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
    const picture=nativeImage.createFromDataURL(await device.screenshot());
    return require('./mobile-vision.cjs').evidence(picture,screen,{signal,fromBitmap:(bytes,size)=>nativeImage.createFromBitmap(bytes,size)});  }}));
  }
@@ -58,6 +64,10 @@ function tinderSettings(data) { return {...data,desktopActive:true,desktopHost:t
 function cancelPending() { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('Tinder navigated or closed. Refresh its context before continuing.')); } pending.clear(); }
 function page(action,data) {
   if (!['context','insert','send','start','pause','stop','discover','dismissDraft'].includes(action)) return Promise.reject(Error('Unknown page action.'));
+  locationReload?.userAction(action);
+  return sendTinderCommand(action,data);
+}
+function sendTinderCommand(action,data) {
   if (!tinder || tinder.webContents.isDestroyed() || !P.isTinderURL(tinder.webContents.getURL())) return Promise.reject(Error('Open Tinder in the app and sign in first.'));
   return new Promise((resolve,reject) => {
     const id = randomUUID();
@@ -85,8 +95,17 @@ function ensureTinder() {
   window.contentView.addChildView(tinder); tinder.setVisible(false);
   guardNavigation(tinder.webContents);
   (webLocation || locationPermission).attach(tinder.webContents.session);
-  tinder.webContents.on('did-start-navigation', (_event,_url,_inPlace,isMainFrame) => { if (isMainFrame) {cancelPending();if(webMode && !P.isTinderURL(_url))webLocation.stop(undefined,false);} });
-  tinder.webContents.on('render-process-gone', () => {cancelPending();send('page',{connected:false,error:'Tinder closed unexpectedly. Reload it to reconnect.'});});
+  tinder.webContents.on('did-start-navigation', (details,url,sameDocument,isMainFrame) => {
+    if (!(details.isMainFrame??isMainFrame)) return;
+    const target=details.url??url;
+    const inPlace=details.isSameDocument??sameDocument;
+    if(!inPlace)tinderDocumentId=null;
+    locationReload?.navigating(tinder.webContents,target,inPlace);
+    cancelPending();if(webMode&&!P.isTinderURL(target))webLocation.stop(undefined,false);
+  });
+  tinder.webContents.on('did-navigate', (_event,url,status)=>locationReload?.committed(tinder.webContents,url,status));
+  tinder.webContents.on('will-redirect', details=>{if(details.isMainFrame)locationReload?.userAction('stop');});
+  tinder.webContents.on('render-process-gone', () => {locationReload?.discard();cancelPending();send('page',{connected:false,error:'Tinder closed unexpectedly. Reload it to reconnect.'});});
   tinder.webContents.on('did-fail-load', (_event,code,description,_url,isMainFrame) => {if(isMainFrame && code!==-3)send('notice',{message:'Tinder could not load: '+description,error:true});});
   tinder.webContents.loadURL('https://tinder.com/app/recs').catch(error=>send('notice',{message:error.message,error:true}));
 }
@@ -129,7 +148,7 @@ async function dispatch(action,data={}) {
     throw Error('The selected Android device changed. Reconnect the phone.');
   }
 
-  if(action==='revoke'||(action==='save'&&data.sidebarConsentGiven===false))invalidateMobile('Consent revoked.',true);
+  if(action==='revoke'||(action==='save'&&data.sidebarConsentGiven===false)){locationReload?.userAction('stop');invalidateMobile('Consent revoked.',true);}
   if (['load','save','models','test','generate','record','clearActivity','revoke'].includes(action)) return service.request(action,data);
   if(action==='mobile:request'){
     if(!data||typeof data.action!=='string'||(data.data!==undefined&&(!data.data||typeof data.data!=='object'||Array.isArray(data.data))))throw Error('Invalid mobile request.');
@@ -259,6 +278,11 @@ ipcMain.handle('desktop:request',async(event,action,data)=>{if(!trusted(event)||
 ipcMain.handle('tinder:service',async(event,action,data)=>{if(!trustedTinder(event)||!P.allowedTinderAction(action))throw Error('Untrusted Tinder request.');const result=await service.request(action,data);return action==='load'?tinderSettings(result):result;});
 ipcMain.on('tinder:result',(event,data)=>{if(!trustedTinder(event))return;const p=pending.get(data?.id);if(!p)return;pending.delete(data.id);clearTimeout(p.timer);data.error?p.reject(Error(data.error)):p.resolve(data.result);});
 ipcMain.on('tinder:state',(event,data)=>{if(trustedTinder(event))send('page',data);});
+ipcMain.on('tinder:ready',(event,data)=>{
+  if(!trustedTinder(event)||typeof data?.documentId!=='string'||data.documentId.length!==36)return;
+  tinderDocumentId=data.documentId;
+  if(data.reloaded===true)locationReload?.ready(event.sender);
+});
 function scheduleMobileWatch(){
  if(quitting)return;
  mobileWatchTimer=setTimeout(async()=>{
@@ -287,7 +311,7 @@ if(!app.requestSingleInstanceLock())app.quit();
 else {
  app.on('second-instance',()=>{if(window){if(window.isMinimized())window.restore();window.focus();}});
  app.whenReady().then(async()=>{
-  service = new Service({file:path.join(app.getPath('userData'),'settings.json'),safeStorage:webMode ? require('../web/server.cjs').credentialStore(process.env.SPICYSWIPE_STORAGE_KEY) : safeStorage,fetchImpl:(input,init)=>net.fetch(input,{...init,credentials:'omit',bypassCustomProtocolHandlers:true}),onChange:data=>{send('settings',data);if(tinder&&!tinder.webContents.isDestroyed()&&P.isTinderURL(tinder.webContents.getURL()))tinder.webContents.send('tinder:settings',tinderSettings(data));}});
+  service = new Service({file:path.join(app.getPath('userData'),'settings.json'),webMode,safeStorage:webMode ? require('../web/server.cjs').credentialStore(process.env.SPICYSWIPE_STORAGE_KEY) : safeStorage,fetchImpl:(input,init)=>net.fetch(input,{...init,credentials:'omit',bypassCustomProtocolHandlers:true}),onChange:data=>{send('settings',data);if(tinder&&!tinder.webContents.isDestroyed()&&P.isTinderURL(tinder.webContents.getURL()))tinder.webContents.send('tinder:settings',tinderSettings(data));}});
   let androidConfig={};try{androidConfig=JSON.parse(await fs.readFile(path.join(app.getPath('userData'),'android.json'),'utf8'));}catch{}
   androidPreferences={...(typeof androidConfig.sdkRoot==='string'?{sdkRoot:androidConfig.sdkRoot}:{}),...(typeof androidConfig.preferredSerial==='string'?{preferredSerial:androidConfig.preferredSerial}:{}),...(typeof androidConfig.preferredAvd==='string'?{preferredAvd:androidConfig.preferredAvd}:{})};
   androidPreferences.platforms=androidConfig.platforms||{hinge:{preferredSerial:androidConfig.preferredSerial,preferredAvd:androidConfig.preferredAvd}};

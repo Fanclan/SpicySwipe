@@ -9,14 +9,14 @@ const hashDistance=(a,b)=>{if(!a||!b||a.length!==b.length)return Infinity;let n=
 // Pixel changes alone cannot establish a new same-name Bumble profile.
 const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(after.identity)&&after.identity!==before.identity&&after.name===before.name&&Boolean(before.profileDiscriminator)&&Boolean(after.profileDiscriminator)&&after.profileDiscriminator!==before.profileDiscriminator&&after.controls?.like?.direction==='right';
 class MobileController{
- constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice}){
+ constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone=()=>false}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
-  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
+  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.nextHomeLaunchAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
  snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0}}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
@@ -34,8 +34,10 @@ class MobileController{
  }
  restoreCheckpoint(saved){
   if(!saved)return;
+  if(saved.nextHomeLaunchAt!==undefined&&(!Number.isFinite(saved.nextHomeLaunchAt)||saved.nextHomeLaunchAt<0))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   if((saved.nextFeedRetryAt!==undefined&&(!Number.isFinite(saved.nextFeedRetryAt)||saved.nextFeedRetryAt<0))||(saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
+  this.nextHomeLaunchAt=saved.nextHomeLaunchAt??0;
   this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
  }
  token(){return {epoch:this.epoch,serial:this.android.serial,inputEpoch:this.android.inputEpoch,signal:this.abort.signal}}
@@ -78,9 +80,34 @@ class MobileController{
   return {retryAfter:after.kind==='feedError'?30000:1000,phase:after.kind==='feedError'?'waiting to reconnect':'checking next profile'};
  }
  resumableLike(s){return this.platform==='hinge'&&this.config.mode==='like'&&this.config.swipe.likeRatio===1&&s.kind==='like'&&Boolean(s.identity)&&s.composerTextVerified===true&&!s.composerText?.trim()&&Boolean(s.controls.sendLike)}
+ async recoverFromHome(t,valid){
+  const waiting=this.lastAction?this.pendingWait():{retryAfter:30000,phase:'waiting for Hinge'};
+  if(this.session.status!=='running'||this.session.now()<this.nextHomeLaunchAt)return waiting;
+  const stillValid=()=>this.session.status==='running'&&this.isManagedPhone(this.binding)&&valid();
+  try{
+   await this.verifyBinding(t);this.assert(t,stillValid);
+   const reopened=await this.android.reopenFromHome(this.platform,{
+    foreground:this.observedForeground,
+    valid:()=>{try{this.assert(t,stillValid);return true}catch{return false}},
+    reserve:()=>{this.assert(t,stillValid);this.nextHomeLaunchAt=this.session.now()+300000;this.persist()}
+   });
+   this.assert(t,stillValid);
+   if(reopened)return {retryAfter:2000,phase:this.lastAction?'verifying previous action':'checking next profile'};
+  }catch(error){
+   this.assert(t,stillValid);
+   if(!transientRead.has(error.code))throw error;
+   // Lost launcher acknowledgements are observed on the next session step.
+   // Never escalate them to a feed force-stop or a device restart.
+  }
+  return waiting;
+ }
  async sessionStep(c,valid,commit,sleep,t){
   try{
    let observed=await this.read(t);this.assert(t,valid);
+   if(observed.kind==='blocked'&&this.platform==='hinge'&&this.observedForeground!=='co.hinge.app'
+     &&c.allowBackground&&this.session.status==='running'&&this.isManagedPhone(this.binding)){
+    return await this.recoverFromHome(t,valid);
+   }
    if(observed.kind==='feedError')return await this.retryFeed(observed,t,valid);
    if(this.lastAction){
     if(await this.reconcilePending(this.lastAction,t,valid)){this.reason='';this.readFailures=0;return {retryAfter:1000,phase:'checking next profile'}}
@@ -161,7 +188,7 @@ class MobileController{
    s.photos=(s.photos||[]).map(p=>({...p,visual:photos.find(original=>original.key===p.key)?.visual||null,visualSquare:photos.find(original=>original.key===p.key)?.visualSquare||null}));
    s.screenKey=require('node:crypto').createHash('sha256').update(JSON.stringify([s.screenKey,s.photos.map(p=>[p.visual,p.visualSquare]),ev.commentText])).digest('hex');
   }  if(this.reviewContext&&(this.reviewContext.identity!==s.identity||this.reviewContext.screenKey!==s.screenKey))this.reviewContext=null;
-  this.screen=s;this.reason='';this.notify();return s;
+  this.observedForeground=raw.foreground;this.screen=s;this.reason='';this.notify();return s;
  }
  supported(s,kinds){if(!kinds.includes(s.kind))throw transientError(s.reason||'This screen is not recognized for this action.','MOBILE_SCREEN_UNAVAILABLE');if(!s.identity)throw transientError('Profile identity is incomplete. Read more profile details before acting.');}
  async fresh(expected,t,valid){this.assert(t,valid);const s=await this.read(t);this.assert(t,valid);if(s.kind!==expected.kind||s.identity!==expected.identity||s.screenKey!==expected.screenKey)throw transientError('Screen changed. Refresh context before acting.','MOBILE_SCREEN_CHANGED');return s}

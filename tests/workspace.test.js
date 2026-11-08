@@ -1,11 +1,12 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const {JSDOM}=require('jsdom');const fs=require('node:fs');const C=require('../shared/core');
 const tick=()=>new Promise(r=>setImmediate(r));
-async function setup(t,{compact=false,initial={}}={}){
+async function setup(t,{compact=false,initial={},web=false}={}){
  const dom=new JSDOM('<div id="root"></div>',{url:'https://extension.test/',runScripts:'outside-only'});t.after(()=>dom.window.close());
  for(const file of ['shared/core.js','ui/icons.js','ui/workspace.js'])dom.window.eval(fs.readFileSync(file,'utf8'));
  let state=C.publicSettings(C.migrate({sidebarConsentGiven:true,hasCompletedOnboarding:true,...initial}));
  let context={conversationId:'A',name:'A',canMessage:true};const sent=[],pageActions=[];let pendingGenerate=async()=>({response:'Draft for A',modelUsed:'test',durationMs:100}),pendingModels=async()=>({models:[],message:'Okay'});let subscriber;
  const bridge={compact,load:async()=>state,save:async p=>{state={...state,...p};subscriber?.({type:'settings',data:state});return state},subscribe:fn=>{subscriber=fn;return()=>{}},authorizeOllama:async()=>true,request:async(action,payload)=>action==='generate'?pendingGenerate():pendingModels(payload),page:async(action,data)=>{pageActions.push(action);if(action==='send'){sent.push(data);if(data.conversationId!==context.conversationId)throw new Error('Conversation changed');return {ok:true}}return {connected:true,context,session:{status:'idle',count:0,limit:30}}}};
+ bridge.web=web;
  const root=dom.window.document.getElementById('root'),app=await dom.window.SSWorkspace.mount(root,bridge);t.after(()=>app.destroy());
  const click=async selector=>{root.querySelector(selector).click();await tick();await tick()};
  return {root,app,click,sent,pageActions,read:()=>state,changeContext:c=>context=c,setGenerate:fn=>pendingGenerate=fn,setModels:fn=>pendingModels=fn,update:p=>subscriber({type:'settings',data:{...state,...p}})};
@@ -67,4 +68,13 @@ test('overnight preset populates a bounded session without starting and saves ev
 });
 test('invalid timing ranges prevent a session from starting',async t=>{
  const x=await setup(t);x.app.navigate('swiping');assert.ok(x.root.querySelector('[name="minDelaySeconds"]'));x.root.querySelector('[name="minDelaySeconds"]').value='90';x.root.querySelector('[name="maxDelaySeconds"]').value='10';await x.click('[data-action="start"]');assert.equal(x.pageActions.includes('start'),false);
+});
+test('web Quick preset preserves the selected background setting',async t=>{
+ const x=await setup(t,{web:true});x.app.navigate('swiping');
+ const field=x.root.querySelector('[name="allowBackground"]');
+ for(const value of [true,false]){
+  field.checked=value;
+  await x.click('[data-action="quickPreset"]');
+  assert.equal(field.checked,value);
+ }
 });

@@ -52,8 +52,8 @@ function patchSettings(current,patch){
   }return C.migrate(next);
 }
 class Service {
-  constructor({file,safeStorage,fetchImpl=globalThis.fetch,onChange=()=>{}}){
-    this.file=file;this.safeStorage=safeStorage;this.fetchImpl=fetchImpl;this.onChange=onChange;
+  constructor({file,safeStorage,webMode=false,fetchImpl=globalThis.fetch,onChange=()=>{}}){
+    this.file=file;this.safeStorage=safeStorage;this.webMode=webMode;this.fetchImpl=fetchImpl;this.onChange=onChange;
     this.queue=Promise.resolve();this.generating=false;this.consentVersion=0;this.secrets=new Set();
   }
   encryptionAvailable(){return Boolean(this.safeStorage?.isEncryptionAvailable())&&this.safeStorage.getSelectedStorageBackend?.()!=='basic_text'}
@@ -65,15 +65,28 @@ class Service {
     return value;
   }
   public(settings){return this.redact(C.publicSettings(settings))}
+  migrateSettings(raw){
+    const settings=C.migrate(raw);
+    if(!this.webMode)return settings;
+    if(raw.swipeConfig?.allowBackground===undefined)settings.swipeConfig.allowBackground=true;
+    settings.mobileConfig={...raw.mobileConfig};
+    for(const platform of ['hinge','bumble']){
+      const config=raw.mobileConfig?.[platform];
+      if(config?.swipe?.allowBackground===undefined){
+        settings.mobileConfig[platform]={...config,swipe:{...config?.swipe,allowBackground:true}};
+      }
+    }
+    return settings;
+  }
   async read(){await this.queue;return this.readFile()}
   async readFile(){
     let raw;
     try{raw=await fs.readFile(this.file,'utf8')}
-    catch(error){if(error.code==='ENOENT')return C.migrate({activeAI:'ollama',ollamaUrl:'http://localhost:11434',models:{ollama:''}});throw Error('Could not read desktop settings.')}
+    catch(error){if(error.code==='ENOENT')return this.migrateSettings({activeAI:'ollama',ollamaUrl:'http://localhost:11434',models:{ollama:''}});throw Error('Could not read desktop settings.')}
     let envelope;
     try{envelope=JSON.parse(raw);if(envelope.version!==1||!isObject(envelope.settings)||!isObject(envelope.credentials)||credentials.some(k=>Object.hasOwn(envelope.settings,k))||Object.keys(envelope.credentials).some(k=>!credentials.includes(k)||typeof envelope.credentials[k]!=='string'))throw Error()}
     catch{throw Error('Desktop settings are corrupt. Restore or repair the settings file before continuing.')}
-    const result=C.migrate(envelope.settings);
+    const result=this.migrateSettings(envelope.settings);
     if(Object.keys(envelope.credentials).length){
       if(!this.encryptionAvailable())throw Error('Secure OS encryption is unavailable. Unlock your keychain to read saved credentials.');
       try{for(const [field,encrypted]of Object.entries(envelope.credentials))result[field]=this.safeStorage.decryptString(Buffer.from(encrypted,'base64'))}
