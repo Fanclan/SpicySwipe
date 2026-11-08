@@ -243,6 +243,18 @@ class MobileController{
   if(dismissibleBumbleScreens.has(after.kind))throw Error('Bumble popup did not close. No further action was attempted.');
   return after;
  }
+ async repositionBumbleFooter(s,t,valid=()=>true){
+  await this.verifyBinding(t);const current=await this.fresh(s,t,valid);this.assert(t,valid);
+  if(!current.footerScrollSurface)throw transientError('The Bumble footer scroll surface changed.');
+  const stillValid=()=>{try{this.assert(t,valid);return true}catch{return false}};
+  await this.android.scrollProfile({fraction:.2,direction:'up',duration:550,surface:current.footerScrollSurface},stillValid);
+  await this.pauseFor(450,t);this.assert(t,valid);
+  const after=await this.read(t);this.assert(t,valid);
+  if(after.kind!=='profile'||after.actionStrategy!=='footer'||after.footerScrollSurface||
+     !after.controls.profileLike||!after.controls.profilePass)
+   throw Error('The ordinary Bumble buttons are still unavailable after repositioning. Check the phone before resuming.');
+  return after;
+ }
  async reviewBumble(t,sleep,observed){
   this.reviewContext=null;this.selectedPhoto=null;await this.load(t);
   // When review needs no gesture, the current main card can go directly to
@@ -253,6 +265,7 @@ class MobileController{
   const contexts=new Set();let original;
   const verify=()=>{if(s.kind!=='profile')throw transientError(s.reason||'Bumble profile review was interrupted.');if(original&&((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator)))throw transientError('Bumble profile changed during review.');contexts.add(s.context?.bio||'')};verify();
   const move=async(direction,fraction,dwell=true)=>{
+   if(s.footerScrollSurface){s=await this.repositionBumbleFooter(s,t);verify();return}
    if(dwell&&this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
    await this.android.scrollProfile({fraction,direction,duration:Math.round(300+this.random()*400)},()=>{try{this.assert(t);return true}catch{return false}});this.assert(t);await this.pauseFor(450,t,sleep);s=await this.read(t);verify();
   };
@@ -280,12 +293,14 @@ class MobileController{
   const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||(this.platform==='bumble'&&distinctBumbleProfile(original,observed)))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
   let current=await this.read(t);this.assert(t,valid);
   if(this.platform==='bumble')current=await this.dismissBumbleReminder(current,t,valid);
+  if(current.footerScrollSurface)return false;
   // A footer has no name/photo. Recover observation by scrolling only, retaining
   // the durable action guard until two main-card observations prove transition.
   if(this.platform==='bumble')for(let i=0;current.kind==='profile'&&current.actionStrategy==='footer'&&!current.identity&&i<24;i++){
    await this.fresh(current,t,valid);this.assert(t,valid);
    await this.android.scrollProfile({fraction:.65,direction:'down',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
    await this.pauseFor(450,t);this.assert(t,valid);current=await this.read(t);this.assert(t,valid);
+   if(current.footerScrollSurface)return false;
   }
   const late=changeKey(current);
   if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;this.lastAction=null;this.persist();return true;}
@@ -313,8 +328,11 @@ class MobileController{
   if(this.config.mode!=='like')throw Error('Choose plain Likes for Bumble.');
   let s=await this.fresh(original.reviewEndpoint||original,t,valid);const key=kind==='like'?'profileLike':'profilePass';
   for(let i=0;!s.controls?.[key]&&i<24;i++){
-   this.assert(t,valid);await this.android.scrollProfile({fraction:.65,direction:'up',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
-   await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+   if(s.footerScrollSurface)s=await this.repositionBumbleFooter(s,t,valid);
+   else{
+    this.assert(t,valid);await this.android.scrollProfile({fraction:.65,direction:'up',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
+    await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+   }
    if(s.kind!=='profile'||s.actionStrategy!=='footer')throw transientError('Bumble footer review was interrupted.');
    if((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator))throw transientError('Bumble profile changed during footer review.');
   }

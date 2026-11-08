@@ -303,4 +303,28 @@ test('Bumble ordinary footer can sit above the native empty queue text',()=>{
   xml(layer.replaceAll(buttonBox,'[95,1876][284,2065]')),
   xml(layer,front+footerCard(votingFooter,3)), xml(layer+text('[80,1940][900,2030]','Purchase'))
  ])assert.equal(read(unsafe).kind,'blocked');
+
+ // Both foreground buttons straddle the exact native filter button. The only
+ // usable part of the front card here is a noninteractive scrolling surface.
+ const filterBox='[55,1900][1010,2035]';
+ const shiftedLayer=layer.replaceAll(buttonBox,filterBox).replace('[160,220][560,270]','[360,1930][650,1970]');
+ const scrollable=front.replace('resource-id="com.bumble.app:id/encountersGridProfile_list"','resource-id="com.bumble.app:id/encountersGridProfile_list" scrollable="true"');
+ const overlapping=xml(shiftedLayer,scrollable);
+ const positioned=read(overlapping);
+ assert.equal(positioned.kind,'profile');assert.ok(positioned.footerScrollSurface);
+ assert.ok(Object.values(positioned.controls).every(x=>!x));
+ const surface=positioned.footerScrollSurface;
+ assert.ok(surface.y+surface.height<1587);assert.ok(surface.width>=96&&surface.height>=120);
+ const corridor='['+surface.x+','+surface.y+']['+(surface.x+surface.width)+','+(surface.y+surface.height)+']';
+ for(const invalid of [
+  xml(shiftedLayer,front),overlapping.replace('drawing-order="1"','drawing-order="2"'),
+  overlapping.replace('Adjust your filters','Get more Likes'),
+  overlapping.replace('text="Adjust your filters"','text="Adjust your filters" editable="true"'),
+  xml(shiftedLayer,scrollable.replace(votingFooter,footerNode('android.widget.Button',corridor,'clickable="true"')+votingFooter)),
+  xml(shiftedLayer,scrollable.replace(votingFooter,footerNode('android.view.View',likeBounds,'clickable="true"')+votingFooter)),
+  overlapping.replaceAll('[796,1876][985,2065]','[796,1876][985,2010]'),
+ ]){
+  const blocked=read(invalid);assert.equal(blocked.kind,'blocked');assert.ok(!blocked.footerScrollSurface);
+  assert.ok(Object.values(blocked.controls).every(x=>!x));
+ }
 });

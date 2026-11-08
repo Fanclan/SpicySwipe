@@ -208,6 +208,7 @@ module.exports=function readBumble(xml,options,h){
   const overlays = visible.filter(n => (label(n) || n.a.clickable === 'true' || extraInput(n) || inputRole(n)) &&
    !within(n, footer) && !within(footer, n) && !entries.some(e => e.root !== root && within(n, e.root)) &&
    !(verifiedBar && within(n, bar) && fullyVisible(n)) && protectedAreas.some(area => overlaps(bounds(n), area)));
+  let filterBounds;
   if (overlays.length) {
    // Android also exposes the empty-queue layer behind the final People card.
    // Its title and explanation can intersect the voting row in screen coordinates.
@@ -228,9 +229,14 @@ module.exports=function readBumble(xml,options,h){
     branch.every(n => n.enabled && n.visible && !n.a['content-desc'] && !n.a['resource-id'] &&
      !extraInput(n) &&
      (n === button || n.a.clickable === 'false') && (lines.includes(n) || (!label(n) &&
-      (n === layer || n === role || n.a.class === 'android.view.View')))) &&
-    overlays.every(n => n === title || n === explanation);
-   if (!verified) return block('An overlay covers the Bumble voting controls.');
+      (n === layer || n === role || n.a.class === 'android.view.View'))));
+   if (!verified || !overlays.every(n=>n===title||n===explanation||n===button||n===role||n===adjust))
+    return block('An overlay covers the Bumble voting controls.');
+   if (overlays.some(n=>n===button||n===role||n===adjust)) {
+    if (clipped || ![button,role,adjust].every(fullyVisible) || !equalBounds(bounds(button),bounds(role)) ||
+        !contains(bounds(button),bounds(adjust))) return block('An overlay covers the Bumble voting controls.');
+    filterBounds=bounds(button);
+   }
   }
   if (clipped) {
    result.controls.like = null;
@@ -242,6 +248,21 @@ module.exports=function readBumble(xml,options,h){
   const square = action => action.box.width === action.box.height;
   if (![pass, paid, like].every(square) || pass.box.y !== like.box.y || pass.box.width !== like.box.width ||
       right(pass.box) >= paid.box.x || right(paid.box) >= like.box.x || paid.box.y >= pass.box.y) return block('The Bumble footer voting layout is not verified.');
+  if (filterBounds) {
+   // A separate lower layer can project its filter button across both voting
+   // targets. Allow one scroll on the front card, well above the entire row.
+   // Neither a foreground vote nor the underlying filter is a valid tap here.
+   const spansVotes=[pass,like].every(({box})=>filterBounds.x<=box.x&&right(filterBounds)>=right(box)&&
+    filterBounds.y>box.y&&bottom(filterBounds)<bottom(box)&&filterBounds.y<box.y+box.height/2&&bottom(filterBounds)>box.y+box.height/2);
+   const surface={x:viewport.x+Math.floor(viewport.width*.68),y:viewport.y+Math.ceil(viewport.height*.15),
+    width:Math.floor(viewport.width*.20),height:Math.floor(viewport.height*.24)};
+   const inputs=visible.filter(n=>n!==lists[0]&&(n.a.clickable==='true'||extraInput(n)||inputRole(n)));
+   if (!spansVotes || lists[0].a.scrollable!=='true' || surface.width<96 || surface.height<120 ||
+       bottom(surface)>=host.y || inputs.some(n=>!bounds(n)||overlaps(bounds(n),surface)))
+    return block('An overlay covers the Bumble voting controls.');
+   result.controls.like=null;result.controls.skip=null;result.footerScrollSurface=surface;
+   return result;
+  }
   result.controls.profilePass = { ...control(pass.button, true), label: 'Not for me' };
   result.controls.profileLike = { ...control(like.button, true), label: 'Like' };
  }
