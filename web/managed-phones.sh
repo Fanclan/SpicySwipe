@@ -101,6 +101,9 @@ if [[ -r /dev/kvm && -w /dev/kvm ]] && "$ANDROID_HOME/emulator/emulator" -accel-
 fi
 create_avd SpicySwipe_Phone_API_36
 create_avd SpicySwipe_Bumble_API_36
+# Check for abandoned native PID markers while this supervisor owns both managed
+# phones and before launching either emulator into the new container namespace.
+ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-avd-locks.cjs
 run_phone SpicySwipe_Phone_API_36 5554 &
 run_phone SpicySwipe_Bumble_API_36 5556 &
 wait
