@@ -66,22 +66,62 @@ EOF
   fi
 }
 
+watch_city() {
+  local avd=$1 port=$2 guest=$3 child
+  # This worker owns only the current city helper or its retry timer. Reap it
+  # before returning so a replacement guest cannot inherit a watcher.
+  trap 'trap "" TERM INT; for child in $(jobs -pr); do kill "$child" 2>/dev/null || true; done; wait; exit 0' TERM INT
+  while kill -0 "$guest" 2>/dev/null; do
+    ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-city-location.cjs "$avd" "emulator-$port" "$guest" &
+    if wait "$!"; then break; fi
+    sleep 3 &
+    wait "$!"
+  done
+}
+
 run_phone() {
-  local avd=$1 port=$2 guest
+  local avd=$1 port=$2 guest completed booted_at booted_seconds exit_status signal retry retry_timer city_worker
+  # Coolify sends TERM to the entire phone process group, including this worker.
+  trap 'exit 0' TERM INT
   while true; do
     echo "Starting $avd on emulator-$port (acceleration $accel)"
     "$ANDROID_HOME/emulator/emulator" "@$avd" -port "$port" -accel "$accel" -gpu swiftshader \
       -no-window -noaudio -no-snapshot -no-boot-anim -no-metrics &
     guest=$!
+    booted_at=''
+    while kill -0 "$guest" 2>/dev/null; do
+      if completed=$(timeout 3 "$ANDROID_HOME/platform-tools/adb" -s "emulator-$port" shell getprop sys.boot_completed 2>/dev/null) &&
+         [[ ${completed%$'\r'} == 1 ]]; then
+        booted_at=$(date +%s)
+        break
+      fi
+      sleep 3
+    done
+    city_worker=''
     if [[ -n ${SPICYSWIPE_ANDROID_CITY_LOCATION:-} ]]; then
-      while kill -0 "$guest" 2>/dev/null; do
-        ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-city-location.cjs "$avd" "emulator-$port" "$guest" && break
-        sleep 3
-      done
+      watch_city "$avd" "$port" "$guest" &
+      city_worker=$!
     fi
-    wait "$guest" || true
-    echo "$avd stopped. Retrying in 30 seconds."
-    sleep 30
+    exit_status=0
+    wait "$guest" || exit_status=$?
+    signal=0
+    if (( exit_status > 128 && exit_status <= 192 )); then signal=$((exit_status - 128)); fi
+    retry=30
+    booted_seconds=0
+    if [[ -n $booted_at ]]; then booted_seconds=$(( $(date +%s) - booted_at )); fi
+    # Only shorten recovery for a native fault after five minutes of a completed boot.
+    # Fresh boots, ordinary exits and host termination retain the longer backoff.
+    case $signal in
+      4|5|6|7|8|11) if (( booted_seconds >= 300 )); then retry=2; fi ;;
+    esac
+    echo "$avd stopped: status=$exit_status signal=$signal booted_seconds=$booted_seconds. Retrying in $retry seconds."
+    sleep "$retry" &
+    retry_timer=$!
+    if [[ -n $city_worker ]]; then
+      kill "$city_worker" 2>/dev/null || true
+      wait "$city_worker" || true
+    fi
+    wait "$retry_timer"
   done
 }
 
