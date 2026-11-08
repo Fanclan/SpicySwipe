@@ -493,15 +493,26 @@ class Android {
     await pending;this._guard(serial,epoch,valid);return {ok:true};
   }
 
-  async scrollProfile({ fraction = .4, duration = 400, direction = 'up' } = {}, valid) {
+  async scrollProfile({ fraction = .4, duration = 400, direction = 'up', surface } = {}, valid) {
     const epoch = this.inputEpoch;
     if (!Number.isFinite(fraction) || fraction < .2 || fraction > .65 || !Number.isInteger(duration) || duration < 250 || duration > 900 || !['up', 'down'].includes(direction)) throw new Error('Profile scroll requires fraction 0.2–0.65, duration 250–900 ms, and direction up or down.');
     if (valid !== undefined && typeof valid !== 'function') throw new Error('Invalid profile scroll validity check.');
+    if (surface !== undefined && typeof valid !== 'function') throw new Error('A current profile validity check is required for a scroll surface.');
     const serial = await this._selected(); this._guard(serial, epoch, valid);
     const { width, height } = await this._dimensions(serial); this._guard(serial, epoch, valid);
     // Keep every point inside the central content area, away from filters and bottom navigation.
-    const x = Math.floor(width * .5), distance = Math.round(height * .65 * fraction);
-    const low = Math.round(height * .525 - distance / 2), high = Math.round(height * .525 + distance / 2);
+    let x = Math.floor(width * .5), center = height * .525, distance = Math.round(height * .65 * fraction);
+    if (surface !== undefined) {
+      if (!surface || !['x','y','width','height'].every(k => Number.isInteger(surface[k])) ||
+          surface.width < 96 || surface.height < 120 || surface.x < 0 || surface.y < 0 ||
+          surface.x + surface.width > width || surface.y + surface.height > height) throw new Error('Invalid profile scroll surface bounds.');
+      x = Math.floor(surface.x + surface.width / 2);
+      const top = Math.max(surface.y, height * .1), bottom = Math.min(surface.y + surface.height, height * .9);
+      if (bottom - top < 120) throw new Error('Profile scroll surface is outside the safe display area.');
+      center = (top + bottom) / 2;
+      distance = Math.min(distance, (bottom - top) * .72);
+    }
+    const low = Math.round(center - distance / 2), high = Math.round(center + distance / 2);
     const points = direction === 'up' ? [x, high, x, low] : [x, low, x, high];
     await this._guardedOn(serial, epoch, ['shell', 'input', 'swipe', ...points.map(String), String(duration)], valid);
     return { ok: true };

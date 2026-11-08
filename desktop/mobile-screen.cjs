@@ -74,6 +74,43 @@ function photoRevealDirection(photo) {
  }
  return null;
 }
+function compressedScrollSurface(visible, discover, media) {
+ const tab = bounds(discover);
+ if (!tab) return;
+ // A native banner can leave the full-width Discover scroller shorter than one photo.
+ // Distinguish it from the horizontal filters by its shared edge with bottom navigation.
+ const owners = visible.filter(n => {
+  const b = bounds(n);
+  return n.a.scrollable === 'true' && b && b.x === 0 && b.width > b.height &&
+   b.width > tab.width && b.y + b.height === tab.y;
+ });
+ if (!owners.length) return;
+ const [owner] = owners;
+ let root = discover;
+ while (root.parent?.tag === 'node') root = root.parent;
+ const display = bounds(root), viewport = bounds(owner);
+ if (owners.length !== 1 || owner.a.class !== 'android.view.View' || owner.a.clickable !== 'false' ||
+     owner.a['long-clickable'] === 'true' || !owner.enabled || !fullyVisible(owner) ||
+     !display || display.x !== viewport.x || display.width !== viewport.width) return null;
+ const surfaces = [];
+ for (const item of media) {
+  let parent = item.parent;
+  while (parent && parent.a.scrollable !== 'true') parent = parent.parent;
+  if (parent !== owner) return null;
+  if (!item.enabled || !fullyVisible(item) || item.a.clickable !== 'false' || item.a['long-clickable'] === 'true') continue;
+  const b = bounds(item), x = Math.floor(b.x + b.width / 2);
+  // Only move through inert content. A floating button or a nested carousel can
+  // share its coordinates even when it is a sibling outside the media subtree.
+  const obstructed = visible.some(n => {
+   if (n === owner || !(n.a.clickable === 'true' || n.a['long-clickable'] === 'true' || n.a.scrollable === 'true' ||
+       n.a.class === 'android.widget.EditText' || n.a.class === 'android.widget.Button')) return false;
+   const obstacle = bounds(n);
+   return !obstacle || (x >= obstacle.x && x < obstacle.x + obstacle.width && b.y < obstacle.y + obstacle.height && obstacle.y < b.y + b.height);
+  });
+  if (!obstructed && b.width >= 96 && b.height >= 120) surfaces.push(b);
+ }
+ return surfaces.sort((a,b) => b.height - a.height)[0] || null;
+}
 function sharesPhotoCard(photo, button) {
  const box = bounds(photo);
  for (let p = photo.parent; p; p = p.parent) {
@@ -292,6 +329,8 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const unknownControl=visible.find(n => n.enabled && n.a.clickable === 'true' && /Button$/.test(n.a.class || '') && !allowedLabels.has(label(n)) && !friendTake(n) && n !== skips[0]);
  if (unknownControl) return block('Unrecognized profile control: '+(label(unknownControl).slice(0,80)||'(unlabeled)')+'.');
  result.kind = 'profile';
+ const surface = compressedScrollSurface(visible, nav[0], [...pictures, ...staticPrompts]);
+ if (surface !== undefined) result.scrollSurface = surface;
  const likes = [...find('Like photo'),...find('Like photo prompt')];
  result.photos = pictures.map(n => {
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });
