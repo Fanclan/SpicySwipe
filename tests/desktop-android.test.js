@@ -385,6 +385,24 @@ test('scrollProfile bounds vertical review away from app and system navigation',
  for(const options of [{fraction:.7,duration:400,direction:'up'},{fraction:.3,duration:1000,direction:'up'},{fraction:.3,duration:400,direction:'left'}]) await assert.rejects(f.android.scrollProfile(options),/scroll|fraction|duration|direction/i);
 });
 
+test('compressed Hinge review scrolls wholly inside verified content in both directions',async t=>{
+ const f=fixture(t);await f.android.select('emulator-5554');
+ f.setHandler(args=>args.includes('dumpsys')?'Viewport INTERNAL: displayId=0, logicalFrame=[0, 0, 720, 1280], isActive=[1]':undefined);
+ const surface={x:40,y:774,width:640,height:338};
+ for(const [direction,fraction] of [['up',.2],['down',.65]]){
+  await f.android.scrollProfile({direction,fraction,surface},()=>true);
+  const [x,y1,x2,y2]=f.calls.filter(c=>c.args.includes('swipe')).at(-1).args.slice(-5).map(Number);
+  assert.equal(x,360);assert.equal(x2,x);
+  assert.ok(Math.min(y1,y2)>774&&Math.max(y1,y2)<1112);
+  assert.ok(Math.abs(y2-y1)>=90);assert.equal(y1>y2,direction==='up');
+ }
+ for(const invalid of [{...surface,height:10},{...surface,y:1200},{...surface,x:100},{...surface,y:1,height:60},null]){
+  await assert.rejects(f.android.scrollProfile({surface:invalid},()=>true),/surface|bounds|display/i);
+ }
+ await assert.rejects(f.android.scrollProfile({surface}),/validity/i);
+ assert.equal(f.calls.filter(c=>c.args.includes('swipe')).length,2);
+});
+
 test('final control dispatch is accounted once even if cancellation occurs during native input', async t=>{
  const f=fixture(t);await f.android.select('emulator-5554');let issued=0,release;
  f.setHandler(args=>args.includes('dumpsys')?'Viewport INTERNAL: displayId=0, logicalFrame=[0, 0, 1080, 2400], isActive=[1]':undefined);

@@ -311,6 +311,60 @@ test('mobile configuration saves only its platform so concurrent sibling edits s
  const x=setup();let patch;x.c.service={request:async(action,data)=>{if(action==='load')return {mobileConfig:{bumble:{swipe:{maxSwipes:25}}}};if(action==='save')patch=data;}};await x.c.request('config',{swipe:{maxSwipes:7}});assert.deepEqual(Object.keys(patch.mobileConfig),['hinge']);
 });
 
+test('paused mobile pacing edits survive restoration and change the resumed wait while preserving the active budget and pending Like',async()=>{
+ let saved;
+ const checkpointStore={read:()=>saved,write:value=>{saved=structuredClone(value)}};
+ const waits=[];
+ const wait=ms=>{waits.push(ms);return new Promise(()=>{})};
+ const x=setup(bumble(),{platform:'bumble',checkpointStore,wait});
+ await x.c.request('config',{swipe:{maxSwipes:80,sessionMinutes:90,likeRatio:1,minDelaySeconds:20,maxDelaySeconds:40}});
+ await x.c.request('start');
+ assert.equal(waits.at(-1),30000);
+ x.c.session.count=5;x.c.reservedCount=5;
+ x.c.lastAction={identity:'prior-card',name:'Previous'};
+ x.c.session.nextBreakAt=20;x.c.session.breakUntil=Date.now()+45000;
+ await x.c.request('pause');
+ const before=structuredClone(saved);
+ const interval={randomizeTiming:false,delaySeconds:8,minDelaySeconds:17,maxDelaySeconds:33};
+ await x.c.request('config',{swipe:{...interval,maxSwipes:500,sessionMinutes:300,breakEvery:50,likeRatio:.5}});
+ assert.equal(saved.config.swipe.maxSwipes,500);
+ assert.deepEqual(saved.session,{...before.session,config:{...before.session.config,...interval}});
+ assert.deepEqual(saved.pendingAction,before.pendingAction);
+ const restored=setup(bumble(),{platform:'bumble',checkpointStore,wait});
+ await restored.c.request('start');
+ assert.equal(waits.at(-1),8000);
+ assert.equal(restored.c.session.count,5);
+ assert.equal(restored.c.session.endsAt,before.session.endsAt);
+ assert.deepEqual(restored.c.lastAction,before.pendingAction);
+ await restored.c.request('pause');
+});
+
+test('a partial mobile pacing edit preserves unsubmitted active settings and rejects an invalid active delay range',async()=>{
+ const x=setup(screen(),{wait:()=>new Promise(()=>{})});
+ await x.c.request('start');await x.c.request('pause');
+ const initial=structuredClone(x.c.session.config);
+ // An earlier version may have saved different preferences alongside the paused run.
+ x.c.config=Config.normalize({swipe:{minDelaySeconds:5,maxDelaySeconds:80,delaySeconds:77}},x.c.config);
+ await assert.rejects(x.c.request('config',{swipe:{maxDelaySeconds:10}}),/minimum.*maximum/i);
+ assert.equal(x.c.config.swipe.maxDelaySeconds,80);
+ assert.deepEqual(x.c.session.config,initial);
+ await x.c.request('config',{swipe:{minDelaySeconds:12}});
+ assert.deepEqual(x.c.session.config,{...initial,minDelaySeconds:12});
+});
+
+test('stopping during a paused pacing save cancels its change to the active interval',async()=>{
+ const x=setup(screen(),{wait:()=>new Promise(()=>{})});
+ await x.c.request('start');await x.c.request('pause');
+ const initial=structuredClone(x.c.session.config);
+ const saving=deferred(),release=deferred();
+ x.c.service.request=async action=>{assert.equal(action,'save');saving.resolve();await release.promise};
+ const edit=x.c.request('config',{swipe:{randomizeTiming:false,delaySeconds:7}});
+ await saving.promise;await x.c.request('stop');release.resolve();
+ await assert.rejects(edit,/canceled/i);
+ assert.equal(x.c.session.status,'idle');
+ assert.deepEqual(x.c.session.config,initial);
+});
+
 test('Bumble confirms first pass only for the matching swipe direction',async()=>{
  for(const confirmDirection of ['left','right']){const x=setup(bumble(),{platform:'bumble',tap:()=>x.set(bumble({name:'Next',identity:'next'}))});x.android.swipeProfile=async(d,b,v,cb)=>{cb();x.set(bumble({kind:'swipeConfirm',swipeDirection:confirmDirection,identity:'confirm',controls:{confirm:control('no')}}))};if(confirmDirection==='left'){await x.c.request('act',{kind:'pass'});assert.equal(x.calls.filter(v=>v==='tap').length,1)}else{await assert.rejects(x.c.request('act',{kind:'pass'}),/transition/);assert.equal(x.calls.filter(v=>v==='tap').length,0)}}
 });
@@ -347,6 +401,39 @@ test('Hinge reveals a top-clipped photo by moving down instead of searching past
  await x.c.request('config',{scrollMin:0,scrollMax:0});await x.c.request('review');
  assert.deepEqual(x.calls.filter(v=>v?.fraction).map(v=>v.direction),['down']);
  assert.equal(x.c.selectedPhoto.key,'photo-one');assert.equal(x.calls.includes('tap'),false);
+});
+
+test('zero optional Hinge scrolls still recheck a managed compressed card before searching for a verified target',async()=>{
+ const surface={x:40,y:774,width:640,height:338};
+ const expanded={x:40,y:576,width:640,height:536};
+ const clipped=screen({scrollSurface:surface,photos:[{key:'partial',bounds:surface,like:null}]});
+ const middle=screen({screenKey:'expanding',scrollSurface:expanded,photos:[{key:'more-visible',bounds:expanded,like:null}]});
+ const phone={serial:'emulator-1',avd:'assigned'};
+ for(const state of ['current','changed screen','cancel','new binding','missing binding','unsafe surface','custom phone']){
+  const initial=state==='unsafe surface'?{...clipped,scrollSurface:null}:clipped;
+  const x=setup(initial,{isManagedPhone:b=>state!=='custom phone'&&b?.avd===phone.avd});
+  const binding=state==='custom phone'?{serial:phone.serial}:phone;
+  x.c.binding=state==='missing binding'?null:binding;
+  x.android.deviceIdentity=async()=>state==='new binding'?{...phone,avd:'another'}:binding;
+  await x.c.request('config',{scrollMin:0,scrollMax:0});let reads=0,moves=0;
+  x.android.hierarchy=async()=>{
+   reads++;
+   if(reads===2&&state==='cancel')x.android.cancelInput();
+   const xml=moves===2?screen():moves===1?middle:reads===2&&state==='changed screen'?{...clipped,screenKey:'different'}:initial;
+   return {xml,foreground:'co.hinge.app'};
+  };
+  x.android.scrollProfile=async(opts,valid)=>{
+   assert.equal(valid(),true);assert.equal(reads,2*(moves+1));
+   assert.deepEqual(opts.surface,moves?expanded:surface);moves++;
+  };
+  if(state==='current'||state==='custom phone'){
+   await x.c.request('review');assert.equal(moves,2);assert.equal(x.c.selectedPhoto.key,'photo-one');
+  }else{
+   await assert.rejects(x.c.request('review'),/changed|cancel|surface|another device/i);
+   assert.equal(moves,0);assert.equal(x.c.selectedPhoto,null);
+  }
+  assert.deepEqual(x.calls,[]);
+ }
 });
 test('Hinge finishes aligning a clipped photo reached on the last search step',async()=>{
  const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{

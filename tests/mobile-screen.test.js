@@ -84,6 +84,30 @@ test('a photo clipped by its scrolling container cannot supply an actionable Lik
  assert.equal(read(clipped).controls.like, null); assert.equal(read(clipped).photos[0].like,null);
 });
 
+test('compressed Hinge Discover identifies the inert photo surface below a separate filter and banner', () => {
+ const photo = '<node class="android.widget.ImageView" content-desc="Sample&apos;s photo" clickable="false" bounds="[40,774][680,1112]"/>';
+ const owner = '<node class="android.view.View" clickable="false" scrollable="true" bounds="[0,774][720,1112]">';
+ const filter = '<node class="android.widget.HorizontalScrollView" scrollable="true" bounds="[0,80][720,146]"/>';
+ const banner = '<node class="android.view.View" clickable="true" bounds="[40,380][680,510]"/>';
+ const chrome = '<node class="android.view.View" content-desc="Discover" selected="true" bounds="[0,1112][144,1228]"/><node class="android.widget.Button" content-desc="Skip Sample" clickable="true" bounds="[40,972][160,1092]"/>';
+ const feed = (content, extra='') => '<hierarchy><node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][720,1280]">'+filter+banner+content+chrome+extra+'</node></hierarchy>';
+ const ordinary = owner + photo + '</node>';
+ const current = read(feed(ordinary),{photoIdentity:'0123456789abcdef'});
+ assert.equal(current.kind,'profile');
+ assert.deepEqual(current.scrollSurface,{x:40,y:774,width:640,height:338});
+ assert.equal(current.photos[0].like,null);
+ const overlay='<node class="android.view.View" clickable="true" bounds="[280,790][460,1100]"/>';
+ const nativeControl='<node class="android.widget.Button" clickable="false" bounds="[280,790][460,1100]"/>';
+ for (const xml of [feed(ordinary, overlay), feed(ordinary,nativeControl), feed(ordinary+ordinary),
+  feed(owner+'</node>'+photo), feed(ordinary.replace('scrollable="true"','long-clickable="true" scrollable="true"')),
+  feed(ordinary.replace('class="android.widget.ImageView"', 'long-clickable="true" class="android.widget.ImageView"')),
+  feed(ordinary.replace('[0,774][720,1112]','[0,774][700,1112]'))]) {
+  assert.equal(read(xml).scrollSurface,null);
+ }
+ assert.equal(Object.hasOwn(read(profile),'scrollSurface'),false);
+ assert.equal(Object.hasOwn(read(feed(ordinary,'<node class="android.app.Dialog"/>')),'scrollSurface'),false);
+});
+
 test('only observed button classes and a shared photo card authorize Like or Skip', () => {
  const skipView = profile.replace(/(<node[^>]*class=")android\.widget\.Button("[^>]*content-desc="Skip Sample")/, '$1android.view.View$2');
  assert.equal(read(skipView).controls.skip,null);
