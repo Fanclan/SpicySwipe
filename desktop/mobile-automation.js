@@ -4,7 +4,7 @@
   const C = global.SSCore;
   const defaults = () => ({ mode: 'like', scrollMin: 1, scrollMax: 4, fractionMin: .25, fractionMax: .6, autoOpeners: false, autoSend: false, tone: 'friendly', language: 'en', length: 'short', instruction: '', swipe: C.swipeSettings({ randomizeTiming: true, minDelaySeconds: 15, maxDelaySeconds: 45, browsePhotos: true, scrollProfile: true, minPhotoSeconds: 2, maxPhotoSeconds: 5, breaksEnabled: true }) });
   const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  function mount(root, { request, platform = 'hinge', notify = () => {}, prepareStart = null }) {
+  function mount(root, { request, platform = 'hinge', web = false, notify = () => {}, prepareStart = null }) {
     let current = platform, connected = false, generation = 0, pending = 0, state = {}, error = '', draftKey = '', draftSource = '', starting = false;
     const forms = new Map(), hydrated = new Set();
     const title = () => current === 'bumble' ? 'Bumble' : 'Hinge';
@@ -26,7 +26,7 @@
       <p data-mobile="comment-note" class="ma-hint"></p>
       <details><summary>Timing, review and breaks</summary><div class="ma-checks">${check('randomizeTiming', 'Randomize waits')}${check('scrollProfile', 'Scroll through profile')}${check('browsePhotos', 'Dwell on visible photos')}</div>
       <div class="ma-fields">${number('delaySeconds', 'Fixed wait (seconds)', 3, 600)}${number('minDelaySeconds', 'Minimum wait (seconds)', 3, 600)}${number('maxDelaySeconds', 'Maximum wait (seconds)', 3, 600)}${number('scrollMin', 'Minimum scrolls', 0, 10)}${number('scrollMax', 'Maximum scrolls', 0, 10)}${number('fractionMin', 'Minimum scroll distance (%)', 20, 65)}${number('fractionMax', 'Maximum scroll distance (%)', 20, 65)}${number('minPhotoSeconds', 'Minimum review dwell (seconds)', 1, 30)}${number('maxPhotoSeconds', 'Maximum review dwell (seconds)', 1, 30)}</div>
-      <div class="ma-checks">${check('breaksEnabled', 'Take breaks')}${check('allowBackground', 'Continue while app is hidden')}</div><div class="ma-fields">${number('breakEvery', 'Break after profiles', 1, 1000)}${number('breakMinSeconds', 'Minimum break (seconds)', 10, 1800)}${number('breakMaxSeconds', 'Maximum break (seconds)', 10, 1800)}</div>
+      <div class="ma-checks">${check('breaksEnabled', 'Take breaks')}${check('allowBackground', web ? 'Keep running when this tab closes' : 'Continue while app is hidden')}</div><div class="ma-fields">${number('breakEvery', 'Break after profiles', 1, 1000)}${number('breakMinSeconds', 'Minimum break (seconds)', 10, 1800)}${number('breakMaxSeconds', 'Maximum break (seconds)', 10, 1800)}</div>
       <p class="ma-hint">Background operation does not prevent computer sleep. Pausing retains the original session deadline.</p></details>
       <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
       <details><summary>Draft options and automatic openers</summary><div class="ma-fields"><label>Tone<select name="tone">${options(C.tones.map(t => [t, t.charAt(0).toUpperCase() + t.slice(1)]))}</select></label><label>Language<select name="language">${options(Object.entries(C.languages))}</select></label><label>Length<select name="length"><option value="short">Short</option><option value="medium">Medium</option></select></label></div><label>Extra instruction<textarea name="instruction" rows="2" maxlength="1200"></textarea></label><div class="ma-checks">${check('autoOpeners', 'Generate openers for the open empty chat')}${check('autoSend', 'Send those openers automatically')}</div><p class="ma-hint">Open an empty Hinge chat, select your choices, then Save settings to arm its watcher. Generation and sending are separate opt-ins. Pause, Stop, or manual device input disarms it. Existing conversations require manual drafting.</p></details></form>
@@ -149,7 +149,7 @@
       const action = target.dataset.mobile;
       if (action === 'quick' || action === 'overnight') {
         const config = collect();
-        config.swipe = { ...config.swipe, maxSwipes: action === 'quick' ? 10 : 100, sessionMinutes: action === 'quick' ? 15 : 480, minDelaySeconds: 15, maxDelaySeconds: action === 'quick' ? 45 : 90, randomizeTiming: true, breaksEnabled: true, allowBackground: action === 'overnight' };
+        config.swipe = { ...config.swipe, maxSwipes: action === 'quick' ? 10 : 100, sessionMinutes: action === 'quick' ? 15 : 480, minDelaySeconds: 15, maxDelaySeconds: action === 'quick' ? 45 : 90, randomizeTiming: true, breaksEnabled: true, allowBackground: action === 'overnight' || (web && config.swipe.allowBackground) };
         fill(config); forms.set(current, config); el('preset-note').textContent = `${action === 'quick' ? 'Quick' : 'Overnight'} preset filled. Review settings, then click Start. Nothing has started.`; render(); return;
       }
       if (action === 'copy') {

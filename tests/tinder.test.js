@@ -36,6 +36,42 @@ const profile='<button aria-label="Next photo" id="outside">Unrelated</button><a
 async function swipeSetup(t,config={}){
  const waits=[];const x=await setup(t,profile,{url:'https://tinder.com/app/recs',config:{maxSwipes:2,delaySeconds:3,browsePhotos:true,maxPhotos:1,minPhotoSeconds:1,maxPhotoSeconds:1,likeRatio:1,...config},wait:()=>new Promise(r=>waits.push(r))});return {...x,waits};
 }
+test('a location reload continues the original session without repeating the previous Like',async t=>{
+ const old=await swipeSetup(t,{allowBackground:true,browsePhotos:false,maxSwipes:3});
+ await old.api.request('start');old.waits.shift()();await tick();
+ const checkpoint=old.api.prepareLocationReload();
+ assert.equal(old.api.snapshot().session.status,'paused');
+ const replacement=await swipeSetup(t,{allowBackground:true,maxSwipes:40});
+ let clicks=0;replacement.dom.window.document.querySelector('#like').onclick=()=>clicks++;
+ replacement.api.restoreLocationReload(checkpoint);
+ const restored=replacement.api.snapshot().session;
+ assert.equal(restored.status,'running');assert.equal(restored.count,1);assert.equal(restored.limit,3);
+ assert.equal(restored.endsAt,old.api.snapshot().session.endsAt);
+ replacement.waits.shift()();await tick();
+ assert.equal(clicks,0);assert.equal(replacement.api.snapshot().session.status,'error');
+});
+test('a location reload preserves a break and completes with exactly the original budget',async t=>{
+ const old=await swipeSetup(t,{allowBackground:true,browsePhotos:false,maxSwipes:2,breaksEnabled:true,breakEvery:1});
+ await old.api.request('start');old.waits.shift()();await tick();
+ const checkpoint=old.api.prepareLocationReload();const replacement=await swipeSetup(t);
+ replacement.dom.window.document.querySelector('article').setAttribute('data-user-id','next');
+ replacement.api.restoreLocationReload(checkpoint);
+ assert.equal(replacement.api.snapshot().session.phase,'break');
+ assert.equal(replacement.api.snapshot().session.nextActionAt,checkpoint.session.breakUntil);
+ replacement.waits.shift()();await tick();replacement.waits.shift()();await tick();
+ assert.equal(replacement.api.snapshot().session.status,'complete');assert.equal(replacement.api.snapshot().session.count,2);
+});
+test('an ended, paused, or foreground-only run cannot restart in the background after a location reload',async t=>{
+ const old=await swipeSetup(t,{allowBackground:false});await old.api.request('start');
+ const checkpoint=old.api.prepareLocationReload();
+ const hidden=await swipeSetup(t);hidden.update({desktopHost:true,desktopVisible:false});
+ hidden.api.restoreLocationReload(checkpoint);assert.equal(hidden.api.snapshot().session.status,'paused');
+ const manual=await swipeSetup(t);manual.api.restoreLocationReload(old.api.prepareLocationReload());
+ assert.equal(manual.api.snapshot().session.status,'paused');
+ const expired=await swipeSetup(t);checkpoint.session.endsAt=Date.now()-1000;expired.api.restoreLocationReload(checkpoint);
+ assert.equal(expired.api.snapshot().session.status,'complete');assert.equal(expired.api.snapshot().session.completionReason,'time');
+ await old.api.request('stop');assert.equal(old.api.prepareLocationReload(),null);
+});
 test('photo review uses only controls in the current card and rejects an unchanged card after swiping',async t=>{
  const x=await swipeSetup(t);let photo=0,outside=0,likes=0;const d=x.dom.window.document;
  d.querySelector('#outside').onclick=()=>outside++;d.querySelector('#photo').onclick=()=>{photo++;d.querySelector('img').src='https://example.test/2.jpg'};d.querySelector('#like').onclick=()=>likes++;

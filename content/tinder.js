@@ -178,6 +178,22 @@
     button.click();lastCard=identity.key;commit();
     await rpc('record',{kind:decision,detail:decision==='like'?'Like submitted to Tinder':'Pass submitted to Tinder'});
   },changed:s=>{notify();if(s.status==='error')rpc('record',{kind:'error',detail:s.error}).catch(()=>{})}});
+  function prepareLocationReload(){
+    if(!['running','paused'].includes(session.status))return null;
+    const saved={session:session.checkpoint(),lastCard};
+    session.pause();
+    return saved;
+  }
+  function restoreLocationReload(saved){
+    if(session.status!=='idle'||!['running','paused'].includes(saved?.session?.status)||!settings?.sidebarConsentGiven||
+       !/^\/app\/(recs|explore)(\/|$)/.test(location.pathname))return;
+    session.restore(saved.session);lastCard=saved.lastCard;
+    const hidden=settings.desktopHost?settings.desktopVisible===false:document.hidden;
+    const dialog=currentDialog();
+    if(saved.session.status==='running'&&session.status==='paused'&&settings.desktopActive!==false&&
+       (!hidden||(session.config.allowBackground&&settings.swipeConfig.allowBackground))&&(!dialog||promptDecline(dialog)))session.start();
+    else notify();
+  }
   async function request(action,data={}){
     if(action==='context')return snapshot();
     if(action==='insert')return {ok:Boolean(insertDraft(data.text,data.conversationId))};
@@ -221,5 +237,5 @@
     observe();
   }
   let lastPath=location.pathname;
-  root.SSTinder={init,context,request,snapshot,subscribe:fn=>{subscribers.add(fn);return()=>subscribers.delete(fn)}};
+  root.SSTinder={init,context,request,snapshot,prepareLocationReload,restoreLocationReload,subscribe:fn=>{subscribers.add(fn);return()=>subscribers.delete(fn)}};
 })(globalThis);

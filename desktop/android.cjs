@@ -9,6 +9,34 @@ const APPS = Object.freeze({ hinge: 'co.hinge.app', bumble: 'com.bumble.app' });
 const KEYS = Object.freeze({ Backspace: 67, Delete: 112, Enter: 66, Tab: 61, ArrowLeft: 21, ArrowRight: 22, ArrowUp: 19, ArrowDown: 20, Escape: 4, Home: 122, End: 123 });
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
 const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+const managedLaunchers = new Set(['com.google.android.apps.nexuslauncher','com.android.launcher3']);
+const componentPattern = /^([A-Za-z][A-Za-z0-9_.]*)\/(\.?[A-Za-z][A-Za-z0-9_.]*)$/;
+function normalizedComponent(value) {
+  const match = componentPattern.exec(value || '');
+  if (!match) return null;
+  return match[1]+'/'+(match[2].startsWith('.') ? match[1]+match[2] : match[2]);
+}
+function resolvedComponent(output, pkg) {
+  const components = output.split(/\r?\n/).map(line=>line.trim()).filter(line=>componentPattern.test(line));
+  return components.length===1 && components[0].startsWith(pkg+'/') ? components[0] : null;
+}
+function focusedHomeWindow(output, home) {
+  const lines=output.split(/\r?\n/).map(line=>line.trim());
+  const focusedWindows=lines.filter(line=>line.startsWith('mCurrentFocus='));
+  const focusedApps=lines.filter(line=>line.startsWith('mFocusedApp='));
+  if(focusedWindows.length!==1||focusedApps.length!==1)return false;
+  const window=/^mCurrentFocus=(Window\{[a-f\d]+ u0 ([^\s}]+)\})$/i.exec(focusedWindows[0]);
+  const activity=/^mFocusedApp=ActivityRecord\{[^}]*?\bu0 ([^\s}]+)(?:\s|})/.exec(focusedApps[0]);
+  if(!window||!activity||normalizedComponent(window[2])!==home||normalizedComponent(activity[1])!==home)return false;
+  // A dialog can use its owner's activity name. Check the type of the actual focused window.
+  const header=lines.findIndex(line=>/^Window #\d+ Window\{/.test(line)&&line.endsWith(' '+window[1]+':'));
+  if(header===-1)return false;
+  for(const line of lines.slice(header+1)){
+    if(/^Window #\d+ Window\{/.test(line))break;
+    if(line.startsWith('mAttrs='))return /\bty=BASE_APPLICATION\b/.test(line);
+  }
+  return false;
+}
 
 // Fixed labels only: never attach command arguments, serials, output or native messages.
 const OPERATIONS = [
@@ -16,6 +44,7 @@ const OPERATIONS = [
   [['shell','cmd','package','resolve-activity'], 'launcher-resolve'],
   [['shell','am','force-stop'], 'app-stop'], [['shell','am','start'], 'app-launch'],
   [['shell','monkey'], 'app-launch'], [['shell','dumpsys','activity'], 'foreground-read'],
+  [['shell','dumpsys','window'], 'foreground-read'],
   [['shell','dumpsys','input'], 'display-read'], [['exec-out','screencap'], 'screenshot'],
   [['shell','uiautomator','dump'], 'hierarchy-dump'], [['shell','cat'], 'hierarchy-read'],
   [['shell','rm'], 'hierarchy-cleanup'], [['shell','pm','list','packages'], 'package-list'],
@@ -305,6 +334,24 @@ class Android {
     const output = await this._inputOn(serial, ['shell', 'monkey', '-p', app, '-c', 'android.intent.category.LAUNCHER', '1'], inputEpoch);
     if (/no activities|aborted|error|exception/i.test(output)) throw new Error('Could not launch this app. Open it manually on the device and check its setup.');
     return { opened: platform };
+  }
+
+  async reopenFromHome(platform,{foreground,valid,reserve}) {
+    if(platform!=='hinge'||!managedLaunchers.has(foreground))return false;
+    const epoch=this.inputEpoch,serial=await this._selected(),app=this._app(platform);
+    const run=args=>this._guardedOn(serial,epoch,['shell',...args],valid);
+    const resolve=['cmd','package','resolve-activity','--brief','--user','0','-a','android.intent.action.MAIN','-c'];
+    const home=resolvedComponent(await run([...resolve,'android.intent.category.HOME']),foreground);
+    if(!home)return false;
+    const target=resolvedComponent(await run([...resolve,'android.intent.category.LAUNCHER',app]),app);
+    if(!target)return false;
+    const windows=await run(['dumpsys','window']);
+    if(!focusedHomeWindow(windows,normalizedComponent(home)))return false;
+    this._guard(serial,epoch,valid);
+    reserve(); // The controller checkpoints the cooldown before this single, non-destructive launch.
+    const result=await run(['am','start','--user','0','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-n',target]);
+    if(/error|exception/i.test(result))throw new Error('Android could not reopen Hinge from Home.');
+    return true;
   }
 
   async refreshFeed(platform,valid,wait) {

@@ -25,6 +25,14 @@ async function fixture(t, options = {}) {
   ui.setConnected(true); ui.handleState(snapshot());
   return { w, root, ui, calls, notes, copied, el, field, input, click, respond: fn => { respond = fn; } };
 }
+test('web Quick preset preserves the phone background setting',async t=>{
+  const f=await fixture(t,{web:true});
+  for(const value of [true,false]){
+    f.input('allowBackground',value);
+    await f.click('quick');
+    assert.equal(f.field('allowBackground').checked,value);
+  }
+});
 test('mount reads status without writing or starting and defaults to plain Likes', async t => {
   const f = await fixture(t);
   assert.deepEqual(f.calls.map(c => c.action), ['status']);

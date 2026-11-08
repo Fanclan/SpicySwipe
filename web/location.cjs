@@ -2,8 +2,9 @@
 const {isTinderURL} = require('../desktop/policy.cjs');
 
 class WebLocation {
-  constructor({getContents}) {
+  constructor({getContents, reload = contents => contents.reload()}) {
     this.getContents = getContents;
+    this.reload = reload;
     this.active = null;
   }
 
@@ -36,7 +37,7 @@ class WebLocation {
       if (this.active === lease) {
         this.active = null;
         clearTimeout(lease.timer);
-        if (lease.ready && !wc.isDestroyed() && isTinderURL(wc.getURL())) wc.reload();
+        if (lease.ready && !wc.isDestroyed() && isTinderURL(wc.getURL())) this.reload(wc);
       }
     };
     wc.debugger.once('detach', detached);
@@ -47,7 +48,7 @@ class WebLocation {
       lease.ready = true;
       lease.timer = setTimeout(() => this.stop(), 15 * 60 * 1000);
       lease.timer.unref();
-      wc.reload();
+      this.reload(wc);
       return this.status();
     } catch {
       if (this.active === lease) this.stop();
@@ -63,7 +64,7 @@ class WebLocation {
     const wc = lease.contents;
     if (!wc.isDestroyed()) {
       if (wc.debugger.isAttached()) wc.debugger.detach();
-      if (reload && lease.ready && isTinderURL(wc.getURL())) wc.reload();
+      if (reload && lease.ready && isTinderURL(wc.getURL())) this.reload(wc);
     }
     return this.status();
   }

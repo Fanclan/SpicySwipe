@@ -6,6 +6,49 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const Android = require('../desktop/android.cjs');
 
+const launcherPackage = 'com.google.android.apps.nexuslauncher';
+const launcher = launcherPackage+'/com.google.android.apps.nexuslauncher.NexusLauncherActivity';
+function homeWindows(component = launcher, windowType = 'BASE_APPLICATION') {
+  return [
+    '  mCurrentFocus=Window{abc123 u0 '+component+'}',
+    '  mFocusedApp=ActivityRecord{ef456 u0 '+launcher+' t16}',
+    '  Window #9 Window{abc123 u0 '+component+'}:',
+    '    mAttrs={(0,0)(fillxfill) ty='+windowType+' fmt=TRANSLUCENT}'
+  ].join('\n');
+}
+for (const scenario of ['home','other activity','dialog','in-package dialog','permission dialog','unresolved','wrong app','canceled','storage failure','ambiguous write']) {
+  test('HOME recovery checks the focused launcher and guards the app start: '+scenario, async t => {
+    const f=fixture(t);await f.android.select('emulator-5554');
+    let reserved=0,valid=true;
+    f.setHandler(args=>{
+      if(args.includes('android.intent.category.HOME'))return scenario==='unresolved'?'No activity found':launcherPackage+'/.NexusLauncherActivity';
+      if(args.includes('resolve-activity'))return scenario==='wrong app'?'different.app/.Main':'co.hinge.app/.MainActivity';
+      if(args.includes('window')){
+        if(scenario==='canceled')valid=false;
+        if(scenario==='other activity')return homeWindows(launcherPackage+'/.SettingsActivity');
+        if(scenario==='permission dialog')return homeWindows('com.android.permissioncontroller/.permission.ui.GrantPermissionsActivity');
+        if(scenario==='dialog')return homeWindows('Application Error: '+launcherPackage);
+        if(scenario==='in-package dialog')return homeWindows(launcher,'APPLICATION_ATTACHED_DIALOG');
+        return homeWindows();
+      }
+      if(args.includes('start')){
+        assert.equal(reserved,1);
+        if(scenario==='ambiguous write')throw Object.assign(Error('lost acknowledgement'),{code:1});
+      }
+    });
+    const operation=f.android.reopenFromHome('hinge',{
+      foreground:launcherPackage,valid:()=>valid,
+      reserve:()=>{if(scenario==='storage failure')throw Error('save failed');reserved++;}
+    });
+    if(['canceled','storage failure','ambiguous write'].includes(scenario))await assert.rejects(operation);
+    else assert.equal(await operation,scenario==='home');
+    const launches=f.calls.filter(c=>c.args.includes('start'));
+    assert.equal(launches.length,['home','ambiguous write'].includes(scenario)?1:0);
+    if(launches.length)assert.equal(launches[0].args.at(-1),'co.hinge.app/.MainActivity');
+    assert.ok(!f.calls.some(c=>c.args.some(arg=>['force-stop','input','monkey','kill','clear'].includes(arg))));
+  });
+}
+
 // Each test file runs in its own process. Exercise synthetic SDK discovery,
 // independent of Android SDK paths inherited from a developer or CI runner.
 delete process.env.ANDROID_HOME;
