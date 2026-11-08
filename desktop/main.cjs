@@ -18,7 +18,9 @@ function mobileSession(platform) {
   if (!Object.hasOwn(phones, platform)) throw Error('Choose Hinge or Bumble first.');
   if (!mobileSessions.has(platform)) {
     const device = new Android({sdkRoot:androidPreferences.sdkRoot, graphicsMode:androidPreferences.platforms?.[platform]?.graphicsMode});
-    mobileSessions.set(platform, {device, managed:new ManagedPhone(platform,device), commands:Promise.resolve(), revision:0});
+    const readLocationReceipt=managedAndroid&&process.env.SPICYSWIPE_ANDROID_CITY_LOCATION
+      ? require('../web/managed-city-location.cjs').readReceipt : undefined;
+    mobileSessions.set(platform, {device, managed:new ManagedPhone(platform,device,readLocationReceipt), commands:Promise.resolve(), revision:0});
   }
   return mobileSessions.get(platform);
 }
@@ -194,7 +196,8 @@ async function dispatch(action,data={}) {
       const detail={
         installing:'Downloading and verifying Android for the first installation. Both phones will start automatically.',
         retrying:'The Android download failed. The server will retry automatically.',
-        unsupported:'The managed Android image requires an x86-64 server.'
+        unsupported:'The managed Android image requires an x86-64 server.',
+        'location-invalid':'Check the managed city location setting in Coolify and redeploy.'
       }[stage];
       if(detail)return {ready:false,phase:stage,detail,serial:phones[platform].serial,needsInstall:false};
       return session.managed.prepare(()=>revision===session.revision&&current()).catch(error=>{

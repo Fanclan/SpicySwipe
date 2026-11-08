@@ -25,6 +25,8 @@ New web sessions default to **Keep running when this tab closes**. With that set
 
 To change Android preferences on the connected phone, choose **Advanced settings** and **Open Android settings**. Use **Reopen Google Play** to return to the listing during installation, or **Open Hinge** or **Open Bumble** to return to an installed app.
 
+To give both managed Android phones a consistent city location, set the private runtime variable `SPICYSWIPE_ANDROID_CITY_LOCATION` in Coolify to `latitude,longitude`, using at most two decimal places per coordinate, and redeploy. The supervisor applies it to each named emulator after Android boots. The app can open once the emulator console accepts the fix. Android location permissions and dating-app discovery settings still apply. Leave the variable empty to use the emulator’s own location settings.
+
 To use an external Android device, connect it to ADB on the server, select the app tab, then open **Advanced settings** and choose the online device. That app keeps the selected device across reloads. **Use assigned phone** switches it back. For a phone with wireless debugging, run these commands in the Coolify application terminal using the pairing and debugging addresses from the phone:
 
 ```sh
