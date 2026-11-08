@@ -83,7 +83,8 @@ module.exports=function readBumble(xml,options,h){
  if(visible.some(n=>!within(n,main[0])&&(label(n)||n.a.clickable==='true')))return block('An unfamiliar Bumble overlay requires attention.');
  // Known first-use animation gives the same ordinary swipe, followed by exact confirmation.
  const roots=id('profile_root_container').filter(n=>within(n,stack[0]));
- if(!roots.length&&['Why not adjust those filters?','You’ve seen everyone nearby. But, never fear, someone great could be just outside your filters.','Adjust your filters'].every(text=>find(text).length===1&&within(find(text)[0],stack[0]))){result.kind='empty';result.reason='No more profiles within your Bumble filters.';return result;}
+ const emptyLabels=['Why not adjust those filters?','You’ve seen everyone nearby. But, never fear, someone great could be just outside your filters.','Adjust your filters'];
+ if(!roots.length&&emptyLabels.every(text=>find(text).length===1&&within(find(text)[0],stack[0]))){result.kind='empty';result.reason='No more profiles within your Bumble filters.';return result;}
  const entries=roots.map(root=>{let layer=root;while(layer.parent&&layer.parent!==stack[0])layer=layer.parent;return {root,layer,order:Number(layer.a['drawing-order'])}});
  if(!entries.length||entries.some(e=>!Number.isInteger(e.order)||e.order<1)||new Set(entries.map(e=>e.layer)).size!==entries.length)return block('The visible Bumble card is ambiguous.');
  const top=entries.filter(e=>e.order===Math.max(...entries.map(e=>e.order)));
@@ -202,10 +203,33 @@ module.exports=function readBumble(xml,options,h){
   const verifiedBar = clipped && bar?.a.class === 'android.widget.FrameLayout' && within(bar, main[0]) &&
    !within(bar, stack[0]) && within(people[0], bar) && fullyVisible(bar) && bounds(bar).y >= bottom(viewport);
   const protectedAreas = clipped ? [visibleRow, ...reportedBoxes] : reportedBoxes;
-  const overlay = visible.some(n => (label(n) || n.a.clickable === 'true') &&
+  const overlays = visible.filter(n => (label(n) || n.a.clickable === 'true') &&
    !within(n, footer) && !within(footer, n) && !entries.some(e => e.root !== root && within(n, e.root)) &&
    !(verifiedBar && within(n, bar) && fullyVisible(n)) && protectedAreas.some(area => overlaps(bounds(n), area)));
-  if (overlay) return block('An overlay covers the Bumble voting controls.');
+  if (overlays.length) {
+   // Android also exposes the empty-queue layer behind the final People card.
+   // Its title and explanation can intersect the voting row in screen coordinates.
+   const below = nodes.filter(n => n.parent === stack[0] && n !== top[0].layer);
+   const layer = below[0];
+   const order = Number(layer?.a['drawing-order']);
+   const ordinaryUnderlay = entries.length === 1 && below.length === 1 &&
+    top[0].layer.a.class === 'android.widget.FrameLayout' && layer.a.class === 'androidx.compose.ui.platform.ComposeView' &&
+    Number.isInteger(order) && order > 0 && order < top[0].order;
+   const branch = ordinaryUnderlay ? nodes.filter(n => within(n,layer)) : [];
+   const lines = emptyLabels.map(value => branch.find(n => n.a.text === value));
+   const [title, explanation, adjust] = lines;
+   const button = adjust?.parent;
+   const role = branch.find(n => n.a.class === 'android.widget.Button');
+   const verified = branch.length === 10 && lines.every(n => n?.a.class === 'android.widget.TextView') &&
+    title.parent === explanation.parent && button?.parent === title.parent && role?.parent === button &&
+    button.a.class === 'android.view.View' && button.a.clickable === 'true' &&
+    branch.every(n => n.enabled && n.visible && !n.a['content-desc'] && !n.a['resource-id'] &&
+     n.a['long-clickable'] !== 'true' && n.a.checkable !== 'true' && n.a.scrollable !== 'true' &&
+     (n === button || n.a.clickable === 'false') && (lines.includes(n) || (!label(n) &&
+      (n === layer || n === role || n.a.class === 'android.view.View')))) &&
+    overlays.every(n => n === title || n === explanation);
+   if (!verified) return block('An overlay covers the Bumble voting controls.');
+  }
   if (clipped) {
    result.controls.like = null;
    result.controls.skip = null;

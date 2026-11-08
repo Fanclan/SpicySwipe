@@ -254,3 +254,26 @@ test('Bumble permits scrolling when Android crops the native voting controls at 
  const fullBad=votingFooter.replaceAll('[95,1876][284,2065]','[95,1876][284,1926]').replaceAll('[796,1876][985,2065]','[796,1876][985,1926]');
  for(const invalid of [fullBad,cropped.replace('Send SuperSwipe','Subscribe'),cropped.replace('resource-id=', 'clickable="true" resource-id='),cropped+footerNode('android.view.View','[95,2100][284,2162]','clickable="true" text="Buy"')])assert.equal(readFooter(invalid).kind,'blocked');
 });
+
+test('Bumble ordinary footer can sit above the native empty queue text',()=>{
+ const view=(box,attrs,children='')=>footerNode('android.view.View',box,attrs,children);
+ const text=(box,label)=>footerNode('android.widget.TextView',box,`text="${label}" clickable="false"`);
+ const heading=text('[80,1750][900,1900]','Why not adjust those filters?');
+ const body=text('[80,1940][900,2030]','You’ve seen everyone nearby. But, never fear, someone great could be just outside your filters.');
+ const buttonBox='[48,204][672,300]';
+ const button=view(buttonBox,'clickable="true"',text('[160,220][560,270]','Adjust your filters')+footerNode('android.widget.Button',buttonBox,'clickable="false"'));
+ const content=view('[21,231][1059,2162]','clickable="false"',view('[21,231][1059,2162]','clickable="false"',view('[360,400][560,600]','clickable="false"',view('[360,400][560,600]','clickable="false"'))+heading+body+button));
+ const layer=footerNode('androidx.compose.ui.platform.ComposeView','[0,210][1080,2162]','drawing-order="1" clickable="false"',content);
+ const front=footerCard(votingFooter,2), xml=(base,card=front)=>nativeFooterFeed(base+card);
+ for(const sample of [xml(layer),nativeFooterFeed(front+layer)]){
+  const screen=read(sample);assert.equal(screen.kind,'profile');assert.equal(screen.controls.profileLike.label,'Like');assert.equal(screen.controls.profilePass.label,'Not for me');
+ }
+ for(const unsafe of [
+  xml(layer.replace('drawing-order="1"','drawing-order="2"')),xml(layer.replace('drawing-order="1"','drawing-order="3"')),xml(layer.replace('drawing-order="1"','')),
+  xml(layer.replace(heading,heading.replace('clickable="false"','clickable="true"'))),
+  xml(layer.replace(heading,heading.replace('clickable="false"','clickable="false" long-clickable="true"'))),
+  xml(layer.replace(body,body+text('[80,1940][900,2030]','Verify your identity'))),xml(layer.replace(body,body.replace('You’ve seen everyone nearby.','Unlock more Likes.'))),
+  xml(layer.replaceAll(buttonBox,'[95,1876][284,2065]')),
+  xml(layer,front+footerCard(votingFooter,3)), xml(layer+text('[80,1940][900,2030]','Purchase'))
+ ])assert.equal(read(unsafe).kind,'blocked');
+});
