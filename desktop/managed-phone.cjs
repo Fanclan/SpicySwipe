@@ -14,9 +14,10 @@ function usesManagedPhone(platform, preferences, enabled) {
 }
 
 class ManagedPhone {
-  constructor(platform, device) {
+  constructor(platform, device, readLocationReceipt) {
     this.platform = platform;
     this.device = device;
+    this.readLocationReceipt = readLocationReceipt;
     this.opened = null;
   }
 
@@ -30,6 +31,12 @@ class ManagedPhone {
     check();
     if (boot.phase !== 'ready') {
       return { ready: false, phase: boot.phase, detail: boot.detail, serial, needsInstall: false };
+    }
+    if (this.readLocationReceipt) {
+      const applied = await this.readLocationReceipt(serial);
+      check();
+      if (!applied || applied !== boot.bootId) return {ready:false, phase:'booting', serial, needsInstall:false,
+        detail:'Waiting for the managed phone to accept its configured city location.'};
     }
     if (this.device.serial !== serial) {
       await this.device.select(serial);

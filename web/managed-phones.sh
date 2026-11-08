@@ -67,11 +67,19 @@ EOF
 }
 
 run_phone() {
-  local avd=$1 port=$2
+  local avd=$1 port=$2 guest
   while true; do
     echo "Starting $avd on emulator-$port (acceleration $accel)"
     "$ANDROID_HOME/emulator/emulator" "@$avd" -port "$port" -accel "$accel" -gpu swiftshader \
-      -no-window -noaudio -no-snapshot -no-boot-anim -no-metrics || true
+      -no-window -noaudio -no-snapshot -no-boot-anim -no-metrics &
+    guest=$!
+    if [[ -n ${SPICYSWIPE_ANDROID_CITY_LOCATION:-} ]]; then
+      while kill -0 "$guest" 2>/dev/null; do
+        ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-city-location.cjs "$avd" "emulator-$port" "$guest" && break
+        sleep 3
+      done
+    fi
+    wait "$guest" || true
     echo "$avd stopped. Retrying in 30 seconds."
     sleep 30
   done
@@ -80,6 +88,11 @@ run_phone() {
 # Protect both user disks through overlapping deployments on the same volume.
 exec 9>"$runtime/phones.lock"
 flock 9
+if [[ -n ${SPICYSWIPE_ANDROID_CITY_LOCATION:-} ]] &&
+   ! ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-city-location.cjs validate; then
+  status location-invalid
+  exit 1
+fi
 if [[ $(uname -m) != x86_64 ]]; then
   status unsupported
   echo 'Managed Android images require an x86-64 host.'
