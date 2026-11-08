@@ -583,3 +583,20 @@ test('Advanced settings opens Android Settings only on the selected phone', asyn
   assert.deepEqual(await f.android.openSettings(), {opened:'settings'});
   assert.deepEqual(f.calls.at(-1).args, ['-s','emulator-5554','shell','am','start','-a','android.settings.SETTINGS']);
 });
+
+test('blank Discover relaunch reserves the write after launcher verification and before force-stop', async t=>{
+ const f=fixture(t);await f.android.select('emulator-5554');
+ let launcher='', reserved=0, writes=0;
+ f.setHandler(args=>{
+  if(args.includes('resolve-activity'))return launcher;
+  if(args.includes('force-stop')){assert.equal(reserved,1);writes++;}
+  if(args.includes('activities'))return 'mResumedActivity: ActivityRecord{x u0 co.hinge.app/.MainActivity t1}';
+ });
+ const refresh=beforeStop=>f.android.refreshFeed('hinge',()=>true,async()=>{},beforeStop);
+ await assert.rejects(refresh(()=>{reserved++;}),/launcher/);
+ assert.equal(reserved,0);assert.equal(writes,0);
+ launcher='co.hinge.app/.MainActivity';
+ await assert.rejects(refresh(async()=>{throw Error('screen changed');}),/screen changed/);
+ assert.equal(writes,0);
+ await refresh(async()=>{reserved++;});assert.equal(writes,1);
+});

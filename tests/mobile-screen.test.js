@@ -392,3 +392,27 @@ test('prompt confirmation rejects mismatched, detached or overlapping sibling co
  for(const candidate of [xml.replace('Like photo','Like video'),xml.replace('Like photo','Like prompt'),xml.replace('[875,123][1001,249]','[875,600][1001,726]'),xml.replaceAll('[53,118][1027,275]','[53,118][1027,1200]'),xml.replace('class="android.widget.ImageView"','class="android.view.View"'),xml.replace("Sample's photo",'unrelated'),xml.replace('scrollable="true"','scrollable="false"')])assert.equal(read(candidate,{commentText:''}).controls.sendLike,null);
  const after=promptWithSibling('photo','after');assert.equal(read(after.replaceAll('[53,1528][1027,2179]','[53,1400][1027,2179]'),{commentText:''}).controls.sendLike,null);
 });
+
+// The native app can leave just its Discover header and five tabs on screen.
+const blankDiscover = feedError.replace(/ <node class="android.widget.ScrollView"[\s\S]*?\n <\/node>/, '');
+test('blank Discover shell has no profile identity, queue-exhaustion signal, or actionable controls', () => {
+ const result = read(blankDiscover);
+ assert.equal(result.kind, 'feedLoading');
+ assert.equal(result.identity, null);
+ assert.ok(Object.values(result.controls).every(value => value === null));
+ assert.deepEqual(result.photos, []);
+});
+test('blank Discover shell rejects overlays, extra content, and ambiguous native navigation', () => {
+ const add = node => blankDiscover.replace('</hierarchy>', node + '</hierarchy>');
+ for (const xml of [
+  add('<node class="android.widget.TextView" text="Verify your account"/>'),
+  add('<node class="android.webkit.WebView"/>'), add('<node class="android.widget.ImageView"/>'),
+  add('<node class="android.widget.Button"/>'), add('<node class="android.widget.EditText"/>'),
+  add('<node class="android.view.View" scrollable="true"/>'), add('<node class="android.view.View" clickable="true"/>'),
+  blankDiscover.replace('selected="true"','selected="false"'),
+  blankDiscover.replace('content-desc="Profile Hub"','content-desc="Discover"'),
+  blankDiscover.replace('text="Discover"','text="Matches"'),
+  blankDiscover.replace('clickable="true" bounds="[216,2179][432,2337]"','clickable="true" bounds="[100,2179][432,2337]"'),
+ ]) assert.equal(read(xml).kind, 'blocked');
+ assert.equal(read(blankDiscover,{foreground:'com.android.systemui'}).kind,'blocked');
+});

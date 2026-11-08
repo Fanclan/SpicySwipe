@@ -669,3 +669,78 @@ test('native Bumble automated review continues to the footer from its verified s
  await x.c.act('like',t,()=>true,()=>commits++,prepared);
  assert.deepEqual(x.calls.filter(v=>v?.direction).map(v=>v.direction),['up','up']);assert.equal(commits,1);assert.equal(x.c.screen.name,'Next');
 });
+
+const loadingDiscover = () => screen({kind:'feedLoading', name:'', identity:null, screenKey:'discover-shell', photos:[], controls:{}});
+async function loadingHinge(managed=true) {
+ const phone = {serial:'emulator-1', avd:'assigned'};
+ const x = setup(loadingDiscover(), {isManagedPhone:binding=>managed && binding?.avd===phone.avd});
+ await x.c.request('status');
+ x.android.deviceIdentity = async () => phone;
+ x.c.binding = phone;
+ x.c.session.status = 'running';
+ x.c.session.count = x.c.reservedCount = 4;
+ x.c.session.endsAt = Date.now()+1200000;
+ x.c.lastAction = {identity:'previous-person', name:'Previous'};
+ x.run = (sleep=async()=>true) => x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('shell must never commit an action'),sleep,x.c.token());
+ return x;
+}
+
+test('blank Discover shell allows loading before one managed relaunch and preserves an uncertain Like', async () => {
+ const x = await loadingHinge();
+ const guard=x.c.lastAction, deadline=x.c.session.endsAt;
+ const delays=[];
+ let launches=0;
+ x.android.refreshFeed=async (platform,valid,_wait,beforeStop)=>{
+  await beforeStop();
+  assert.equal(platform,'hinge'); assert.equal(valid(),true); assert.ok(x.c.checkpoint().nextFeedRefreshAt>Date.now());
+  assert.equal(x.c.checkpoint().pendingAction,launches === 0 ? guard : null); launches++;
+ };
+ const result=await x.run(async ms=>{delays.push(ms);return true});
+ assert.ok(delays.some(ms=>ms>=30000)); assert.equal(launches,1); assert.ok(result.retryAfter>0);
+ assert.equal(x.c.lastAction,guard); assert.equal(x.c.session.count,4); assert.equal(x.c.session.endsAt,deadline);
+ x.c.nextFeedRefreshAt=0;
+ await x.run(); assert.equal(launches,1,'a permanently blank feed must not be relaunched repeatedly');
+ const saved=x.c.checkpoint(), y=await loadingHinge();
+ y.c.restoreCheckpoint(saved); y.c.session.status='running';
+ y.android.refreshFeed=async()=>assert.fail('restart must not re-arm the same blank episode');
+ await y.run(); assert.deepEqual(y.c.lastAction,guard); assert.equal(y.c.session.endsAt,deadline);
+ x.set(screen()); await x.run(); assert.equal(x.c.lastAction,null,'a verified changed card may then reconcile');
+ x.set(loadingDiscover()); await x.run(); assert.equal(launches,2,'new episode after a verified profile');
+ assert.deepEqual(x.calls,[]);
+});
+test('blank Discover shell skips relaunch on a changed screen, unowned device or interrupted grace period', async () => {
+ for (const condition of ['normal card', 'overlay', 'unmanaged', 'canceled', 'cooldown']) {
+  const x=await loadingHinge(condition!=='unmanaged');
+  x.android.refreshFeed=async()=>assert.fail('should not relaunch: '+condition);
+  if(condition==='cooldown')x.c.nextFeedRefreshAt=Date.now()+120000;
+  const result=await x.run(async()=>{
+   if(condition==='normal card')x.set(screen());
+   if(condition==='overlay')x.set(screen({kind:'blocked',identity:null,screenKey:'overlay'}));
+   return condition!=='canceled';
+  });
+  assert.ok(result.retryAfter>0); assert.equal(x.c.session.count,4); assert.ok(x.c.lastAction); assert.deepEqual(x.calls,[]);
+ }
+});
+test('paused managed Hinge can resume on a verified blank Discover shell with the existing deadline', async () => {
+ const x=await loadingHinge();x.c.wait=()=>new Promise(()=>{});x.c.session.wait=x.c.wait;
+ x.c.session.status='paused';const deadline=x.c.session.endsAt;
+ try {const started=await x.c.request('start');assert.equal(started.session.status,'running');assert.equal(started.session.count,4);assert.equal(started.session.endsAt,deadline);assert.ok(x.c.lastAction)}
+ finally {await x.c.request('pause')}
+});
+
+test('blank Discover preflight can recover after cooldown, uncertain force-stop acknowledgement cannot be replayed', async () => {
+ const x=await loadingHinge(), guard=x.c.lastAction;
+ let attempts=0, mutations=0;
+ x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{
+  attempts++;
+  if(attempts===1)throw Object.assign(Error('launcher lookup timed out'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  await beforeStop();
+  assert.equal(x.c.checkpoint().loadingFeedRelaunched,true);
+  mutations++;
+  throw Object.assign(Error('stop acknowledgement timed out'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ await x.run(); assert.equal(attempts,1); assert.equal(x.c.checkpoint().loadingFeedRelaunched,false);
+ await x.run(); assert.equal(attempts,1);
+ x.c.nextFeedRefreshAt=0; await x.run(); assert.equal(mutations,1);
+ x.c.nextFeedRefreshAt=0; await x.run(); assert.equal(attempts,2); assert.equal(x.c.lastAction,guard);
+});

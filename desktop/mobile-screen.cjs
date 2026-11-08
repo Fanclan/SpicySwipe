@@ -91,6 +91,38 @@ function control(node, allowCompose = false) {
  if (!node || !node.enabled || !fullyVisible(node) || (!allowCompose && (node.a.clickable !== 'true' || node.a.class !== 'android.widget.Button'))) return null;
  return { key: hash([label(node), node.a['resource-id'], bounds(node)]), bounds: bounds(node), label: label(node) };
 }
+const discoverTabNames = ['Discover', 'Standouts', 'Likes You', 'Matches', 'Profile Hub'];
+// Both native Discover placeholders keep the same contiguous row of five tabs.
+function discoverNavigation(find, minY) {
+ const tabs = [];
+ let previous;
+ for (const [index, text] of discoverTabNames.entries()) {
+  const matches = find(text).filter(node => index !== 0 || node.a.class === 'android.view.View');
+  if (matches.length !== 1) return null;
+  const item = matches[0], tab = item.parent, box = bounds(item), tabBox = tab && bounds(tab);
+  if (item.a.class !== 'android.view.View' || item.a.clickable !== 'false' || !item.enabled || !fullyVisible(item) ||
+      tab?.a.class !== 'android.view.View' || !tab.enabled || !fullyVisible(tab) ||
+      tab.a.clickable !== (index === 0 ? 'false' : 'true') || (tab.a.selected === 'true') !== (index === 0) ||
+      !box || !tabBox || box.x !== tabBox.x || box.y !== tabBox.y || box.width !== tabBox.width || box.height !== tabBox.height || box.y < minY) return null;
+  if (previous && (tab.parent !== tabs[0].parent || box.x !== previous.x + previous.width || box.y !== previous.y || box.height !== previous.height)) return null;
+  tabs.push(tab);
+  previous = box;
+ }
+ return tabs;
+}
+function blankDiscoverShell(visible, find) {
+ const discover = find('Discover');
+ if (discover.length !== 2) return false;
+ const header = discover.find(n => n.a.class === 'android.widget.TextView');
+ if (!header || header.a.clickable !== 'false' || !header.enabled || !fullyVisible(header)) return false;
+ const box = bounds(header), tabs = discoverNavigation(find, box.y + box.height);
+ if (!tabs || visible.filter(n => label(n)).length !== 6) return false;
+ const otherTabs = new Set(tabs.slice(1));
+ const containers = /^(?:android\.(?:view\.(?:View|ViewGroup)|widget\.(?:FrameLayout|LinearLayout))|(?:[\w.]+\.)?(?:ComposeView|ycl))$/;
+ return visible.every(n => (n === header || containers.test(n.a.class || '')) && n.a.scrollable !== 'true' &&
+  (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
+  !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
+}
 function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commentText } = {}) {
  const result = { platform, kind: 'blocked', name: '', identity: null, screenKey: null, context: { name: '', bio: '', history: '' }, photos: [], prompts: [], controls: blankControls(), composerText: '', composerTextVerified: false, emptyConversation: false, reason: '' };
  const block = reason => ({ ...result, kind: 'blocked', controls: blankControls(), reason });
@@ -127,8 +159,8 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  }
  const errorTitle='Something went wrong',errorBody="Oops, something's gone wrong. Let's give it another try.";
  if(find(errorTitle).length||find(errorBody).length||find('Try again').length){
-  const required=[errorTitle,errorBody,'Try again'],navigation=['Discover','Standouts','Likes You','Matches','Profile Hub'];
-  const expected=new Set([...required,...navigation]);
+  const required=[errorTitle,errorBody,'Try again'];
+  const expected=new Set([...required,...discoverTabNames]);
   if(required.some(text=>find(text).length!==1)||visible.some(n=>(label(n)&&!expected.has(label(n)))||/EditText/.test(n.a.class||'')))return block('The Discover retry screen is not verified.');
   const title=find(errorTitle)[0],body=find(errorBody)[0],retry=find('Try again')[0],button=retry.parent,sheet=button?.parent;
   const inertText=n=>n.a.class==='android.widget.TextView'&&n.a.clickable==='false'&&n.enabled&&fullyVisible(n);
@@ -138,18 +170,15 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   if(children.length!==2||native.length!==1||native[0].a.clickable!=='false'||label(native[0])||!native[0].enabled||!fullyVisible(native[0])||!nativeBox||nativeBox.x!==b.x||nativeBox.y!==b.y||nativeBox.width!==b.width||Math.abs(nativeBox.height-b.height)>1||t.y+t.height>bodyBox.y||bodyBox.y+bodyBox.height>b.y)return block('The native Discover retry bounds are not verified.');
   const discover=find('Discover'),headers=discover.filter(n=>n.a.class==='android.widget.TextView'),tabs=discover.filter(n=>n.a.class==='android.view.View');
   if(discover.length!==2||headers.length!==1||tabs.length!==1||!inertText(headers[0])||bounds(headers[0]).y+bounds(headers[0]).height>s.y)return block('The Discover retry header is not verified.');
-  const discoverTab=tabs[0].parent,nav=discoverTab?.parent,clicks=new Set([button]);
-  let previousRight=null,navTop=null,navHeight=null;
-  for(const [index,text]of navigation.entries()){
-   const matches=index===0?tabs:find(text);
-   if(matches.length!==1)return block('The Discover retry navigation is ambiguous.');
-   const item=matches[0],tab=item.parent,box=bounds(item),tabBox=tab&&bounds(tab);
-   if(item.a.class!=='android.view.View'||item.a.clickable!=='false'||!item.enabled||!fullyVisible(item)||tab?.a.class!=='android.view.View'||tab.parent!==nav||!tab.enabled||!fullyVisible(tab)||tab.a.clickable!==(index===0?'false':'true')||(index===0?tab.a.selected!=='true':tab.a.selected==='true')||!box||!tabBox||box.x!==tabBox.x||box.y!==tabBox.y||box.width!==tabBox.width||box.height!==tabBox.height||box.y<s.y+s.height||(index>0&&(box.x!==previousRight||box.y!==navTop||box.height!==navHeight)))return block('The Discover retry navigation is not verified.');
-   previousRight=box.x+box.width;navTop=box.y;navHeight=box.height;if(index>0)clicks.add(tab);
-  }
+  const tabRow=discoverNavigation(find,s.y+s.height);
+  if(!tabRow)return block('The Discover retry navigation is not verified.');
+  const clicks=new Set([button,...tabRow.slice(1)]);
   if(visible.some(n=>(n.a.clickable==='true'&&!clicks.has(n))||(/Button$/.test(n.a.class||'')&&n!==native[0])))return block('An unfamiliar control covers the Discover retry screen.');
   const action=control(button,true);if(!action)return block('The Discover retry target is unavailable.');
   result.kind='feedError';result.controls.retry={...action,label:'Try again'};result.reason='Discover could not load. Retry is available.';return result;
+ }
+ if(blankDiscoverShell(visible,find)){
+  result.kind='feedLoading';result.reason='Waiting for Discover to load.';return result;
  }
  const emptyTitle="You've seen everyone for now",emptyBody='Try changing your filters so more people match your criteria—or check back later!';
  if(find(emptyTitle).length){
