@@ -1,6 +1,9 @@
 'use strict';
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
+const {sameClippedPhoto}=require('./mobile-vision.cjs');
+// Keep comparison samples out of renderer snapshots, event streams and saved sessions.
+const photoPatches = new WeakMap();
 const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt']);
 const transientRead=new Set(['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE','ANDROID_FOREGROUND_UNAVAILABLE','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','MOBILE_SCREEN_UNAVAILABLE','MOBILE_SCREEN_CHANGED','MOBILE_REVIEW_INTERRUPTED']);
 const transientError=(message,code='MOBILE_REVIEW_INTERRUPTED')=>Object.assign(Error(message),{code});
@@ -207,8 +210,17 @@ class MobileController{
    // Recognition must depend only on observed evidence, not which photo the review later selects.
    const photo=photos.find(p=>p.visual);
    s=this.readScreen(raw.xml,{platform:this.platform,foreground:raw.foreground,photoIdentity:!s.identity?photo?.visual:undefined,commentText:ev.commentText});
-   s.photos=(s.photos||[]).map(p=>({...p,visual:photos.find(original=>original.key===p.key)?.visual||null,visualSquare:photos.find(original=>original.key===p.key)?.visualSquare||null}));
-   s.screenKey=require('node:crypto').createHash('sha256').update(JSON.stringify([s.screenKey,s.photos.map(p=>[p.visual,p.visualSquare]),ev.commentText])).digest('hex');
+   s.photos=(s.photos||[]).map(p=>{
+    const index=photos.findIndex(original=>original.key===p.key);
+    const result={...p,visual:photos[index]?.visual||null,visualSquare:photos[index]?.visualSquare||null};
+    if(ev.patchEvidence?.[index])photoPatches.set(result,ev.patchEvidence[index]);
+    return result;
+   });
+   const revisions=s.photos.map(p=>{
+    const patch=photoPatches.get(p);
+    return patch?[p.visual,p.visualSquare,patch.digest]:[p.visual,p.visualSquare];
+   });
+   s.screenKey=require('node:crypto').createHash('sha256').update(JSON.stringify([s.screenKey,revisions,ev.commentText])).digest('hex');
   }  if(this.reviewContext&&(this.reviewContext.identity!==s.identity||this.reviewContext.screenKey!==s.screenKey))this.reviewContext=null;
   if(this.loadingFeedRelaunched&&['profile','empty','feedError','like','likeOffer','conversation'].includes(s.kind))this.loadingFeedRelaunched=false;
   this.observedForeground=raw.foreground;this.screen=s;this.reason='';this.notify();return s;
@@ -441,7 +453,12 @@ class MobileController{
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
-   const samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
+   let samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
+   if(!samePhoto&&!photo.text&&s.identity!==original.identity&&s.name===original.name&&this.config.mode==='like'&&!this.lastAction&&!this.draft&&s.composerTextVerified===true&&s.composerText===''&&s.controls.sendLike&&s.photos?.length===1){
+    const preview=photoPatches.get(s.photos[0]);
+    const matching=original.photos.filter(p=>sameClippedPhoto(photoPatches.get(p),preview));
+    samePhoto=matching.length===1&&matching[0]===photo;
+   }
    if(s.name!==original.name||(photo.text?!samePrompt:(s.identity!==original.identity&&!samePhoto)))throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
   }
   if(s.composerTextVerified===false)throw Error('The comment field cannot be verified. Nothing was sent.');

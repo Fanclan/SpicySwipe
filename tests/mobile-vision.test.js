@@ -49,3 +49,51 @@ test('caret removal rounds the minimum height to a pixel and preserves shorter s
 function patternedPicture(){const crops=[];return {crops,getSize:()=>({width:1200,height:1400}),crop:b=>{crops.push(b);return {resize:({width,height})=>({toBitmap:()=>{const out=Buffer.alloc(width*height*4,255);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const a=b.x+(x+.5)*b.width/width,c=b.y+(y+.5)*b.height/height,v=Math.round(127+60*Math.sin(a*.021+c*.009)+60*Math.cos(c*.025-a*.017));for(let k=0;k<3;k++)out[(y*width+x)*4+k]=v;}return out;}})}}};}
 test('top-clipped Hinge square photo preserves its original hash using only visible pixels',()=>{const {fingerprint,squareFingerprint}=require('../desktop/mobile-vision.cjs');const p=patternedPicture(),full={x:100,y:100,width:800,height:800},clipped={x:100,y:200,width:800,height:700};const expected=fingerprint(p,full);assert.notEqual(fingerprint(p,clipped),expected);p.crops.length=0;assert.equal(squareFingerprint(p,clipped),expected);assert.ok(p.crops.every(b=>b.x>=clipped.x&&b.y>=clipped.y&&b.x+b.width<=clipped.x+clipped.width&&b.y+b.height<=clipped.y+clipped.height));});
 test('square comparison refuses insufficient visible content and does not authorize a different image',()=>{const {fingerprint,squareFingerprint}=require('../desktop/mobile-vision.cjs');const p=patternedPicture();assert.equal(squareFingerprint(p,{x:100,y:350,width:800,height:550}),null);assert.notEqual(squareFingerprint(p,{x:180,y:200,width:800,height:700}),fingerprint(p,{x:100,y:100,width:800,height:800}));});
+
+// Two independent renders of the same synthetic square photograph. The native Like
+// view can expose just the bottom of the square at a different display resolution.
+function renderedPhoto(square, paint) {
+ const crops=[];
+ return {crops,getSize:()=>({width:1000,height:1400}),crop(rect){
+  crops.push(rect);
+  return {resize:({width,height})=>({toBitmap(){
+   const pixels=Buffer.alloc(width*height*4,255);
+   for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+    const u=(rect.x+(x+.5)*rect.width/width-square.x)/square.width;
+    const v=(rect.y+(y+.5)*rect.height/height-square.y)/square.width;
+    const rgb=paint(u,v);for(let k=0;k<3;k++)pixels[(y*width+x)*4+k]=rgb[k];
+   }
+   return pixels;
+  }})};
+ }};
+}
+const scene=(u,v)=>[0,1,2].map(k=>Math.round(116+45*Math.sin(29*u+11*v+k)+38*Math.cos(17*v-13*u+k)+26*Math.cos(51*v+35*u)));
+const fullSquare={x:40,y:120,width:640,height:640},scaledSquare={x:72,y:40,width:576,height:576};
+const visibleSlice={x:72,y:345,width:576,height:271};
+function proof(box,square,paint,kind){
+ const {photoPatchEvidence}=require('../desktop/mobile-vision.cjs');
+ const image=renderedPhoto(square,paint),result=photoPatchEvidence(image,box,kind);
+ assert.ok(image.crops.every(r=>r.x>=box.x&&r.y>=box.y&&r.x+r.width<=box.x+box.width&&r.y+r.height<=box.y+box.height));
+ return result;
+}
+test('Hinge binds distant parts of a heavily top-clipped photo in the same square coordinates',()=>{
+ const {sameClippedPhoto}=require('../desktop/mobile-vision.cjs');
+ const source=proof(fullSquare,fullSquare,scene,'profile');
+ assert.equal(sameClippedPhoto(source,proof(visibleSlice,scaledSquare,scene,'like')),true);
+ assert.equal(sameClippedPhoto(source,proof(visibleSlice,scaledSquare,(u,v)=>scene(u,v-.265),'like')),false);
+ assert.equal(sameClippedPhoto(source,proof(visibleSlice,scaledSquare,(u,v)=>scene(1-u,v),'like')),false);
+ assert.equal(sameClippedPhoto(source,proof(visibleSlice,scaledSquare,(u,v)=>v>.77?scene(u,v):scene(1-u,v),'like')),false);
+ assert.equal(sameClippedPhoto(source,proof({...visibleSlice,y:400,height:216},scaledSquare,scene,'like')),false);
+});
+test('clipped Hinge photos need discriminating texture in multiple parts of the frame',()=>{
+ const {sameClippedPhoto}=require('../desktop/mobile-vision.cjs');
+ for(const paint of [()=>[35,48,60],(u,v)=>[u,v,v].map(n=>Math.round(40+90*n)),(u,v)=>v>.8?scene(u,v):[150,150,150]]){
+  assert.equal(sameClippedPhoto(proof(fullSquare,fullSquare,paint,'profile'),proof(visibleSlice,scaledSquare,paint,'like')),false);
+ }
+});
+test('a repeated design in the visible regions alone cannot bind a clipped Hinge photo',()=>{
+ const {sameClippedPhoto}=require('../desktop/mobile-vision.cjs');
+ const original=proof(fullSquare,fullSquare,scene,'profile');
+ const repetitive=[original.windows[0],original.windows[0],original.windows[0]];
+ assert.equal(sameClippedPhoto({kind:'profile',windows:repetitive},{kind:'like',windows:repetitive}),false);
+});
