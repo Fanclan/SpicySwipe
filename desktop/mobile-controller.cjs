@@ -11,12 +11,12 @@ const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(afte
 class MobileController{
  constructor({android,service,platform,changed=()=>{},random=Math.random,wait=delay,readScreen,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone=()=>false}){
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
-  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.nextHomeLaunchAt=0;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
+  Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.nextHomeLaunchAt=0;this.loadingFeedRelaunched=false;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
  snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt}}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
@@ -36,7 +36,9 @@ class MobileController{
   if(!saved)return;
   if(saved.nextHomeLaunchAt!==undefined&&(!Number.isFinite(saved.nextHomeLaunchAt)||saved.nextHomeLaunchAt<0))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   if((saved.nextFeedRetryAt!==undefined&&(!Number.isFinite(saved.nextFeedRetryAt)||saved.nextFeedRetryAt<0))||(saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
+  if(saved.loadingFeedRelaunched!==undefined&&typeof saved.loadingFeedRelaunched!=='boolean')throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
+  this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
   this.nextHomeLaunchAt=saved.nextHomeLaunchAt??0;
   this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
  }
@@ -51,21 +53,40 @@ class MobileController{
  }
  async refreshKnownFeed(s,t,valid){
   this.assert(t,valid);
-  if(s.kind!=='empty'&&!this.resumableLike(s))throw transientError('Cannot reopen the feed from this screen.');
-  if(this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
+  const loading=s.kind==='feedLoading'&&this.platform==='hinge'&&this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft;
+  if(!loading&&s.kind!=='empty'&&!this.resumableLike(s))throw transientError('Cannot reopen the feed from this screen.');
+  if(!loading&&this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
   await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
   // Reserve the cooldown durably before relaunch, including failed or interrupted attempts.
   this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
   this.reviewContext=null;this.selectedPhoto=null;this.draft=null;this.screen=null;
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
-  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));
+  // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
+  // even a lost acknowledgement must not re-arm recovery on the same blank feed.
+  const beforeStop=loading?async()=>{
+   await this.fresh(s,t,valid);this.assert(t,valid);
+   this.loadingFeedRelaunched=true;this.persist();
+  }:undefined;
+  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal),beforeStop);
   this.assert(t,valid);
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
    if(s.kind!=='blocked')return s;
   }
   return s;
+ }
+ async waitForDiscover(s,t,valid,sleep){
+  const waiting={retryAfter:30000,phase:'waiting for Discover'};
+  const owned=()=>this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft&&valid();
+  if(!owned()||this.loadingFeedRelaunched||this.session.now()<this.nextFeedRefreshAt)return waiting;
+  if(!await sleep(30000,waiting.phase))return waiting;
+  this.assert(t,owned);
+  const observed=await this.read(t);this.assert(t,owned);
+  // The blank shell proves neither that the queue is empty nor that a Like succeeded.
+  // A normal loading transition needs no relaunch. Leave any pending action for reconciliation.
+  if(observed.kind===s.kind&&observed.screenKey===s.screenKey)await this.refreshKnownFeed(s,t,owned);
+  return {retryAfter:1000,phase:this.lastAction?'verifying previous action':'checking next profile'};
  }
  async retryFeed(s,t,valid){
   this.assert(t,valid);
@@ -108,6 +129,7 @@ class MobileController{
      &&c.allowBackground&&this.session.status==='running'&&this.isManagedPhone(this.binding)){
     return await this.recoverFromHome(t,valid);
    }
+   if(this.platform==='hinge'&&observed.kind==='feedLoading')return await this.waitForDiscover(observed,t,valid,sleep);
    if(observed.kind==='feedError')return await this.retryFeed(observed,t,valid);
    if(this.lastAction){
     if(await this.reconcilePending(this.lastAction,t,valid)){this.reason='';this.readFailures=0;return {retryAfter:1000,phase:'checking next profile'}}
@@ -188,6 +210,7 @@ class MobileController{
    s.photos=(s.photos||[]).map(p=>({...p,visual:photos.find(original=>original.key===p.key)?.visual||null,visualSquare:photos.find(original=>original.key===p.key)?.visualSquare||null}));
    s.screenKey=require('node:crypto').createHash('sha256').update(JSON.stringify([s.screenKey,s.photos.map(p=>[p.visual,p.visualSquare]),ev.commentText])).digest('hex');
   }  if(this.reviewContext&&(this.reviewContext.identity!==s.identity||this.reviewContext.screenKey!==s.screenKey))this.reviewContext=null;
+  if(this.loadingFeedRelaunched&&['profile','empty','feedError','like','likeOffer','conversation'].includes(s.kind))this.loadingFeedRelaunched=false;
   this.observedForeground=raw.foreground;this.screen=s;this.reason='';this.notify();return s;
  }
  supported(s,kinds){if(!kinds.includes(s.kind))throw transientError(s.reason||'This screen is not recognized for this action.','MOBILE_SCREEN_UNAVAILABLE');if(!s.identity)throw transientError('Profile identity is incomplete. Read more profile details before acting.');}
@@ -465,7 +488,7 @@ class MobileController{
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
    if(action==='config'){if(this.session.status==='running')throw Error('Pause the session before editing its settings.');const next=Config.normalize(data,this.config);this.assert(t);await this.service.request('save',{mobileConfig:{[this.platform]:next}});this.assert(t);this.config=next;this.openerArmed=next.autoOpeners===true;return this.snapshot()}
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!this.resumableLike(s)){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&!this.resumableLike(s)){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }

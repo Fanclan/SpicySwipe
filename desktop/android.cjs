@@ -354,12 +354,13 @@ class Android {
     return true;
   }
 
-  async refreshFeed(platform,valid,wait) {
+  async refreshFeed(platform,valid,wait,beforeStop) {
     const epoch=this.inputEpoch,serial=await this._selected(),app=this._app(platform);
     const check=()=>this._guard(serial,epoch,valid);check();
     const resolved=await this._guardedOn(serial,epoch,['shell','cmd','package','resolve-activity','--brief','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER',app],valid);
     const components=resolved.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.startsWith(app+'/')&&/^[A-Za-z][A-Za-z0-9_.]*\/[A-Za-z0-9_.$]+$/.test(s));
     if(components.length!==1)throw Error('The selected app launcher activity could not be verified.');
+    if(beforeStop){check();await beforeStop();}
     await this._guardedOn(serial,epoch,['shell','am','force-stop',app],valid);
     let launchError;
     try {
