@@ -746,6 +746,45 @@ test('native Bumble footer Like scrolls within reviewed profile and confirms nex
 test('Bumble footer search stops on a different named profile or unknown overlay without issuing a Like',async()=>{
  for(const after of [bumble({actionStrategy:'footer',name:'Other',identity:'other'}),bumble({kind:'blocked',reason:'overlay'})]){const x=setup(bumble({actionStrategy:'footer'}),{platform:'bumble',scroll:()=>x.set(after)});await assert.rejects(x.c.act('like',x.c.token()),/changed|interrupted|recognized/i);assert.equal(x.calls.filter(v=>v==='tap').length,0);assert.equal(x.c.lastAction,null);}
 });
+test('Bumble repositions a covered ordinary footer once and only votes after independent unobstructed evidence',async()=>{
+ const area={x:465,y:320,width:122,height:200};
+ const main=bumble({actionStrategy:'footer'}),covered=bumble({actionStrategy:'footer',screenKey:'covered',name:'',identity:null,photos:[],controls:{},footerScrollSurface:area});
+ const clear=bumble({actionStrategy:'footer',screenKey:'clear',name:'',identity:null,photos:[],controls:{profileLike:control('Like'),profilePass:control('Not for me')}});
+ const next=bumble({screenKey:'next',name:'Next',identity:'next'});
+ for(const outcome of ['clear','still covered','changed','cancel']){
+  let moves=0,committed=0;const evidence=[];
+  const x=setup(main,{platform:'bumble',scroll:()=>{
+   if(++moves===1)x.set(covered);
+   else if(outcome==='clear')x.set(clear);
+   else if(outcome==='changed')x.set(bumble({kind:'blocked',screenKey:'overlay',controls:{}}));
+   else if(outcome==='cancel')x.c.invalidate('Stopped');
+  },tap:()=>x.set(next)});
+  const hierarchy=x.android.hierarchy;
+  x.android.hierarchy=async()=>{const h=await hierarchy();evidence.push(h.xml.screenKey);return h};
+  const result=x.c.act('like',x.c.token(),()=>true,()=>committed++);
+  if(outcome==='clear')await result;else await assert.rejects(result);
+  const scrolls=x.calls.filter(op=>op?.direction);
+  assert.equal(scrolls.length,2);assert.deepEqual(scrolls[1].surface,area);assert.equal(scrolls[1].direction,'up');
+  assert.equal(evidence.filter(key=>key==='covered').length>=2,true);
+  assert.equal(x.calls.filter(op=>op==='tap').length,outcome==='clear'?1:0);
+  assert.equal(committed,outcome==='clear'?1:0);assert.equal(x.c.lastAction,null);
+  if(outcome==='clear')assert.equal(evidence.filter(key=>key==='clear').length,2);
+ }
+});
+test('Bumble restored at a covered footer must review the main card before voting and preserves a pending Like',async()=>{
+ const area={x:465,y:320,width:122,height:200};
+ const covered=bumble({actionStrategy:'footer',screenKey:'covered',name:'',identity:null,photos:[],controls:{},footerScrollSurface:area});
+ const clear={...covered,screenKey:'clear',footerScrollSurface:undefined,controls:{profileLike:control('Like'),profilePass:control('Not for me')}};
+ const main=bumble({actionStrategy:'footer',screenKey:'main'});
+ const x=setup(covered,{platform:'bumble',scroll:()=>x.set(x.calls.length===1?clear:main)});
+ await x.c.request('config',{scrollMin:0,scrollMax:0});
+ const prepared=await x.c.reviewBumble(x.c.token(),async()=>true);
+ assert.deepEqual(x.calls.map(op=>op.direction),['up','down']);assert.equal(prepared.identity,main.identity);
+ const y=setup(covered,{platform:'bumble'}),pending={identity:'previous',name:'Previous'};
+ y.c.lastAction=pending;
+ assert.equal(await y.c.reconcilePending(pending,y.c.token(),()=>true),false);
+ assert.equal(y.c.lastAction,pending);assert.deepEqual(y.calls,[]);
+});
 test('Bumble footer search is bounded and cannot tap after cancellation',async()=>{
  const initial=bumble({actionStrategy:'footer'}),x=setup(initial,{platform:'bumble'});await assert.rejects(x.c.act('like',x.c.token()),/footer|ordinary Like/i);assert.ok(x.calls.filter(v=>v?.direction).length<=24);assert.equal(x.calls.filter(v=>v==='tap').length,0);
  const y=setup(initial,{platform:'bumble',scroll:()=>y.c.invalidate('Stopped')});await assert.rejects(y.c.act('like',y.c.token()),/cancel/i);assert.equal(y.calls.filter(v=>v==='tap').length,0);
