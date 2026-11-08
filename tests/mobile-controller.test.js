@@ -744,3 +744,40 @@ test('blank Discover preflight can recover after cooldown, uncertain force-stop 
  x.c.nextFeedRefreshAt=0; await x.run(); assert.equal(mutations,1);
  x.c.nextFeedRefreshAt=0; await x.run(); assert.equal(attempts,2); assert.equal(x.c.lastAction,guard);
 });
+
+test('Hinge binds a deep photo preview only within the reviewed plain Like operation',async()=>{
+ const digest=require('node:crypto').createHash;
+ const patch=(kind,seed)=>{
+  const windows=[.3,1.7,2.9].map(shift=>{
+   const bitmap=Buffer.alloc(9*8*4,255);
+   for(let i=0;i<72;i++)for(let channel=0;channel<3;channel++)bitmap[i*4+channel]=Math.round(120+90*Math.sin(seed+i*.68+channel+shift));
+   return bitmap;
+  });
+  return {kind,windows,digest:digest('sha256').update(Buffer.concat(windows)).digest('hex')};
+ };
+ for (const variant of ['ordinary','wrong-photo','changed-recipient','typed-comment','overlay','changed-on-final-read','duplicate-source','nonselected-source-only','selected-of-two']) {
+  const sourcePatch=patch('profile',.2),rightPreview=patch('like',.2),wrongPreview=patch('like',2);
+  const form=screen({kind:'like',name:variant==='changed-recipient'?'Another':'Example',identity:'form-only',screenKey:'form',photos:[{key:'preview',bounds:box}],controls:{sendLike:control('send'),comment:control('comment')},composerTextVerified:true,composerText:variant==='typed-comment'?'text':''});
+  const shown=variant==='overlay'?screen({kind:'blocked',reason:'Unrecognized overlay.'}):form;
+  const source=screen(), comparison=patch('profile',2);
+  const twoSources=['duplicate-source','nonselected-source-only','selected-of-two'].includes(variant);
+  if(twoSources)source.photos.push({key:'photo-two',bounds:{...box,y:box.y+box.height+1},like:control('other-photo')});
+  const sourceSamples=twoSources
+   ? [variant==='nonselected-source-only'?comparison:sourcePatch,variant==='selected-of-two'?comparison:sourcePatch]
+   : [sourcePatch];
+  let taps=0,reads=0;
+  const x=setup(source,{readScreen:xml=>structuredClone(xml),readEvidence:async s=>{
+   if(s.kind==='like')reads++;
+   const preview=variant==='wrong-photo'||(variant==='changed-on-final-read'&&reads>1)?wrongPreview:rightPreview;
+   return {hashes:s.photos.map(()=>s.kind==='like'?'ffffffffffffffff':'1111111111111111'),patchEvidence:s.kind==='like'?[preview]:sourceSamples,commentText:s.composerText};
+  },tap:()=>{taps++;x.set(taps===1?shown:screen({name:'Next',identity:'new-profile',screenKey:'next'}));}});
+  if(twoSources)x.c.selectedPhoto=source.photos[0];
+  if(variant==='ordinary'||variant==='selected-of-two'){
+   await x.c.request('act',{kind:'like'});assert.equal(taps,2,variant);assert.equal(x.calls.filter(v=>v?.kind==='like').length,1);
+  }else{
+   await assert.rejects(x.c.request('act',{kind:'like'}));assert.equal(taps,1,variant);assert.equal(x.calls.filter(v=>v?.kind==='like').length,0,variant);
+  }
+  assert.ok(!JSON.stringify(x.c.snapshot()).includes('windows'), 'raw image samples remain local');
+  assert.ok(!JSON.stringify(x.c.checkpoint()).includes('windows'), 'raw image samples never enter a checkpoint');
+ }
+});

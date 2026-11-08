@@ -18,6 +18,68 @@ function squareFingerprint(picture,b){
  if(crop.x<b.x||crop.y<b.y||crop.x+crop.width>b.x+b.width||crop.y+crop.height>b.y+b.height)return null;
  return fingerprint(picture,square);
 }
+// The focused Hinge Like form shows the bottom of the same square. Each window is
+// fixed in square coordinates; only sample when every pixel is visibly in bounds.
+// Keep coarse colour samples private until submission. They never identify a person.
+const patchWindows = [[.08,.56,.35,.19],[.49,.56,.35,.19],[.08,.76,.35,.15]];
+function sampleWindow(picture, visible, left, top, width, height) {
+ const side = visible.width;
+ const x = visible.x + Math.round(left * side);
+ const y = visible.y + visible.height - side + Math.round(top * side);
+ const w = Math.round(width * side), h = Math.round(height * side);
+ if (w < 9 || h < 8 || x < visible.x || y < visible.y || x+w > visible.x+side || y+h > visible.y+visible.height) return null;
+ return picture.crop({x,y,width:w,height:h}).resize({width:9,height:8,quality:'good'}).toBitmap();
+}
+function matchingWindow(a,b) {
+ let error = 0, outliers = 0, rising = 0, falling = 0, reversed = 0;
+ let sumA=0, sumB=0, squaredA=0, squaredB=0;
+ const luma = (pixels, i) => (pixels[i]+pixels[i+1]+pixels[i+2])/3;
+ for (let i = 0; i < a.length; i += 4) {
+  const first=luma(a,i), second=luma(b,i);
+  sumA+=first;sumB+=second;squaredA+=first*first;squaredB+=second*second;
+  const delta = Math.abs(a[i]-b[i])+Math.abs(a[i+1]-b[i+1])+Math.abs(a[i+2]-b[i+2]);
+  error += delta;
+  if (delta > 60) outliers++;
+  for (const step of [4,36]) {
+   if ((step === 4 && (i/4)%9 === 8) || i+step >= a.length) continue;
+   const before=luma(a,i+step)-first, after=luma(b,i+step)-second;
+   if (Math.abs(before)<6 || Math.abs(after)<6) continue;
+   if (before*after<0) reversed++;
+   else if (before>0) rising++;
+   else falling++;
+  }
+ }
+ const varied=squaredA/72-(sumA/72)**2>=144 && squaredB/72-(sumB/72)**2>=144;
+ return {close:error<=8*72*3 && outliers<=7 && reversed<=1, textured:varied && rising>=5 && falling>=5 && rising+falling>=18};
+}
+function photoPatchEvidence(picture, box, kind) {
+ if (!box || !['profile','like'].includes(kind) || !['x','y','width','height'].every(k=>Number.isSafeInteger(box[k]))) return null;
+ const {width,height}=picture.getSize();
+ if (box.x<0 || box.y<0 || box.width<160 || box.height<=0 || box.x+box.width>width || box.y+box.height>height) return null;
+ // Only the measured deep clip is supported here. The existing whole-square
+ // comparison covers lightly clipped images; other aspect ratios stay unbound.
+ if (kind==='profile' ? Math.abs(box.height-box.width)>3 : box.height/box.width<.45 || box.height/box.width>.50) return null;
+ const windows=patchWindows.map(rect=>sampleWindow(picture,box,...rect));
+ if (windows.some(w=>!w)) return null;
+ if (kind==='profile') {
+  // Uniform or repeated bands can appear at several heights. Rule out either
+  // alternative anchor; only the fixed bottom anchor can authorize a match.
+  for (const top of [.03,.295]) {
+   const other=sampleWindow(picture,box,.08,top,.35,.19);
+   if (!other || matchingWindow(windows[0],other).close) return null;
+  }
+ }
+ const hash=crypto.createHash('sha256');
+ for(const window of windows)hash.update(window);
+ return {kind,windows,digest:hash.digest('hex')};
+}
+function sameClippedPhoto(original,confirmation) {
+ if (original?.kind!=='profile' || confirmation?.kind!=='like') return false;
+ const comparisons=original.windows.map((w,i)=>matchingWindow(w,confirmation.windows[i]));
+ if (comparisons.some(c=>!c.close)) return false;
+ const textured=original.windows.filter((w,i)=>comparisons[i].textured);
+ return textured.some((w,i)=>textured.slice(i+1).some(other=>!matchingWindow(w,other).close));
+}
 function withoutCaret(input,{width,height}){
  const out=Buffer.from(input),seen=new Uint8Array(width*height),dark=i=>input[i*4]<90&&input[i*4+1]<90&&input[i*4+2]<90;
  for(let y=0;y<height;y++)for(let x=0;x<width;x++){
@@ -35,7 +97,8 @@ function withoutCaret(input,{width,height}){
 }
 async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  const hashes=(screen.photos||[]).map(p=>fingerprint(picture,p.bounds));
- const result={hashes,squareHashes:screen.kind==='like'?(screen.photos||[]).map(p=>squareFingerprint(picture,p.bounds)):[]};
+ const patchEvidence=screen.platform==='hinge' ? (screen.photos||[]).map(p=>photoPatchEvidence(picture,p.bounds,screen.kind)) : [];
+ const result={hashes,patchEvidence,squareHashes:screen.kind==='like'?(screen.photos||[]).map(p=>squareFingerprint(picture,p.bounds)):[]};
  if(screen.kind==='like'&&screen.controls.comment){
   const b=screen.controls.comment.bounds,size=picture.getSize();
   if(b.x<0||b.y<0||b.x+b.width>size.width||b.y+b.height>size.height)throw Error('Comment field moved outside the screen.');
@@ -50,4 +113,4 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  }
  return result;
 }
-module.exports={fingerprint,squareFingerprint,evidence,withoutCaret};
+module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,evidence,withoutCaret};
