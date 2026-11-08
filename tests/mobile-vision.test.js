@@ -2,6 +2,22 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const {evidence}=require('../desktop/mobile-vision.cjs');
 const screen={kind:'like',photos:[],controls:{comment:{bounds:{x:10,y:10,width:200,height:80}}}};
 function picture(columns=0){const bytes=Buffer.alloc(200*80*4,255);for(let x=30;x<30+columns;x++)for(let y=20;y<50;y++)for(let c=0;c<3;c++)bytes[(y*200+x)*4+c]=20;const crop={getSize:()=>({width:200,height:80}),toBitmap:()=>bytes,toPNG:()=>Buffer.from('synthetic')};return {getSize:()=>({width:300,height:200}),crop:()=>crop};}
+test('capture still runs for photo cards, confirmations, unrecognized screens and other platforms',async()=>{
+ const {captureEvidence}=require('../desktop/mobile-vision.cjs');
+ const profile={platform:'bumble',kind:'profile',controls:{},photos:[]};
+ for(const candidate of [
+  {...profile,photos:[{bounds:{x:0,y:0,width:150,height:150}}]}, {...profile,kind:'swipeConfirm'},
+  {...profile,kind:'blocked'}, {...profile,kind:'unknown'}, {...profile,kind:'empty'},
+  {...profile,platform:'hinge'}, {...profile,photos:undefined}, {...profile,controls:screen.controls},
+  {...screen,platform:'hinge'},
+ ]){
+  let captures=0;
+  const image=candidate.kind==='like'?picture():patternedPicture();
+  const options={ocr:async()=>'Test'};
+  const captured=await captureEvidence(candidate,async()=>{captures++;return image},options);
+  assert.equal(captures,1);assert.deepEqual(captured,await evidence(image,candidate,options));
+ }
+});
 test('placeholder text is empty only when the field has placeholder-colored pixels',async()=>{
  assert.equal((await evidence(picture(),screen,{ocr:async()=> 'Add a comment'})).commentText,'');
  assert.equal((await evidence(picture(3),screen,{ocr:async()=> 'Add a comment'})).commentText,'');

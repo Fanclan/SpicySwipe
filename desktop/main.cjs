@@ -51,9 +51,9 @@ function getMobile(platform=activePlatform){
   const device=mobileSession(platform).device;
   const isManagedPhone=binding=>usesManagedPhone(platform,androidPreferences.platforms?.[platform],managedAndroid)
     &&device.serial===phones[platform].serial&&binding?.serial===device.serial&&binding.avd===phones[platform].avd;
-  mobileControllers.set(platform,new MobileController({android:device,service,platform,isManagedPhone,recoverDevice:options=>device.recover({...options,supervised:managedAndroid&&device.serial===phones[platform].serial}),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:async (screen,signal)=>{
-   const picture=nativeImage.createFromDataURL(await device.screenshot());
-   return require('./mobile-vision.cjs').evidence(picture,screen,{signal,fromBitmap:(bytes,size)=>nativeImage.createFromBitmap(bytes,size)});  }}));
+  const capturePicture=async()=>nativeImage.createFromDataURL(await device.screenshot());
+  mobileControllers.set(platform,new MobileController({android:device,service,platform,isManagedPhone,recoverDevice:options=>device.recover({...options,supervised:managedAndroid&&device.serial===phones[platform].serial}),checkpointStore:new (require('./mobile-checkpoint.cjs'))(path.join(app.getPath('userData'),'sessions',platform+'.json')),changed:state=>send('mobile:state',state),readEvidence:(screen,signal)=>
+   require('./mobile-vision.cjs').captureEvidence(screen,capturePicture,{signal,fromBitmap:(bytes,size)=>nativeImage.createFromBitmap(bytes,size)})}));
  }
  return mobileControllers.get(platform);
 }
