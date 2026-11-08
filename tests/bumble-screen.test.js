@@ -268,6 +268,16 @@ test('Bumble ordinary footer can sit above the native empty queue text',()=>{
  for(const sample of [xml(layer),nativeFooterFeed(front+layer)]){
   const screen=read(sample);assert.equal(screen.kind,'profile');assert.equal(screen.controls.profileLike.label,'Like');assert.equal(screen.controls.profilePass.label,'Not for me');
  }
+ const likeBounds='[796,1876][985,2065]';
+ for(const [cls,attrs] of [
+  ['android.view.View','long-clickable="true"'],['android.view.View','scrollable="true"'],
+  ['android.view.View','checkable="true"'],['android.view.View','context-clickable="true"'],
+  ['android.view.View','editable="true"'],['android.widget.EditText',''],['android.widget.Button','']
+ ]){
+  const covered=footerCard(votingFooter+footerNode(cls,likeBounds,'clickable="false" '+attrs),2);
+  assert.equal(read(xml(layer,covered)).kind,'blocked',`empty underlay and ${cls} ${attrs}`);
+  assert.equal(read(nativeFooterFeed(covered)).kind,'blocked',`ordinary footer and ${cls} ${attrs}`);
+ }
  for(const unsafe of [
   xml(layer.replace('drawing-order="1"','drawing-order="2"')),xml(layer.replace('drawing-order="1"','drawing-order="3"')),xml(layer.replace('drawing-order="1"','')),
   xml(layer.replace(heading,heading.replace('clickable="false"','clickable="true"'))),
