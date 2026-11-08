@@ -435,6 +435,57 @@ test('zero optional Hinge scrolls still recheck a managed compressed card before
   assert.deepEqual(x.calls,[]);
  }
 });
+function hingePhotoBehindSkip(y=448){
+ const photo={key:'first-photo',bounds:{x:40,y,width:640,height:640},like:{...control('Like photo'),bounds:{x:550,y:y+500,width:80,height:80}}};
+ const skip={...control('Skip Example'),bounds:{x:40,y:948,width:124,height:124}};
+ return screen({screenKey:'photo-at-'+y,photos:[photo],prompts:[],controls:{skip,like:photo.like}});
+}
+
+test('automatic Hinge plain Like moves a square photo clear of Skip before opening its confirmation',async()=>{
+ const original=hingePhotoBehindSkip(),clear=hingePhotoBehindSkip(230);
+ const x=setup(original,{scroll:()=>x.set(clear)});
+ const opened=[];let committed=0;
+ x.android.tapControl=async(bounds,valid,issued)=>{
+  assert.equal(valid(),true);opened.push(bounds);issued?.();
+  x.set(opened.length===1?screen({kind:'like',screenKey:'form',composerTextVerified:true,controls:{sendLike:control('Send like')}}):screen({name:'Next',identity:'next',screenKey:'next'}));
+ };
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1,browsePhotos:false}});
+ await x.c.sessionStep(x.c.config.swipe,()=>true,()=>committed++,async()=>true,x.c.token());
+ assert.deepEqual(x.calls.filter(value=>value?.fraction).map(value=>value.direction),['up']);
+ assert.deepEqual(opened,[clear.photos[0].like.bounds,box]);assert.equal(committed,1);
+});
+
+test('automatic Hinge plain Like honors the verified static prompt beside a Skip-obscured photo',async()=>{
+ const prompt={key:'static-prompt',text:'Prompt: Weekend. Answer: Hiking',bounds:box,like:control('Like prompt')};
+ const original=hingePhotoBehindSkip();original.prompts=[prompt];
+ const x=setup(original);const opened=[];let committed=0;
+ x.android.tapControl=async(bounds,valid,issued)=>{
+  assert.equal(valid(),true);opened.push(bounds);issued?.();
+  x.set(opened.length===1?screen({kind:'like',screenKey:'form',identity:'prompt-preview',photos:[],prompts:[{...prompt,like:null}],composerTextVerified:true,controls:{sendLike:control('Send like')}}):screen({name:'Next',identity:'next',screenKey:'next'}));
+ };
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1}});
+ await x.c.sessionStep(x.c.config.swipe,()=>true,()=>committed++,async()=>true,x.c.token());
+ assert.deepEqual(opened,[prompt.like.bounds,box]);assert.equal(committed,1);assert.equal(x.c.lastAction,null);
+ assert.equal(x.calls.filter(value=>value?.fraction).length,0);
+});
+
+test('persistent Hinge photo occlusion keeps the automatic review bounded and manual review can still select the photo',async()=>{
+ const x=setup(hingePhotoBehindSkip());
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1,browsePhotos:false}});
+ await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('No Like issued'),async()=>true,x.c.token());
+ assert.equal(x.calls.includes('tap'),false);assert.equal(x.c.lastAction,null);
+ assert.equal(x.calls.filter(value=>value?.fraction).length,6);
+ x.calls.length=0;await x.c.request('review');
+ assert.equal(x.calls.filter(value=>value?.fraction).length,0);assert.equal(x.c.selectedPhoto.key,'first-photo');
+});
+
+test('a vanished reviewed prompt never falls back to the Skip-obscured photo',async()=>{
+ const original=hingePhotoBehindSkip(),x=setup(original);
+ x.c.selectedPrompt={key:'vanished',text:'Prompt: Weekend. Answer: Hiking'};
+ await assert.rejects(x.c.act('like',x.c.token(),()=>true,()=>assert.fail('No Like issued'),original),/reviewed prompt/i);
+ assert.equal(x.calls.includes('tap'),false);assert.equal(x.c.lastAction,null);
+});
+
 test('Hinge finishes aligning a clipped photo reached on the last search step',async()=>{
  const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{
   const count=x.calls.filter(v=>v?.fraction).length;
@@ -755,6 +806,55 @@ test('native Bumble automated review continues to the footer from its verified s
  await x.c.request('config',{scrollMin:1,scrollMax:1});const t=x.c.token(),prepared=await x.c.reviewBumble(t,async()=>true);let commits=0;
  await x.c.act('like',t,()=>true,()=>commits++,prepared);
  assert.deepEqual(x.calls.filter(v=>v?.direction).map(v=>v.direction),['up','up']);assert.equal(commits,1);assert.equal(x.c.screen.name,'Next');
+});
+
+test('automatic Bumble footer review with zero optional scrolls reuses the start observation and still independently checks each input',async()=>{
+ const main=bumble({actionStrategy:'footer',screenKey:'main'});
+ const footer=bumble({actionStrategy:'footer',screenKey:'footer',name:'',identity:null,photos:[],controls:{profileLike:control('Like')}});
+ const next=bumble({screenKey:'next',name:'Next',identity:'next'});
+ const events=[];
+ const x=setup(main,{platform:'bumble',scroll:()=>{events.push('scroll');x.set(footer)},tap:()=>{events.push('tap');x.set(next)}});
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1}});
+ const hierarchy=x.android.hierarchy;
+ x.android.hierarchy=async()=>{const result=await hierarchy();events.push(result.xml.screenKey);return result};
+ await x.c.sessionStep(x.c.config.swipe,()=>true,()=>events.push('commit'),async()=>true,x.c.token());
+ assert.deepEqual(events,['main','main','scroll','footer','footer','tap','next','commit']);
+ assert.equal(x.c.lastAction,null);
+});
+
+test('a changed or canceled automatic Bumble card cannot reach the first footer scroll',async()=>{
+ for(const interrupt of ['changed','cancel']){
+  const main=bumble({actionStrategy:'footer',screenKey:'main'}),other=bumble({actionStrategy:'footer',screenKey:'different',name:'Other',identity:'other'});
+  const x=setup(main,{platform:'bumble'});
+  await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1}});
+  const hierarchy=x.android.hierarchy;let reads=0;
+  x.android.hierarchy=async()=>{
+   const result=await hierarchy();
+   if(++reads===1){if(interrupt==='changed')x.set(other);else x.c.invalidate('Paused')}
+   return result;
+  };
+  const step=x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('must not vote'),async()=>true,x.c.token());
+  if(interrupt==='cancel')await assert.rejects(step,/cancel/i);
+  else assert.ok((await step).retryAfter>0);
+  assert.deepEqual(x.calls,[]);
+  assert.equal(x.c.lastAction,null);
+ }
+});
+
+test('Bumble independently observes the screen before any optional or positioning review scroll',async()=>{
+ const main=bumble({actionStrategy:'footer'}),deep=bumble({actionStrategy:'footer',identity:null,name:'',photos:[],controls:{}});
+ for(const [initial,scrolls] of [[main,1],[deep,0]]){
+  const x=setup(initial,{platform:'bumble'});
+  await x.c.request('config',{scrollMin:scrolls,scrollMax:scrolls,swipe:{likeRatio:1}});
+  const hierarchy=x.android.hierarchy;let reads=0;
+  x.android.hierarchy=async()=>{
+   const result=await hierarchy();
+   if(++reads===1)x.set(bumble({kind:'blocked',identity:null,controls:{},reason:'Overlay'}));
+   return result;
+  };
+  const outcome=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('must not vote'),async()=>true,x.c.token());
+  assert.ok(outcome.retryAfter>0);assert.equal(reads,2);assert.deepEqual(x.calls,[]);
+ }
 });
 
 const loadingDiscover = () => screen({kind:'feedLoading', name:'', identity:null, screenKey:'discover-shell', photos:[], controls:{}});

@@ -1,7 +1,7 @@
 'use strict';
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
-const {sameClippedPhoto}=require('./mobile-vision.cjs');
+const {sameClippedPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
 // Keep comparison samples out of renderer snapshots, event streams and saved sessions.
 const photoPatches = new WeakMap();
 const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt']);
@@ -147,8 +147,9 @@ class MobileController{
      ? {retryAfter:Math.max(1000,this.nextFeedRefreshAt-this.session.now()),phase:'waiting to reopen Discover'}
      : {retryAfter:1000,phase:'checking next profile'};
    }
-   const prepared=await this.review(t,sleep);this.assert(t,valid);
-   await this.act(this.random()<c.likeRatio?'like':'pass',t,valid,commit,prepared);
+   const kind=this.random()<c.likeRatio?'like':'pass';
+   const prepared=await this.review(t,sleep,observed,kind);this.assert(t,valid);
+   await this.act(kind,t,valid,commit,prepared);
    this.readFailures=0;this.reason='';
    if(this.screen?.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
   }catch(error){
@@ -242,8 +243,14 @@ class MobileController{
   if(dismissibleBumbleScreens.has(after.kind))throw Error('Bumble popup did not close. No further action was attempted.');
   return after;
  }
- async reviewBumble(t,sleep){
-  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);let s=await this.dismissBumbleReminder(await this.read(t),t);const contexts=new Set();let original;
+ async reviewBumble(t,sleep,observed){
+  this.reviewContext=null;this.selectedPhoto=null;await this.load(t);
+  // When review needs no gesture, the current main card can go directly to
+  // footerBumble's independent fresh read before its first scroll or vote.
+  const reuseMain=sleep&&observed?.kind==='profile'&&observed===this.screen&&observed.actionStrategy==='footer'
+   &&observed.identity&&observed.controls.like&&(!this.config.swipe.scrollProfile||this.config.scrollMax===0);
+  let s=reuseMain?observed:await this.dismissBumbleReminder(await this.read(t),t);
+  const contexts=new Set();let original;
   const verify=()=>{if(s.kind!=='profile')throw transientError(s.reason||'Bumble profile review was interrupted.');if(original&&((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator)))throw transientError('Bumble profile changed during review.');contexts.add(s.context?.bio||'')};verify();
   const move=async(direction,fraction,dwell=true)=>{
    if(dwell&&this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
@@ -384,8 +391,8 @@ class MobileController{
   }
   return s;
  }
- async review(t,sleep){
-  if(this.platform==='bumble')return this.reviewBumble(t,sleep);
+ async review(t,sleep,observed,kind){
+  if(this.platform==='bumble')return this.reviewBumble(t,sleep,observed);
   this.reviewContext=null;this.selectedPhoto=null;this.selectedPrompt=null;await this.load(t);let s=await this.identifyProfile(await this.read(t),t);this.supported(s,['profile']);
   const name=s.name,contexts=new Set([s.context?.bio||'']);
   const move=async (fraction,direction='up')=>{
@@ -398,7 +405,14 @@ class MobileController{
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move(this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
   // Random depth selects a different part of the profile; small bounded adjustments expose a full photo.
-  const targets=()=>{const photos=(s.photos||[]).filter(p=>p.like);return photos.length?photos:(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}))};
+  const automaticPlainLike=kind==='like'&&this.config.mode==='like';
+  const targets=()=>{
+   // Discover paints its floating Skip button over the photo, but the Like preview omits it.
+   const skip=s.controls.skip;
+   const overlay=automaticPlainLike&&skip?.label==='Skip '+s.name?skip.bounds:null;
+   const photos=(s.photos||[]).filter(p=>p.like&&!overlapsPhotoPatch(p.bounds,overlay));
+   return photos.length?photos:(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}));
+  };
   let candidates=targets();
   let direction='up';
   const reveal=()=>s.photos?.find(p=>['up','down'].includes(p.revealDirection))?.revealDirection;
@@ -459,7 +473,21 @@ class MobileController{
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
   if(s.kind==='profile'){
-   const photo=this.selectedPhoto&&s.photos.find(p=>p.key===this.selectedPhoto.key)||s.photos?.filter(p=>p.like)[Math.floor(this.random()*(s.photos?.filter(p=>p.like).length||1))]||s.prompts?.filter(p=>p.like).find(p=>p.key===this.selectedPrompt?.key)||s.prompts?.find(p=>p.like);
+   let photo;
+   if(prepared&&this.selectedPrompt){
+    photo=s.prompts?.find(p=>p.key===this.selectedPrompt.key&&p.like);
+    if(!photo)throw transientError('The reviewed prompt is no longer available. Read the profile again.');
+   }else{
+    photo=this.selectedPhoto&&s.photos?.find(p=>p.key===this.selectedPhoto.key);
+    if(!photo){
+     const photos=(s.photos||[]).filter(p=>p.like);
+     if(photos.length)photo=photos[Math.floor(this.random()*photos.length)];
+     else{
+      const prompts=(s.prompts||[]).filter(p=>p.like);
+      photo=prompts.find(p=>p.key===this.selectedPrompt?.key)||prompts[0];
+     }
+    }
+   }
    if(!photo?.like)throw Error('No supported fully visible photo. Scroll or review again before liking.');this.selectedPhoto=photo;
    await this.tap(s,photo.like,t,valid);await this.pauseFor(900,t);s=await this.read(t);
    // Native keyboard/form animation can briefly expose conflicting background controls.

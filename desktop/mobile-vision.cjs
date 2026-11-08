@@ -22,13 +22,22 @@ function squareFingerprint(picture,b){
 // fixed in square coordinates; only sample when every pixel is visibly in bounds.
 // Keep coarse colour samples private until submission. They never identify a person.
 const patchWindows = [[.08,.56,.35,.19],[.49,.56,.35,.19],[.08,.76,.35,.15]];
-function sampleWindow(picture, visible, left, top, width, height) {
+function patchBounds(visible, left, top, width, height) {
  const side = visible.width;
- const x = visible.x + Math.round(left * side);
- const y = visible.y + visible.height - side + Math.round(top * side);
- const w = Math.round(width * side), h = Math.round(height * side);
- if (w < 9 || h < 8 || x < visible.x || y < visible.y || x+w > visible.x+side || y+h > visible.y+visible.height) return null;
- return picture.crop({x,y,width:w,height:h}).resize({width:9,height:8,quality:'good'}).toBitmap();
+ return {x:visible.x+Math.round(left*side),y:visible.y+visible.height-side+Math.round(top*side),width:Math.round(width*side),height:Math.round(height*side)};
+}
+function overlapsPhotoPatch(photo, overlay) {
+ if (!photo || !overlay) return false;
+ return patchWindows.some(rect=>{
+  const p=patchBounds(photo,...rect);
+  return p.x<overlay.x+overlay.width && overlay.x<p.x+p.width && p.y<overlay.y+overlay.height && overlay.y<p.y+p.height;
+ });
+}
+function sampleWindow(picture, visible, left, top, width, height) {
+ const patch=patchBounds(visible,left,top,width,height);
+ const {x,y,width:w,height:h}=patch;
+ if (w < 9 || h < 8 || x < visible.x || y < visible.y || x+w > visible.x+visible.width || y+h > visible.y+visible.height) return null;
+ return picture.crop(patch).resize({width:9,height:8,quality:'good'}).toBitmap();
 }
 function matchingWindow(a,b) {
  let error = 0, outliers = 0, rising = 0, falling = 0, reversed = 0;
@@ -95,6 +104,13 @@ function withoutCaret(input,{width,height}){
  }
  return out;
 }
+async function captureEvidence(screen,capturePicture,options){
+ // Hierarchy-only Bumble profile sections have no photo crop or comment field.
+ // Derive their usual evidence so the controller hashes the same screen revision.
+ const hierarchyOnly=screen.platform==='bumble'&&screen.kind==='profile'&&Array.isArray(screen.photos)
+  &&screen.photos.length===0&&screen.controls&&!screen.controls.comment;
+ return evidence(hierarchyOnly?null:await capturePicture(),screen,options);
+}
 async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  const hashes=(screen.photos||[]).map(p=>fingerprint(picture,p.bounds));
  const patchEvidence=screen.platform==='hinge' ? (screen.photos||[]).map(p=>photoPatchEvidence(picture,p.bounds,screen.kind)) : [];
@@ -113,4 +129,4 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  }
  return result;
 }
-module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,evidence,withoutCaret};
+module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};

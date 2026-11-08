@@ -96,6 +96,23 @@ test('native Bumble footer exposes separate ordinary Like and pass targets witho
  assert.deepEqual(Object.entries(s.controls).filter(([,v])=>v).map(([k])=>k).sort(),['profileLike','profilePass']);
 });
 
+test('reading a native Bumble footer verifies the hierarchy and reproduces the complete screen without capturing a PNG',async()=>{
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const {captureEvidence,evidence}=require('../desktop/mobile-vision.cjs');
+ let hierarchyReads=0;
+ const android={serial:'test-bumble',inputEpoch:0,hierarchy:async()=>{
+  hierarchyReads++;
+  return {xml:nativeFooterFeed(),foreground:'com.bumble.app'};
+ }};
+ const eager=new Controller({platform:'bumble',android,readEvidence:screen=>evidence({},screen)});
+ const lazy=new Controller({platform:'bumble',android,readEvidence:screen=>captureEvidence(screen,()=>assert.fail('must not capture a PNG'))});
+ const before=await eager.readOnce(eager.token()),after=await lazy.readOnce(lazy.token());
+ assert.equal(hierarchyReads,2);assert.equal(after.kind,'profile');assert.ok(after.controls.profileLike);
+ assert.deepEqual(after,before);
+ const stale=lazy.token();android.inputEpoch++;
+ await assert.rejects(lazy.readOnce(stale),/cancel/i);assert.equal(hierarchyReads,2);
+});
+
 test('native Bumble layout selects footer strategy at the top without changing gesture evidence',()=>{
  const content=footerNode('android.view.View','[21,231][1059,2162]','content-desc="Example’s main photo"');
  const s=read(nativeFooterFeed(footerCard(content)));assert.equal(s.actionStrategy,'footer');assert.ok(s.identity);assert.equal(s.controls.like.direction,'right');assert.ok(!s.controls.profileLike);assert.ok(!read(feed()).actionStrategy);
