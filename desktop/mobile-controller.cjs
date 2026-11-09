@@ -127,6 +127,8 @@ class MobileController{
   return waiting;
  }
  async sessionStep(c,valid,commit,sleep,t){
+  // A manual Skip may have consumed the final slot while this worker was queued.
+  if(!valid())return;
   try{
    let observed=await this.read(t);this.assert(t,valid);
    if(observed.kind==='blocked'&&this.platform==='hinge'&&this.observedForeground!=='co.hinge.app'
