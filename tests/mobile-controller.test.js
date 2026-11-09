@@ -1139,3 +1139,20 @@ test('one-card Skip keeps the same offer during a read-only poll while the UI is
  assert.equal(x.c.snapshot().busy,true);assert.deepEqual(x.offer(),offer);release.resolve();await polling;
  assert.deepEqual(x.offer(),offer);
 });
+test('one-card Skip keeps the session complete when a paced worker queues behind the final slot',async()=>{
+ const x=confirmedSkipFixture({count:999});await x.prepare();
+ const s=x.c.session,asleep=deferred(),wake=deferred(),workerQueued=deferred(),issued=deferred(),ack=deferred();
+ s.controller=new AbortController();s.wait=async()=>{asleep.resolve();await wake.promise};
+ const act=s.act;
+ s.act=(...args)=>{const job=act(...args);workerQueued.resolve();return job};
+ x.android.tapControl=async(_bounds,valid,onIssued)=>{
+  assert.equal(valid(),true);onIssued();issued.resolve();await ack.promise;
+ };
+ const runner=s.run(s.epoch);await asleep.promise;
+ const click=x.confirm(x.offer().token);await issued.promise;
+ wake.resolve();await workerQueued.promise;ack.resolve();
+ await Promise.all([click,runner]);
+ assert.equal(s.status,'complete');assert.equal(s.completionReason,'limit');assert.equal(s.count,1000);
+ assert.equal(x.saved().session.status,'complete');assert.equal(x.saved().pendingAction.kind,'pass');
+ assert.deepEqual(x.calls.map(action=>action.kind),['pass']);
+});
