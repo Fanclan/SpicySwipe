@@ -51,7 +51,7 @@ class MobileController{
   if(hint&&(!/^[0-9a-f]{64}$/.test(hint.nameDigest)||!photoFingerprint(hint.visual)||!(hint.entryVisual===null||photoFingerprint(hint.entryVisual))||
     ![hint.sourceIdentity,hint.entryIdentity,hint.serial].every(v=>typeof v==='string'&&v.length>0)||
     !(hint.heldIdentity===null||typeof hint.heldIdentity==='string')||!(hint.heldRevision===null||typeof hint.heldRevision==='string')||!(hint.avd===null||typeof hint.avd==='string')||
-    typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
+    (hint.promptScan!==undefined&&!['moving','spent'].includes(hint.promptScan))||typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
   this.rejectedPhoto=hint||null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
@@ -497,24 +497,75 @@ class MobileController{
  }
  heldReviewEndpoint(s,t){
   const hint=this.scopedPhotoRejection(t);
-  return Boolean(hint?.attempted&&s.kind==='profile'&&s.screenKey&&s.screenKey===hint.heldRevision&&
-   s.name&&nameDigest(s.name)===hint.nameDigest);
+  if(!hint?.attempted||s.kind!=='profile'||!s.screenKey||!s.name||nameDigest(s.name)!==hint.nameDigest)return false;
+  if(s.screenKey===hint.heldRevision)return true;
+  // A lost motion acknowledgement can leave a different, unidentified poll viewport after restart.
+  return hint.promptScan==='moving'&&this.observedForeground==='co.hinge.app'&&this.binding?.serial===t.serial&&
+   !this.lastAction&&!this.draft&&this.session.count===this.reservedCount&&this.session.count<this.session.config.maxSwipes&&this.session.now()<hint.endsAt;
  }
- matchesRejectedPhoto(s,h){
+ matchesRejectedPhoto(s,h,includeEndpoint=true){
   if(!s.name||nameDigest(s.name)!==h.nameDigest)return false;
   return (s.identity===h.sourceIdentity&&visibleFingerprint(s,h.visual))||
    (s.identity===h.entryIdentity&&(!h.entryVisual||visibleFingerprint(s,h.entryVisual)))||
-   (h.heldIdentity!==null&&s.identity===h.heldIdentity);
+   (includeEndpoint&&h.heldIdentity!==null&&s.identity===h.heldIdentity);
+ }
+ async reviewHeldPrompt(s,hint,t,valid,sleep){
+  const session=this.session,epoch=session.epoch;
+  const owned=()=>valid()&&session.status==='running'&&session.epoch===epoch&&session.now()<session.endsAt&&
+   this.scopedPhotoRejection(t)===hint&&this.binding?.serial===t.serial&&this.reservedCount===session.count&&
+   session.count<session.config.maxSwipes&&!this.lastAction&&!this.draft&&!this.storageError&&
+   session.config.likeRatio===1&&this.config.mode==='like'&&this.config.swipe.scrollProfile&&
+   !(session.config.breaksEnabled&&(session.breakUntil||session.count>=session.nextBreakAt));
+  const official=card=>this.observedForeground==='co.hinge.app'&&card.kind==='profile'&&card.screenKey&&card.name&&
+   nameDigest(card.name)===hint.nameDigest&&!card.composerText?.trim()&&!card.controls?.composer&&!card.controls?.sendLike;
+  const nativePrompt=card=>{
+   if(!card.identity||card.controls?.skip?.label!=='Skip '+card.name)return null;
+   const prompts=card.prompts||[];
+   return prompts.find(p=>p.key&&typeof p.text==='string'&&p.text.length>0&&p.like?.key&&p.like.label==='Like prompt'&&
+    prompts.filter(other=>other.text===p.text).length===1);
+  };
+  if(!owned()||!official(s)||(!s.reviewScrollSurface&&!nativePrompt(s))||!this.checkpointStore)throw alternativeUnavailable();
+  await this.consent(t);await this.verifyBinding(t);s=await this.fresh(s,t,owned);
+  hint.promptScan='spent';this.persist();
+  for(let moves=0;;moves++){
+   if(!official(s))throw alternativeUnavailable();
+   hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;hint.promptScan='spent';this.persist();
+   const candidate=nativePrompt(s);
+   if(candidate){
+    // Discard the rejected photo context. This target belongs only to this newly verified Discover card.
+    s=await this.fresh(s,t,owned);const fresh=nativePrompt(s);
+    if(!fresh||fresh.key!==candidate.key||fresh.text!==candidate.text||fresh.like.key!==candidate.like.key)throw alternativeUnavailable();
+    this.selectedPrompt={...fresh,type:'prompt'};this.selectedPhoto=null;
+    this.reviewContext={identity:s.identity,screenKey:s.screenKey,alternate:hint,promptScan:true,expectedTarget:this.selectedPrompt,
+     context:{name:s.name,bio:s.context?.bio||'',history:[]}};
+    this.notify();return s;
+   }
+   if(moves===8||!s.reviewScrollSurface)throw alternativeUnavailable();
+   if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
+   this.assert(t,owned);hint.promptScan='moving';this.persist();
+   const before=await this.scrollHinge(s,{fraction:.36,duration:450,direction:'up'},t,owned,true);
+   await this.pauseFor(450,t,sleep);s=await this.read(t);this.assert(t,owned);
+   if(!official(s)){hint.promptScan='spent';this.persist();throw alternativeUnavailable()}
+   if(s.screenKey===before.screenKey){hint.promptScan='spent';this.persist();throw alternativeUnavailable()}
+  }
  }
  async review(t,sleep,observed,kind,valid=()=>true){
   if(this.platform==='bumble')return this.reviewBumble(t,sleep,observed);
   this.reviewContext=null;this.selectedPhoto=null;this.selectedPrompt=null;await this.load(t);let s=await this.read(t);
-  if(kind==='like'&&this.session.status==='running'&&this.heldReviewEndpoint(s,t))throw alternativeUnavailable();
+  const automaticPlainLike=kind==='like'&&this.config.mode==='like';
+  const hint=automaticPlainLike&&this.session.status==='running'?this.scopedPhotoRejection(t):null;
+  if(hint?.attempted&&s.kind==='profile'&&s.name&&nameDigest(s.name)===hint.nameDigest){
+   if(hint.promptScan==='moving'){
+    // A prior worker may have scrolled before it stopped. Observe its endpoint and retire the pass.
+    hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;hint.promptScan='spent';this.persist();throw alternativeUnavailable();
+   }
+   const held=this.heldReviewEndpoint(s,t);
+   if(!hint.promptScan&&hint.heldRevision&&(held||this.matchesRejectedPhoto(s,hint,false)))return this.reviewHeldPrompt(s,hint,t,valid,sleep);
+   if(held)throw alternativeUnavailable();
+  }
   s=await this.identifyProfile(s,t,valid);this.supported(s,['profile']);
   const name=s.name,contexts=new Set([s.context?.bio||'']);
   const entry={identity:s.identity,visual:s.photos?.find(p=>photoFingerprint(p.visual))?.visual||null};
-  const automaticPlainLike=kind==='like'&&this.config.mode==='like';
-  const hint=automaticPlainLike&&this.session.status==='running'?this.scopedPhotoRejection(t):null;
   const alternate=hint&&this.matchesRejectedPhoto(s,hint)?hint:null;
   // A photo-derived identity changes on a one-bit drift. Its old name plus image may deny
   // a repeat, but only the independent source/entry binding above can enable a new review.
@@ -602,8 +653,9 @@ class MobileController{
   }
   throw Error('Could not confirm the action transition. It will not be retried on this profile.'+(last?.reason?' '+last.reason:''));
  }
- async submitLike(screen,original,t,valid,commit){
-  await this.fresh(screen,t,valid);this.assert(t,valid);
+ async submitLike(screen,original,t,valid,commit,verifyForm){
+  const fresh=await this.fresh(screen,t,valid);this.assert(t,valid);
+  if(verifyForm&&!verifyForm(fresh))throw alternativeUnavailable();
   this.reserveAction({identity:original.identity,name:original.name,...(this.session.status==='running'&&this.config.mode==='like'&&screen.kind==='like'?{kind:'like',sessionEndsAt:this.session.endsAt}:{}),...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})});
   let issued=false;const onIssued=()=>{issued=true};
   try{
@@ -627,6 +679,7 @@ class MobileController{
    await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({kind:'pass',identity:s.identity,name:s.name});
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
+  let verifyForm;
   if(s.kind==='profile'){
    let photo;
    if(selection?.alternate){
@@ -658,6 +711,14 @@ class MobileController{
    if(s.kind==='blocked'&&s.reason==='An unfamiliar Like control requires user attention.'){await this.pauseFor(750,t);this.assert(t,valid);s=await this.read(t);}
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
+   if(selection?.promptScan){
+    verifyForm=form=>form.kind==='like'&&form.identity&&form.name===original.name&&form.prompts?.length===1&&
+     form.prompts[0].text===photo.text&&!form.photos?.length&&['Send like','Send priority like'].includes(form.controls?.sendLike?.label)&&
+     form.composerTextVerified===true&&form.composerText===''&&!this.draft&&!this.lastAction&&
+     this.scopedPhotoRejection(t)===selection.alternate&&this.reservedCount===this.session.count&&
+     this.session.count<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
+    if(!verifyForm(s))throw alternativeUnavailable();
+   }
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
    let samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
    if(!samePhoto&&!photo.text&&(selection?.alternate||s.identity!==original.identity)&&s.name===original.name&&this.config.mode==='like'&&!this.lastAction&&!this.draft&&s.composerTextVerified===true&&s.composerText===''&&s.controls.sendLike&&s.photos?.length===1){
@@ -684,7 +745,7 @@ class MobileController{
    if(!s.controls.comment)throw Error('Photo comments are unavailable on this screen or account.');const result=await this.service.request('generate',{context:reviewContext||s.context,options:this.options('Write a short comment about the supplied profile text. Do not describe unseen photo contents. Use printable ASCII, one line only, maximum 120 characters.')});this.assert(t,valid);const text=this.text(result.response,this.platform==='bumble'?150:120);
    this.draft={text,identity:s.identity,serial:t.serial,kind:'like',contextRevision:s.screenKey};await this.tap(s,s.controls.comment,t,valid);let field=await this.read(t);if(field.name!==s.name||field.composerText?.trim())throw Error('Comment field changed or contains unsent text.');if(!field.controls.composer)throw Error('Comment editor is not recognized. Type the draft manually.');await this.tap(field,field.controls.composer,t,valid);await this.android.type(text);this.assert(t,valid);s=await this.read(t);if(s.composerText!==text)throw Error('Inserted comment could not be verified. Nothing was sent.');
   }
-  if(!s.controls.sendLike)throw Error(s.reason||'The ordinary Like confirmation is unsupported; no Like was sent.');return this.submitLike(s,original,t,valid,commit);
+  if(!s.controls.sendLike)throw Error(s.reason||'The ordinary Like confirmation is unsupported; no Like was sent.');return this.submitLike(s,original,t,valid,commit,verifyForm);
  }
  options(extra=''){return {tone:this.config.tone,language:this.config.language,length:this.config.length,instruction:[this.config.instruction,extra].filter(Boolean).join('\n')}}
  text(value,max=2000){if(typeof value!=='string'||!value.trim()||value.length>max||!/^[\x20-\x7e]+$/.test(value))throw Error('Android entry requires one line of printable ASCII characters (no emoji), within the message limit.');return value}

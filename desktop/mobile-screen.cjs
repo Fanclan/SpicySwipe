@@ -86,6 +86,78 @@ function visibleVerticalMedia(item, owner) {
  }
  return null;
 }
+// A native choices card can sit between two photos. Its options and Like are
+// interactive, so only its inert heading and the blank space above the choices qualify.
+function choiceHeadingSurface(visible, owner, display) {
+ const children = new Map();
+ for (const n of visible) {
+  if (!children.has(n.parent)) children.set(n.parent, []);
+  children.get(n.parent).push(n);
+ }
+ const kids = n => children.get(n) || [];
+ const inert = (n, cls) => n?.a.class === cls && n.enabled && n.a.clickable === 'false' &&
+  n.a.scrollable !== 'true' && n.a['long-clickable'] !== 'true';
+ const wrapper = n => inert(n,'android.view.View') && !label(n);
+ const sameBox = (a,b) => Boolean(bounds(a) && bounds(b) && a.a.bounds === b.a.bounds);
+ const options = n => {
+  const parts=kids(n);
+  return n.a.class==='android.view.View' && n.a.clickable==='true' && n.enabled &&
+   n.a.scrollable!=='true' && n.a['long-clickable']!=='true' && bounds(n) && parts.length===2 &&
+   parts.some(p=>inert(p,'android.widget.TextView') && label(p) && !kids(p).length) &&
+   parts.some(p=>inert(p,'android.widget.Button') && !label(p) && !kids(p).length);
+ };
+ const contentLike = n => {
+  const [inner]=kids(n), [button]=kids(inner);
+  return wrapper(n) && kids(n).length===1 && wrapper(inner) && sameBox(n,inner) &&
+   kids(inner).length===1 && button.a.class==='android.widget.Button' && label(button)==='Like' &&
+   button.enabled && button.a.clickable==='true' && !kids(button).length && bounds(button);
+ };
+ // Some Android roots keep a full-display blank View in a separate background
+ // ViewGroup. Use explicit sibling drawing order; tree indices can be reversed.
+ const behindDiscover = (n,b) => {
+  const back=n.parent, common=back?.parent;
+  if (!wrapper(n) || n.a.focusable==='true' || kids(n).length || !inert(back,'android.view.ViewGroup') ||
+      label(back) || back.a.focusable==='true' || kids(back).length!==1 || common?.a.class!=='android.view.ViewGroup' ||
+      b.x!==display.x || b.y!==display.y || b.width!==display.width || b.height!==display.height ||
+      !sameBox(n,back) || !sameBox(back,common)) return false;
+  let front=owner;
+  while (front && front.parent!==common) front=front.parent;
+  if (front?.a.class!=='android.widget.FrameLayout' || !sameBox(back,front)) return false;
+  const order=layer=>/^[1-9]\d{0,4}$/.test(layer.a['drawing-order'] || '') ? Number(layer.a['drawing-order']) : 0;
+  const lower=order(back), upper=order(front);
+  return lower>0 && lower<upper && kids(common).filter(layer=>order(layer)===lower).length===1 &&
+   kids(common).filter(layer=>order(layer)===upper).length===1;
+ };
+ const candidates=[];
+ for (const card of kids(owner)) {
+  const [body]=kids(card);
+  if (!wrapper(card) || kids(card).length!==1 || !wrapper(body) || !sameBox(card,body)) continue;
+  const nodes=kids(body), headings=nodes.filter(n=>inert(n,'android.widget.TextView') && label(n) && !kids(n).length);
+  const choices=nodes.filter(options), backdrops=nodes.filter(n=>wrapper(n) && sameBox(n,body) && !kids(n).length);
+  if (headings.length!==1 || choices.length<2 || choices.length>4 || backdrops.length!==1 ||
+      nodes.filter(contentLike).length!==1 || nodes.length!==choices.length+3) continue;
+  const heading=headings[0], h=bounds(heading), panel=visibleVerticalMedia(body,owner);
+  if (!h || !panel || !fullyVisible(heading)) continue;
+  const padding=12, width=96, x=Math.floor(h.x+(h.width-width)/2);
+  const top=Math.max(panel.y,display.y+Math.ceil(display.height*.1))+padding;
+  const bottom=Math.min(...choices.map(n=>bounds(n).y),panel.y+panel.height,display.y+Math.floor(display.height*.9))-padding;
+  if (x<panel.x+padding || x+width>panel.x+panel.width-padding || h.y<top ||
+      h.y+h.height>bottom || bottom-top<120) continue;
+  const blocked=visible.some(n=>{
+   if (n===owner || n===heading || n===backdrops[0]) return false;
+   const interactive=n.a.clickable==='true' || n.a['long-clickable']==='true' || n.a.scrollable==='true' ||
+    n.a.class==='android.widget.Button' || n.a.class==='android.widget.EditText';
+   // Ignore only passive enclosing layout. A separate visible leaf could cover the lane.
+   const b=bounds(n);
+   if (!b) return true;
+   if (!interactive && kids(n).length && !label(n)) return false;
+   const overlaps=x-padding<b.x+b.width && b.x<x+width+padding && top-padding<b.y+b.height && b.y<bottom+padding;
+   return overlaps && (interactive || !behindDiscover(n,b));
+  });
+  if (!blocked) candidates.push({x,y:top,width,height:bottom-top});
+ }
+ return candidates.length===1 ? candidates[0] : null;
+}
 function discoverScrollSurfaces(visible, discover, media) {
  const tab = bounds(discover);
  if (!tab) return {review:null};
@@ -138,7 +210,7 @@ function mediaScrollSurface(visible, media, owners, root, alternate) {
   });
   if (!obstructed) surfaces.push(b);
  }
- return surfaces.sort((a,b) => b.height - a.height)[0] || null;
+ return surfaces.sort((a,b) => b.height - a.height)[0] || (alternate ? choiceHeadingSurface(visible,owner,display) : null);
 }
 function sharesPhotoCard(photo, button) {
  const box = bounds(photo);

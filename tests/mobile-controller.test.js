@@ -1208,7 +1208,7 @@ test('rejected Hinge photo leaves distinct same-name cards on the ordinary revie
 });
 test('rejected Hinge photo holds a changed, unrecognizable crop after its own scroll without opening it',async()=>{
  const x=repeatedPhotoFixture({scroll:true});await x.prepare();await x.reopen(x.root);
- const alias={...x.root,identity:'cropped-identity',screenKey:'cropped',photos:[{...x.failedPhoto,key:'other',like:null,
+ const alias={...x.root,identity:'cropped-identity',screenKey:'cropped',reviewScrollSurface:null,photos:[{...x.failedPhoto,key:'other',like:null,
    bounds:{...box,height:24},revealDirection:'down',visual:'ffffffffffffffff'}]};
  let scrolls=0;x.android.scrollProfile=async()=>{scrolls++;x.set(alias)};
  await x.step();assert.equal(scrolls,1);await x.step();assert.equal(scrolls,1);
@@ -1267,7 +1267,7 @@ test('rejected Hinge photo with one-bit drift and a new native identity can only
 });
 test('rejected Hinge photo holds an exact unidentifiable endpoint before identifying gestures, even after restart',async()=>{
  const x=repeatedPhotoFixture({scroll:true});await x.prepare();await x.reopen(x.root);
- const endpoint={...x.root,screenKey:'blank-endpoint-revision',identity:null,photos:[]};let scrolls=0;
+ const endpoint={...x.root,screenKey:'blank-endpoint-revision',reviewScrollSurface:null,identity:null,photos:[]};let scrolls=0;
  x.android.scrollProfile=async()=>{scrolls++;x.set(endpoint)};
  await x.step();assert.equal(scrolls,1);await x.step();assert.equal(scrolls,1);assert.equal(x.commits(),0);
  const cp=x.saved(),y=setup(endpoint,{wait:()=>new Promise(()=>{}),checkpointStore:{read:()=>cp,write:()=>{}}});
@@ -1312,4 +1312,99 @@ test('rejected Hinge photo verifies full, 578px, and 425px top crops before choo
   x.set(taps.length===1?{...x.form,photos:[],prompts:[x.prompt]}:screen({name:'Next',identity:'next'}))};
  await x.step();assert.deepEqual(moves,['up','up','up']);assert.ok(hashes.size>=4);
  assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+
+async function legacyPromptScan(returnToSource=false){
+ const x=repeatedPhotoFixture({scroll:true});const skip={...control('Skip '+x.root.name),bounds:{x:600,y:1100,width:50,height:50}};
+ x.root.controls={...x.root.controls,skip};await x.prepare();
+ const partial=h=>({...x.root,identity:'crop-'+h,screenKey:'viewport-'+h,photos:[{...x.failedPhoto,
+  bounds:{x:40,y:137,width:640,height:h},visual:'123456789abcdf0f',visualSquare:null,revealDirection:'down',like:null}]});
+ const held=partial(473);const start=returnToSource?x.root:held;
+ await x.reopen(start);const cp=x.saved();
+ Object.assign(cp.rejectedPhoto,{attempted:true,heldIdentity:held.identity,heldRevision:held.screenKey});
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+ return {...x,held,partial};
+}
+test('held Hinge prompt scan upgrades a release 7 endpoint or a strongly reidentified original card once',async()=>{
+ for(const fromSource of [false,true]){
+  const x=await legacyPromptScan(fromSource),moves=[],taps=[];
+  const promptCard={...x.root,identity:'independent-prompt-card',screenKey:'new-prompt',photos:[{...x.failedPhoto,visual:'ffffffffeeeeeeee'}],prompts:[x.prompt]};
+  x.android.scrollProfile=async(opts,valid)=>{
+   assert.equal(valid(),true);assert.deepEqual(opts.surface,x.root.reviewScrollSurface);assert.equal(opts.direction,'up');
+   assert.ok(x.saved().rejectedPhoto.promptScan);moves.push(opts);x.set(moves.length===4?promptCard:x.partial(473-moves.length*65));
+  };
+  x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+   {...x.form,identity:'form-only',photos:[],prompts:[{...x.prompt,like:null}],controls:{sendLike:control('Send like')}}:screen({name:'Next',identity:'new'}))};
+  await x.step();assert.equal(moves.length,4);assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+  assert.equal(x.c.session.count,5);assert.equal(x.saved().rejectedPhoto??null,null);
+ }
+});
+test('held Hinge prompt scan exhausts one forward search and survives restart without reopening any photo',async()=>{
+ const x=await legacyPromptScan(),moves=[];x.android.scrollProfile=async opts=>{
+  assert.equal(opts.direction,'up');moves.push(opts);
+  x.set({...x.root,identity:'other-same-name-'+moves.length,screenKey:'changed-'+moves.length,
+   photos:[{...x.failedPhoto,visual:'ffffffffeeeeeeee'}],prompts:[]});
+ };
+ await x.step();assert.equal(moves.length,8);assert.equal(x.commits(),0);
+ const cp=x.saved();assert.ok(cp.rejectedPhoto.promptScan);await x.step();assert.equal(moves.length,8);
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';await x.step();assert.equal(moves.length,8);
+ assert.equal(x.calls.filter(a=>a==='open').length,1);
+});
+test('held Hinge prompt scan rejects changed or duplicated prompt evidence and never sends from a tainted form',async()=>{
+ for(const mode of ['other-form','duplicate','typed','doubt','changed-final-read','changed-source']){
+  const x=await legacyPromptScan();let taps=0,moves=0;
+  const source={...x.held,identity:'independent-prompt',screenKey:'prompt',photos:[],prompts:[x.prompt]};
+  x.android.scrollProfile=async()=>{moves++;x.set(source)};
+  const good={...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send like')}};
+  x.android.tapControl=async(_b,valid)=>{assert.equal(valid(),true);taps++;x.set({...good,
+   name:mode==='other-form'?'Other':good.name,prompts:mode==='duplicate'?[x.prompt,x.prompt]:good.prompts,
+   composerText:mode==='typed'?'unsent':'',composerTextVerified:mode!=='doubt'});};
+  const read=x.android.hierarchy;let formReads=0,sourceReads=0;
+  x.android.hierarchy=async()=>{const raw=await read();if(raw.xml===source&&mode==='changed-source'&&++sourceReads===2)return {...raw,xml:{...source,screenKey:'changed'}};
+   if(raw.xml.kind==='like'&&mode==='changed-final-read'&&++formReads===2)return {...raw,xml:{...raw.xml,screenKey:'new-final',prompts:[]}};return raw};
+  await x.step();assert.equal(moves,1);assert.equal(taps,mode==='changed-source'?0:1,mode);
+  assert.equal(x.commits(),0);assert.equal(x.c.session.count,4);assert.equal(x.c.lastAction,null);
+ }
+});
+test('held Hinge prompt scan independently accepts the native included priority Like on a blank prompt form',async()=>{
+ const x=await legacyPromptScan();x.set({...x.held,reviewScrollSurface:null,prompts:[x.prompt]});
+ const taps=[];x.android.scrollProfile=async()=>assert.fail('No gesture needed');
+ const send={...control('Send priority like'),bounds:{...box,x:123}};
+ x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();
+  x.set(taps.length===1?{...x.form,photos:[],prompts:[{...x.prompt,like:null}],controls:{sendLike:send}}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.deepEqual(taps,[x.prompt.like.bounds,send.bounds]);assert.equal(x.commits(),1);
+});
+test('held Hinge prompt scan crosses identity-free inert lanes without using poll options or photo controls',async()=>{
+ const x=await legacyPromptScan();let moves=0;const taps=[];
+ x.android.scrollProfile=async(opts,valid)=>{assert.equal(valid(),true);assert.equal(opts.direction,'up');moves++;
+  x.set(moves<3?{...x.held,identity:null,screenKey:'poll-'+moves,photos:[],prompts:[],controls:{like:control('Like poll'),poll:control('Option')}}:
+   {...x.root,identity:'independently-new',screenKey:'same-name-different-card',prompts:[x.prompt]})};
+ x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+  {...x.form,name:x.root.name,identity:'independent-form',photos:[],prompts:[x.prompt],controls:{sendLike:control('Send like')}}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.equal(moves,3);assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+test('held Hinge prompt scan never replays a motion after a lost receipt, including a zero-identity resume',async()=>{
+ const x=await legacyPromptScan();let persisted;
+ const changed={...x.held,identity:null,screenKey:'interrupted-poll',photos:[],prompts:[]};
+ x.android.scrollProfile=async()=>{persisted=x.saved();assert.equal(persisted.rejectedPhoto.promptScan,'moving');throw Object.assign(Error('Lost acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();assert.ok(persisted);
+ const y=setup(changed,{wait:()=>new Promise(()=>{}),checkpointStore:{read:()=>persisted,write:()=>{}}});
+ await y.c.request('status');await y.c.request('start');
+ await y.c.sessionStep(y.c.session.config,()=>true,()=>assert.fail(),async()=>true,y.c.token());
+ assert.equal(y.calls.some(a=>a?.direction||a==='tap'),false);assert.equal(y.c.session.count,4);assert.equal(y.c.checkpoint().rejectedPhoto.promptScan,'spent');
+ y.c.invalidate('Done');
+});
+test('held Hinge prompt scan preserves budgets and refuses Rose, message variants and pending votes',async()=>{
+ for(const mode of ['cap','time','pending','pause','Rose','message']){
+  const x=await legacyPromptScan();
+  if(mode==='cap')x.c.session.config.maxSwipes=4;
+  if(mode==='time')x.c.session.now=()=>x.c.session.endsAt+1;
+  if(mode==='pending')x.c.lastAction={identity:x.held.identity,name:x.held.name,kind:'like',sessionEndsAt:x.c.session.endsAt};
+  let moves=0,taps=0;
+  x.android.scrollProfile=async()=>{moves++;if(mode==='pause'){x.c.invalidate('Pause during motion');return}x.set({...x.root,identity:'prompt-found',screenKey:'prompt',prompts:[x.prompt]})};
+  x.android.tapControl=async()=>{taps++;x.set({...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control(mode==='Rose'?'Send a Rose':'Send priority like with message')}})};
+  if(mode==='pause')await assert.rejects(x.step());else await x.step();
+  assert.equal(moves,['pause','Rose','message'].includes(mode)?1:0);assert.equal(taps,['Rose','message'].includes(mode)?1:0);
+  assert.equal(x.commits(),0);assert.equal(x.c.session.count,4);
+ }
 });
