@@ -440,3 +440,46 @@ test('blank Discover shell rejects overlays, extra content, and ambiguous native
  ]) assert.equal(read(xml).kind, 'blocked');
  assert.equal(read(blankDiscover,{foreground:'com.android.systemui'}).kind,'blocked');
 });
+
+test('ordinary Discover alternate review owns an inert scroll lane in the visible photo', () => {
+ const owner = '<node class="android.view.View" scrollable="true" clickable="false" bounds="[0,137][720,1112]">';
+ const photo = '<node class="android.widget.ImageView" content-desc="Sample&apos;s photo" clickable="false" bounds="[40,347][680,987]"/>';
+ const chrome = '<node class="android.view.View" content-desc="Discover" selected="true" bounds="[0,1112][144,1228]"/><node class="android.widget.Button" content-desc="Skip Sample" clickable="true" bounds="[40,972][160,1092]"/>';
+ const feed = (content, extra='') => '<hierarchy><node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][720,1280]">'+content+chrome+extra+'</node></hierarchy>';
+ const readCard = (content, extra) => read(feed(content,extra),{photoIdentity:'0123456789abcdef'});
+ const mediaBounds = '[40,347][680,987]';
+ for (const [reported, expected] of [
+  [mediaBounds, {x:40,y:347,width:640,height:640}],
+  ['[40,137][680,715]', {x:40,y:137,width:640,height:578}],
+  ['[40,75][680,715]', {x:40,y:137,width:640,height:578}],
+ ]) {
+  const current = readCard(owner+photo.replace(mediaBounds,reported)+'</node>');
+  assert.equal(current.kind, 'profile');
+  assert.deepEqual(current.reviewScrollSurface,expected);
+  assert.equal(Object.hasOwn(current,'scrollSurface'),false,'ordinary desktop reviews keep their original behavior');
+ }
+ const ordinary = owner+photo+'</node>';
+ for (const [content,extra] of [
+  [ordinary, '<node class="android.view.View" clickable="true" bounds="[330,400][410,430]"/>'],
+  [ordinary, '<node class="android.widget.Button" clickable="false" bounds="[340,400][410,430]"/>'],
+  [ordinary, '<node class="android.view.View" long-clickable="true" bounds="[352,400][354,430]"/>'],
+  [ordinary, '<node class="android.view.View" clickable="true" bounds="invalid"/>'],
+  [ordinary+owner+'</node>'],
+  [owner+'</node>'+photo],
+  [owner+'<node class="android.view.View" scrollable="true" clickable="false" bounds="[40,350][680,987]">'+photo+'</node></node>'],
+  [owner.replace('clickable="false"','clickable="true"')+photo+'</node>'],
+  [owner.replace('[0,137][720,1112]','[0,137][700,1112]')+photo+'</node>'],
+  [owner+photo.replace(mediaBounds,'[40,45][680,149]')+'</node>'],
+  [owner+photo.replace(mediaBounds,'[0,347][810,987]')+'</node>'],
+ ]) {
+  assert.equal(readCard(content,extra).reviewScrollSurface,null);
+ }
+ assert.equal(Object.hasOwn(read(like),'reviewScrollSurface'),false);
+ assert.equal(Object.hasOwn(read(feed(ordinary),{foreground:'other.app'}),'reviewScrollSurface'),false);
+ const clippedNav = feed(ordinary).replace('[0,1112][144,1228]','[0,1112][144,1350]');
+ assert.equal(read(clippedNav).reviewScrollSurface,null);
+ const detached = feed('').replace('</hierarchy>','<node class="android.view.View" bounds="[0,0][720,1280]">'+ordinary+'</node></hierarchy>');
+ assert.equal(read(detached).reviewScrollSurface,null);
+ const prompt = photo.replace('android.widget.ImageView','android.view.View').replace('Sample&apos;s photo','Prompt: On weekends. Answer: Hiking.');
+ assert.deepEqual(readCard(owner+prompt+'</node>').reviewScrollSurface,{x:40,y:347,width:640,height:640});
+});

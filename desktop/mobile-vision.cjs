@@ -89,6 +89,27 @@ function sameClippedPhoto(original,confirmation) {
  const textured=original.windows.filter((w,i)=>comparisons[i].textured);
  return textured.some((w,i)=>textured.slice(i+1).some(other=>!matchingWindow(w,other).close));
 }
+// This evidence belongs only to two consecutive native Discover observations.
+function scrollPhotoEvidence(picture,photo,fullProof,overlay){
+ const box=photo.bounds;
+ if(!box||overlapsPhotoPatch(box,overlay))return null;
+ if(fullProof?.kind==='profile')return {bounds:box,windows:fullProof.windows};
+ const size=picture.getSize();
+ if(photo.revealDirection!=='down'||box.width<160||box.height>=box.width||box.height<box.width*.55||
+    box.x<0||box.y<0||box.x+box.width>size.width||box.y+box.height>size.height)return null;
+ const windows=patchWindows.map(rect=>sampleWindow(picture,box,...rect));
+ return windows.every(Boolean)?{bounds:box,windows}:null;
+}
+function sameScrollPhoto(previous,current){
+ if(!previous||!current)return false;
+ const a=previous.bounds,b=current.bounds;
+ if(a.x!==b.x||a.width!==b.width||b.height>=a.height||b.y+b.height>=a.y+a.height)return false;
+ // All three visible windows must agree, contain texture and differ from the other windows.
+ return previous.windows.every((w,i)=>{
+  const match=matchingWindow(w,current.windows[i]);
+  return match.close&&match.textured&&previous.windows.slice(i+1).every(other=>!matchingWindow(w,other).close);
+ });
+}
 function withoutCaret(input,{width,height}){
  const out=Buffer.from(input),seen=new Uint8Array(width*height),dark=i=>input[i*4]<90&&input[i*4+1]<90&&input[i*4+2]<90;
  for(let y=0;y<height;y++)for(let x=0;x<width;x++){
@@ -114,7 +135,15 @@ async function captureEvidence(screen,capturePicture,options){
 async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  const hashes=(screen.photos||[]).map(p=>fingerprint(picture,p.bounds));
  const patchEvidence=screen.platform==='hinge' ? (screen.photos||[]).map(p=>photoPatchEvidence(picture,p.bounds,screen.kind)) : [];
- const result={hashes,patchEvidence,squareHashes:screen.kind==='like'?(screen.photos||[]).map(p=>squareFingerprint(picture,p.bounds)):[]};
+ let squareHashes=[];
+ if(screen.kind==='like')squareHashes=(screen.photos||[]).map(p=>squareFingerprint(picture,p.bounds));
+ else if(screen.platform==='hinge'&&screen.kind==='profile'){
+  squareHashes=(screen.photos||[]).map(p=>p.revealDirection==='down'?squareFingerprint(picture,p.bounds):null);
+ }
+ const result={hashes,patchEvidence,squareHashes};
+ if(screen.platform==='hinge'&&screen.kind==='profile'&&screen.photos?.length===1){
+  result.scrollPhoto=scrollPhotoEvidence(picture,screen.photos[0],patchEvidence[0],screen.controls?.skip?.bounds);
+ }
  if(screen.kind==='like'&&screen.controls.comment){
   const b=screen.controls.comment.bounds,size=picture.getSize();
   if(b.x<0||b.y<0||b.x+b.width>size.width||b.y+b.height>size.height)throw Error('Comment field moved outside the screen.');
@@ -129,4 +158,4 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  }
  return result;
 }
-module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};
+module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};

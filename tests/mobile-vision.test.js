@@ -113,3 +113,29 @@ test('a repeated design in the visible regions alone cannot bind a clipped Hinge
  const repetitive=[original.windows[0],original.windows[0],original.windows[0]];
  assert.equal(sameClippedPhoto({kind:'profile',windows:repetitive},{kind:'like',windows:repetitive}),false);
 });
+test('Discover image continuity uses the existing square sample only for verified top clips',async()=>{
+ const picture=patternedPicture(),full={x:40,y:75,width:640,height:640},clipped={x:40,y:137,width:640,height:578};
+ const screen={platform:'hinge',kind:'profile',controls:{},photos:[
+  {bounds:clipped,revealDirection:'down'},{bounds:clipped,revealDirection:'up'},
+  {bounds:clipped,revealDirection:null},{bounds:{...clipped,height:512},revealDirection:'down'}]};
+ const expected=require('../desktop/mobile-vision.cjs').fingerprint(picture,full);
+ assert.deepEqual((await evidence(picture,screen)).squareHashes,[expected,null,null,null]);
+});
+test('adjacent Discover crops require distinct textured bottom windows, a verified top clip, and a forward scroll',async()=>{
+ const {sameScrollPhoto,sameClippedPhoto}=require('../desktop/mobile-vision.cjs');
+ const frame=async(height,paint,opts={})=>{
+  const bounds={x:40,y:137,width:640,height,...opts.bounds};const square={...bounds,y:bounds.y+bounds.height-bounds.width,height:bounds.width};
+  const snap={platform:'hinge',kind:'profile',controls:{skip:opts.skip},photos:[{bounds,revealDirection:opts.reveal??'down'}]};
+  return (await evidence(renderedPhoto(square,paint),snap)).scrollPhoto;
+ };
+ const larger=await frame(578,scene),smaller=await frame(425,scene);
+ assert.equal(sameScrollPhoto(larger,smaller),true);assert.equal(sameClippedPhoto(larger,smaller),false);
+ for(const alternate of [await frame(425,(u,v)=>scene(1-u,v)),await frame(425,scene,{reveal:'up'}),await frame(340,scene),
+  await frame(425,scene,{bounds:{x:60}}),await frame(425,scene,{skip:{bounds:{x:100,y:300,width:300,height:220}}})]){
+  assert.equal(sameScrollPhoto(larger,alternate),false);
+ }
+ for(const paint of [()=>[120,130,110],(u,v)=>[u,v,u].map(q=>Math.round(30+90*q))]){
+  assert.equal(sameScrollPhoto(await frame(578,paint),await frame(425,paint)),false);
+ }
+ assert.equal(sameScrollPhoto(smaller,larger),false);
+});

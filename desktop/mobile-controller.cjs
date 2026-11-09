@@ -1,15 +1,21 @@
 'use strict';
-const {randomUUID}=require('node:crypto');
+const {createHash,randomUUID}=require('node:crypto');
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
-const {sameClippedPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
+const {sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
 // Keep comparison samples out of renderer snapshots, event streams and saved sessions.
 const photoPatches = new WeakMap();
+const scrollPhotos = new WeakMap();
 const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt']);
 const transientRead=new Set(['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE','ANDROID_FOREGROUND_UNAVAILABLE','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','MOBILE_SCREEN_UNAVAILABLE','MOBILE_SCREEN_CHANGED','MOBILE_REVIEW_INTERRUPTED']);
 const transientError=(message,code='MOBILE_REVIEW_INTERRUPTED')=>Object.assign(Error(message),{code});
 const delay=(ms,signal)=>new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve()};const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done()});
 const hashDistance=(a,b)=>{if(!a||!b||a.length!==b.length)return Infinity;let n=0;for(let i=0;i<a.length;i++){let x=parseInt(a[i],16)^parseInt(b[i],16);while(x){n+=x&1;x>>=1}}return n};
+const nameDigest=name=>createHash('sha256').update(name).digest('hex');
+const photoFingerprint=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value);
+const matchesFingerprint=(p,visual,tolerance=6)=>photoFingerprint(visual)&&[p.visual,p.visualSquare].some(v=>photoFingerprint(v)&&hashDistance(v,visual)<=tolerance);
+const visibleFingerprint=(s,visual)=>s.photos?.some(p=>matchesFingerprint(p,visual));
+const alternativeUnavailable=()=>transientError('The reviewed photo could not be verified. Waiting for another profile or a manual review.','MOBILE_ALTERNATE_UNAVAILABLE');
 // Pixel changes alone cannot establish a new same-name Bumble profile.
 const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(after.identity)&&after.identity!==before.identity&&after.name===before.name&&Boolean(before.profileDiscriminator)&&Boolean(after.profileDiscriminator)&&after.profileDiscriminator!==before.profileDiscriminator&&after.controls?.like?.direction==='right';
 class MobileController{
@@ -20,14 +26,14 @@ class MobileController{
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
  snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
- checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
+ checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,...(this.rejectedPhoto?{rejectedPhoto:this.rejectedPhoto}:{}),recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
   try{this.persist()}catch(error){this.storageError=error.message;this.reason=error.message;if(this.session.status==='running'){this.session.epoch++;this.session.status='error';this.session.phase='error';this.session.error=error.message;this.session.controller?.abort()}}
   this.changed(this.snapshot());
  }
  reserveAction(action,increment=1){
-  this.skipOffer=null;this.lastAction=action;
+  this.rejectedPhoto=null;this.skipOffer=null;this.lastAction=action;
   if(this.session.status==='running')this.reservedCount=Math.max(this.session.count,this.reservedCount)+increment;
   this.persist();
  }
@@ -41,6 +47,12 @@ class MobileController{
   if(saved.nextHomeLaunchAt!==undefined&&(!Number.isFinite(saved.nextHomeLaunchAt)||saved.nextHomeLaunchAt<0))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   if((saved.nextFeedRetryAt!==undefined&&(!Number.isFinite(saved.nextFeedRetryAt)||saved.nextFeedRetryAt<0))||(saved.nextFeedRefreshAt!==undefined&&(!Number.isFinite(saved.nextFeedRefreshAt)||saved.nextFeedRefreshAt<0))||saved.version!==1||saved.platform!==this.platform||!saved.session||!saved.config||!(saved.binding===null||(typeof saved.binding?.serial==='string'&&(!saved.binding.avd||typeof saved.binding.avd==='string')))||!Number.isInteger(saved.recoveryAttempts)||saved.recoveryAttempts<0||saved.recoveryAttempts>1||!(saved.pendingAction===null||(typeof saved.pendingAction?.identity==='string'&&typeof saved.pendingAction?.name==='string')))throw Error('Mobile checkpoint is invalid. Repair it before starting.');
   if(saved.loadingFeedRelaunched!==undefined&&typeof saved.loadingFeedRelaunched!=='boolean')throw Error('Mobile checkpoint is invalid. Repair it before starting.');
+  const hint=saved.rejectedPhoto;
+  if(hint&&(!/^[0-9a-f]{64}$/.test(hint.nameDigest)||!photoFingerprint(hint.visual)||!(hint.entryVisual===null||photoFingerprint(hint.entryVisual))||
+    ![hint.sourceIdentity,hint.entryIdentity,hint.serial].every(v=>typeof v==='string'&&v.length>0)||
+    !(hint.heldIdentity===null||typeof hint.heldIdentity==='string')||!(hint.heldRevision===null||typeof hint.heldRevision==='string')||!(hint.avd===null||typeof hint.avd==='string')||
+    typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
+  this.rejectedPhoto=hint||null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
   this.nextHomeLaunchAt=saved.nextHomeLaunchAt??0;
@@ -153,7 +165,7 @@ class MobileController{
      : {retryAfter:1000,phase:'checking next profile'};
    }
    const kind=this.random()<c.likeRatio?'like':'pass';
-   const prepared=await this.review(t,sleep,observed,kind);this.assert(t,valid);
+   const prepared=await this.review(t,sleep,observed,kind,valid);this.assert(t,valid);
    await this.act(kind,t,valid,commit,prepared);
    this.readFailures=0;this.reason='';
    if(this.screen?.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
@@ -161,6 +173,11 @@ class MobileController{
    this.assert(t);if(!valid())throw error;
    if(['MOBILE_STORAGE_FAILURE','MOBILE_DEVICE_CHANGED'].includes(error.code)||this.storageError)throw error;
    if(this.lastAction)return this.pendingWait(error);
+   if(error.code==='MOBILE_PHOTO_MISMATCH')return {retryAfter:1000,phase:'waiting to reopen Discover'};
+   if(error.code==='MOBILE_ALTERNATE_UNAVAILABLE'){
+    this.reason='No verified alternate Like target on the reviewed card. Waiting for the next profile.';
+    return {retryAfter:30000,phase:'waiting for another profile'};
+   }
    if(!transientRead.has(error.code))throw error;
    const failures=++this.readFailures,retryAfter=Math.min(60000,5000*2**Math.min(failures-1,4));
    this.reason='Recovering the device screen; no profile action is being retried.';
@@ -277,6 +294,7 @@ class MobileController{
     const index=photos.findIndex(original=>original.key===p.key);
     const result={...p,visual:photos[index]?.visual||null,visualSquare:photos[index]?.visualSquare||null};
     if(ev.patchEvidence?.[index])photoPatches.set(result,ev.patchEvidence[index]);
+    if(index===0&&s.photos.length===1&&ev.scrollPhoto&&!overlapsPhotoPatch(p.bounds,s.controls?.skip?.bounds))scrollPhotos.set(result,ev.scrollPhoto);
     return result;
    });
    const revisions=s.photos.map(p=>{
@@ -444,20 +462,22 @@ class MobileController{
    throw Error('Could not confirm the Bumble swipe transition. It will not be retried on this profile.');
   }finally{if(issuedCount){commit(issuedCount);for(let i=0;i<issuedCount;i++)await this.record(kind)}}
  }
- async scrollHinge(s,options,t,valid=()=>true){
-  const anchored=this.platform==='hinge'&&s.kind==='profile'&&s.scrollSurface!==undefined;
+ async scrollHinge(s,options,t,valid=()=>true,requireReviewSurface=false){
+  const surfaceKey=requireReviewSurface?'reviewScrollSurface':'scrollSurface';
+  const anchored=this.platform==='hinge'&&s.kind==='profile'&&(requireReviewSurface||s.scrollSurface!==undefined);
   const binding=this.binding;
   const current=()=>valid()&&(!anchored||(binding?.serial===t.serial&&this.binding?.serial===t.serial&&this.binding.avd===binding.avd));
   this.assert(t,valid);
   if(anchored){
-   if(!s.scrollSurface||!current()||!this.android.deviceIdentity)throw transientError('A safe profile scroll surface requires the current bound phone.');
+   if(requireReviewSurface&&!s[surfaceKey])throw alternativeUnavailable();
+   if(!s[surfaceKey]||!current()||!this.android.deviceIdentity)throw transientError('A safe profile scroll surface requires the current bound phone.');
    await this.verifyBinding(t);
-   const fresh=await this.fresh(s,t,current);
-   if(!fresh.scrollSurface)throw transientError('The profile scroll surface changed.');
-   options={...options,surface:fresh.scrollSurface};
+   s=await this.fresh(s,t,current);
+   if(!s[surfaceKey])throw transientError('The profile scroll surface changed.');
+   options={...options,surface:s[surfaceKey]};
   }
   await this.android.scrollProfile(options,()=>{try{this.assert(t,current);return true}catch{return false}});
-  this.assert(t,current);
+  this.assert(t,current);return s;
  }
  async identifyProfile(s,t,valid=()=>true){
   if(this.platform!=='hinge'||s.kind!=='profile'||s.identity||s.photos?.length||!s.name||!this.config.swipe.scrollProfile)return s;
@@ -471,31 +491,83 @@ class MobileController{
   }
   return s;
  }
- async review(t,sleep,observed,kind){
+ scopedPhotoRejection(t){
+  const hint=this.rejectedPhoto;
+  return hint&&hint.endsAt===this.session.endsAt&&hint.count===this.session.count&&hint.serial===t.serial&&hint.avd===(this.binding?.avd||null)?hint:null;
+ }
+ heldReviewEndpoint(s,t){
+  const hint=this.scopedPhotoRejection(t);
+  return Boolean(hint?.attempted&&s.kind==='profile'&&s.screenKey&&s.screenKey===hint.heldRevision&&
+   s.name&&nameDigest(s.name)===hint.nameDigest);
+ }
+ matchesRejectedPhoto(s,h){
+  if(!s.name||nameDigest(s.name)!==h.nameDigest)return false;
+  return (s.identity===h.sourceIdentity&&visibleFingerprint(s,h.visual))||
+   (s.identity===h.entryIdentity&&(!h.entryVisual||visibleFingerprint(s,h.entryVisual)))||
+   (h.heldIdentity!==null&&s.identity===h.heldIdentity);
+ }
+ async review(t,sleep,observed,kind,valid=()=>true){
   if(this.platform==='bumble')return this.reviewBumble(t,sleep,observed);
-  this.reviewContext=null;this.selectedPhoto=null;this.selectedPrompt=null;await this.load(t);let s=await this.identifyProfile(await this.read(t),t);this.supported(s,['profile']);
+  this.reviewContext=null;this.selectedPhoto=null;this.selectedPrompt=null;await this.load(t);let s=await this.read(t);
+  if(kind==='like'&&this.session.status==='running'&&this.heldReviewEndpoint(s,t))throw alternativeUnavailable();
+  s=await this.identifyProfile(s,t,valid);this.supported(s,['profile']);
   const name=s.name,contexts=new Set([s.context?.bio||'']);
+  const entry={identity:s.identity,visual:s.photos?.find(p=>photoFingerprint(p.visual))?.visual||null};
+  const automaticPlainLike=kind==='like'&&this.config.mode==='like';
+  const hint=automaticPlainLike&&this.session.status==='running'?this.scopedPhotoRejection(t):null;
+  const alternate=hint&&this.matchesRejectedPhoto(s,hint)?hint:null;
+  // A photo-derived identity changes on a one-bit drift. Its old name plus image may deny
+  // a repeat, but only the independent source/entry binding above can enable a new review.
+  const denyAlias=screen=>!alternate&&hint&&screen.name&&nameDigest(screen.name)===hint.nameDigest&&visibleFingerprint(screen,hint.visual);
+  if(denyAlias(s))throw alternativeUnavailable();
+  if(alternate){
+   this.assert(t,valid);
+   if(alternate.attempted||this.lastAction||this.draft||this.session.now()>=this.session.endsAt||this.reservedCount>=this.session.config.maxSwipes)throw alternativeUnavailable();
+   await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
+   // Charge the single alternative review before any navigation; it never authorizes a vote.
+   alternate.attempted=true;this.persist();
+  }
+  let followingRejected=Boolean(alternate&&s.photos?.length===1&&matchesFingerprint(s.photos[0],alternate.visual));
   const move=async (fraction,direction='up')=>{
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
-   await this.scrollHinge(s,{fraction,duration:Math.round(300+this.random()*400),direction},t);
+   const before=await this.scrollHinge(s,{fraction,duration:Math.round(300+this.random()*400),direction},t,valid,Boolean(alternate));
    await this.pauseFor(450,t,sleep);s=await this.read(t);
    if(s.kind!=='profile')throw transientError('Profile review interrupted: '+(s.reason||'The current screen is not a recognized profile.'));
-   if(s.name!==name)throw transientError("Profile changed during review.");contexts.add(s.context?.bio||'');
+   if(s.name!==name)throw transientError("Profile changed during review.");
+   if(denyAlias(s))throw alternativeUnavailable();
+   if(alternate){
+    this.assert(t,valid);
+    // Even an ambiguous endpoint belongs to this attempted scroll for denial purposes only.
+    alternate.heldIdentity=s.identity||null;alternate.heldRevision=s.screenKey;this.persist();
+    const adjacent=direction==='up'&&before.photos?.length===1&&s.photos?.length===1&&
+     sameScrollPhoto(scrollPhotos.get(before.photos[0]),scrollPhotos.get(s.photos[0]));
+    const continuous=adjacent||s.identity===before.identity||before.photos?.some(p=>visibleFingerprint(s,p.visual)||visibleFingerprint(s,p.visualSquare))||
+     before.prompts?.some(p=>p.text&&s.prompts?.some(other=>other.text===p.text));
+    if(!s.identity||!continuous)throw alternativeUnavailable();
+    followingRejected=s.photos?.length===1&&(matchesFingerprint(s.photos[0],alternate.visual)||(followingRejected&&adjacent));
+   }
+   contexts.add(s.context?.bio||'');
   };
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move(this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
   // Random depth selects a different part of the profile; small bounded adjustments expose a full photo.
-  const automaticPlainLike=kind==='like'&&this.config.mode==='like';
   const targets=()=>{
    // Discover paints its floating Skip button over the photo, but the Like preview omits it.
    const skip=s.controls.skip;
    const overlay=automaticPlainLike&&skip?.label==='Skip '+s.name?skip.bounds:null;
    const photos=(s.photos||[]).filter(p=>p.like&&!overlapsPhotoPatch(p.bounds,overlay));
-   return photos.length?photos:(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}));
+   const prompts=(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}));
+   if(alternate){
+    if(!s.identity)return [];
+    // Non-overlapping six-bit match ranges distinguish this candidate from the rejected source.
+    return prompts.length?prompts:photos.filter(p=>!followingRejected&&photoFingerprint(p.visual)&&!matchesFingerprint(p,alternate.visual,12)&&
+     !photos.some(other=>other!==p&&matchesFingerprint(other,p.visual,12)));
+   }
+   return photos.length?photos:prompts;
   };
   let candidates=targets();
   let direction='up';
-  const reveal=()=>s.photos?.find(p=>['up','down'].includes(p.revealDirection))?.revealDirection;
+  const reveal=()=>s.photos?.find(p=>['up','down'].includes(p.revealDirection)&&(!alternate||(!followingRejected&&!matchesFingerprint(p,alternate.visual,12))))?.revealDirection;
   for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<6;i++){const before=s.screenKey;await move(s.photos?.length ? .2 : .55,reveal()||direction);candidates=targets();if(!candidates.length&&s.screenKey===before)direction=direction==='up'?'down':'up';}
   // Reaching a photo at the search boundary still permits two small alignment moves.
   for(let i=0;!candidates.length&&this.config.swipe.scrollProfile&&i<2&&reveal();i++){await move(.2,reveal());candidates=targets();}
@@ -506,9 +578,11 @@ class MobileController{
    await move(reveal() ? .2 : .6,reveal()||'down');
    candidates=targets();
   }
+  if(hint&&!alternate&&this.matchesRejectedPhoto(s,hint))throw alternativeUnavailable();
+  if(alternate&&!candidates.length)throw alternativeUnavailable();
   if(!candidates.length)throw transientError("No fully visible photo found within the review limit. Scroll manually and read again.");
   const selected=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];this.selectedPhoto=selected.type==='prompt'?null:selected;this.selectedPrompt=selected.type==='prompt'?selected:null;
-  this.reviewContext={identity:s.identity,screenKey:s.screenKey,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
+  this.reviewContext={identity:s.identity,screenKey:s.screenKey,entry,alternate,expectedTarget:alternate?selected:null,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  } async record(kind){await this.service.request('record',{kind,detail:this.platform==='hinge'?'Hinge desktop':'Bumble desktop'})}
  async transition(before,t,valid=()=>true,allowOffer=false){
   let offerHandled=false,evidenceChecked=false,last,candidate=null,candidateReads=0;
@@ -547,6 +621,7 @@ class MobileController{
   }
   if(this.platform==='bumble')return s.actionStrategy==='footer'?this.footerBumble(kind,s,t,valid,commit):this.swipeBumble(kind,s,t,valid,commit);
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
+  const selection=prepared?this.reviewContext:null;
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;
   if(kind==='pass'){
    await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({kind:'pass',identity:s.identity,name:s.name});
@@ -554,7 +629,15 @@ class MobileController{
   }
   if(s.kind==='profile'){
    let photo;
-   if(prepared&&this.selectedPrompt){
+   if(selection?.alternate){
+    this.assert(t,valid);
+    if(this.session.now()>=selection.alternate.endsAt||this.session.count!==selection.alternate.count||
+      this.reservedCount>=this.session.config.maxSwipes||this.draft||this.lastAction)throw alternativeUnavailable();
+    const expected=selection.expectedTarget;
+    const source=expected.type==='prompt'?s.prompts:s.photos;
+    photo=source?.find(p=>p.key===expected.key&&p.like&&(expected.type==='prompt'?p.text===expected.text:p.visual===expected.visual));
+    if(!photo)throw alternativeUnavailable();
+   }else if(prepared&&this.selectedPrompt){
     photo=s.prompts?.find(p=>p.key===this.selectedPrompt.key&&p.like);
     if(!photo)throw transientError('The reviewed prompt is no longer available. Read the profile again.');
    }else{
@@ -577,12 +660,23 @@ class MobileController{
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
    let samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
-   if(!samePhoto&&!photo.text&&s.identity!==original.identity&&s.name===original.name&&this.config.mode==='like'&&!this.lastAction&&!this.draft&&s.composerTextVerified===true&&s.composerText===''&&s.controls.sendLike&&s.photos?.length===1){
+   if(!samePhoto&&!photo.text&&(selection?.alternate||s.identity!==original.identity)&&s.name===original.name&&this.config.mode==='like'&&!this.lastAction&&!this.draft&&s.composerTextVerified===true&&s.composerText===''&&s.controls.sendLike&&s.photos?.length===1){
     const preview=photoPatches.get(s.photos[0]);
     const matching=original.photos.filter(p=>sameClippedPhoto(photoPatches.get(p),preview));
     samePhoto=matching.length===1&&matching[0]===photo;
    }
-   if(s.name!==original.name||(photo.text?!samePrompt:(s.identity!==original.identity&&!samePhoto)))throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
+   if(s.name!==original.name||(photo.text?!samePrompt:((selection?.alternate||s.identity!==original.identity)&&!samePhoto))){
+    if(selection?.alternate)throw alternativeUnavailable();
+    if(selection?.entry&&!photo.text&&photoFingerprint(photo.visual)&&s.name===original.name&&this.resumableLike(s)&&
+      this.session.status==='running'&&this.session.config.likeRatio===1&&this.binding?.serial===t.serial&&
+      !this.draft&&!this.lastAction&&this.session.count===this.reservedCount){
+     this.assert(t,valid);
+     this.rejectedPhoto={nameDigest:nameDigest(original.name),sourceIdentity:original.identity,visual:photo.visual,entryIdentity:selection.entry.identity,entryVisual:selection.entry.visual,
+      heldIdentity:null,heldRevision:null,attempted:false,endsAt:this.session.endsAt,count:this.session.count,serial:t.serial,avd:this.binding.avd||null};
+     this.persist();throw transientError('The selected photo could not be verified in the Like form.','MOBILE_PHOTO_MISMATCH');
+    }
+    throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
+   }
   }
   if(s.composerTextVerified===false)throw Error('The comment field cannot be verified. Nothing was sent.');
   if(s.composerText?.trim())throw Error('An existing comment is present. Review or clear it manually first.');
@@ -643,7 +737,7 @@ class MobileController{
    }
    if(action==='confirmPendingSkip')return this.confirmPendingSkip(data.token,t);
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&!this.resumableLike(s)){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&!this.resumableLike(s)&&!(resuming&&this.heldReviewEndpoint(s,t))){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }
