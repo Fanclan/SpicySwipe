@@ -584,24 +584,64 @@ test('alternate Discover can cross only the clear heading and padding of an owne
  assert.equal(marker.chromeKey,moved.reviewScrollFrame.chromeKey);
  assert.equal(marker.ownerKey,moved.reviewScrollFrame.ownerKey);
  assert.deepEqual(moved.reviewScrollFrame.landmarks.map(n=>[n.key,n.y]),marker.landmarks.map(n=>[n.key,n.y-32]));
- for(const xml of [
-  feed(card()), feed(card()+adjacent('Choose one')),
+ for(const [expected,scenes] of [
+  [null,[feed(card()+adjacent('Choose one')),
   ordered('drawing-order="4"','3','',pair), ordered('drawing-order="3"','3','',pair),
   ordered('','3','',pair), ordered('drawing-order="2"','3','focusable="true"',pair),
   inForeground.replace('bounds="[0,0][720,1280]" clickable="false" ></node>','bounds="invalid" clickable="false" ></node>'),
+  feed(pair,xmlNode('view.View','[0,0][720,1280]','scrollable="true"')),
+  feed(pair,button('invalid','clickable="false"')), feed(pair+view('[0,137][720,1112]','','scrollable="true"'))]],
+  [{x:244,y:801},[
   feed(pair.replace('drawing-order="0"','drawing-order="2"')), feed(pair.replace('drawing-order="1"','')),
   feed(pair.replace('clickable="false" text="Choose one"','clickable="false" focusable="true" text="Choose one"')),
+  feed(pair,button('[249,276][280,290]','clickable="true" content-desc="Like"')),
+  feed(pair,xmlNode('view.View','[235,258][255,278]','clickable="false" content-desc="Unowned overlay"'))]],
+  [{x:245,y:268},[feed(card()),
   feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.widget.NumberPicker" bounds="[80,752][408,851]"')),
   feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.view.View" scrollable="true" bounds="[80,752][408,851]"')),
-  feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.view.View" selected="true" bounds="[80,752][408,851]"')),
-  feed(pair,button('[249,276][280,290]','clickable="true" content-desc="Like"')),
-  feed(pair,xmlNode('view.View','[235,258][255,278]','clickable="false" content-desc="Unowned overlay"')),
-  feed(pair,xmlNode('view.View','[0,0][720,1280]','scrollable="true"')),
-  feed(pair,button('invalid','clickable="false"')),
-  feed(pair+view('[0,137][720,1112]','','scrollable="true"')),
- ]) {
+  feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.view.View" selected="true" bounds="[80,752][408,851]"'))]]
+ ]) for(const xml of scenes){
   const rejected=read(xml);
-  assert.ok(rejected.reviewWheelPoint==null,'an unsafe or ambiguous landmark cannot supply a wheel point');
+  assert.deepEqual(rejected.reviewWheelPoint??null,expected);
   assert.ok(rejected.reviewScrollFrame==null);
  }
+
+ // The wheel start recorded only the two heading positions. Intermediate poll
+ // rows here are a synthetic reconstruction; the landing rectangles were measured.
+ const scene=(landed,options={})=>{
+  const dy=landed?0:128, outer=landed?'[40,89][680,454]':'[40,18][680,582]', body=landed?'[40,137][680,454]':'[40,137][680,582]';
+  const rect=(x,y,r,b)=>'['+x+','+(y+dy)+']['+r+','+(b+dy)+']';
+  const option=(x,y,r,b,labelBox,value)=>opt(rect(x,y,r,b),rect(x,y,r,b),labelBox).replace('text="Option"','text="'+value+'"');
+  const rows=option(89,102,295,198,landed?'[124,137][260,180]':rect(124,118,260,180),'First option')+
+   option(317,102,523,198,landed?'[352,137][488,180]':rect(352,118,488,180),'Second option')+
+   option(89,218,370,314,rect(124,234,335,296),options.third || 'Third option');
+  const stack=view(outer,view(body,view(outer,'','drawing-order="0"')+
+   (landed?'':text('[88,158][403,198]','Poll heading').replace('clickable="false"','clickable="false" drawing-order="1"'))+
+   rows+view(rect(544,318,680,454),view(rect(544,318,680,454),button(rect(564,338,660,434),'clickable="true" content-desc="Like"')))));
+  const pane=rect(40,494,680,673), left=rect(80,534,408,633);
+  const panel=view(pane,view(pane,view(pane,view(left,text(left,'Passive neighbor'))+
+   option(440,527,640,623,rect(507,558,573,592),options.side || 'Neighbor choice'))));
+  return feed(stack+panel,options.cover?button('[232,571][257,596]','clickable="true" content-desc="Like"'):'');
+ };
+ const first=read(scene(false)), landed=read(scene(true));
+ assert.deepEqual(first.reviewWheelPoint,{x:245,y:178});
+ assert.deepEqual(landed.reviewWheelPoint,{x:244,y:583});
+ const landing=landed.reviewScrollFrame.landmarks;
+ assert.deepEqual(landing.map(({x,y,width,height})=>[x,y,width,height]),[[124,234,211,62],[80,534,328,99],[507,558,66,34]]);
+ for(const mark of landing){
+  const previous=first.reviewScrollFrame.landmarks.find(other=>other.key===mark.key);
+  assert.ok(previous);assert.deepEqual({...previous,y:previous.y-128},mark);
+ }
+ assert.deepEqual(landed.prompts,[]);assert.equal(landed.controls.like,null);assert.equal(landed.identity,null);
+ const covered=read(scene(true,{cover:true}));
+ assert.equal(covered.reviewWheelPoint,null,'geometry from a choice can never provide input');
+ assert.deepEqual(covered.reviewScrollFrame.landmarks.map(m=>[m.x,m.y]),[[124,234],[507,558]]);
+ for(const opts of [{cover:true,third:'Neighbor choice'},{cover:true,side:'Elapsed time: 5 seconds'}]){
+  const sparse=read(scene(true,opts));assert.equal(sparse.reviewWheelPoint,null);assert.equal(sparse.reviewScrollFrame,null);
+ }
+ const unsafeOption=read(scene(true,{cover:true}).replace('class="android.view.View" bounds="[89,218][370,314]"','class="android.view.View" scrollable="true" bounds="[89,218][370,314]"'));
+ assert.equal(unsafeOption.reviewWheelPoint,null);assert.equal(unsafeOption.reviewScrollFrame,null);
+ const edge=read(feed(card()+view('[80,950][408,1112]',text('[80,1050][408,1112]','Clipped at the viewport'))));
+ assert.deepEqual(edge.reviewWheelPoint,{x:245,y:268});
+ assert.equal(edge.reviewScrollFrame,null,'a viewport-clipped label may resize during motion');
 });

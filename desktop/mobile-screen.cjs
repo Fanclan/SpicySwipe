@@ -88,7 +88,7 @@ function visibleVerticalMedia(item, owner) {
 }
 // A wheel scroll has no touch path. Only static native text with an unambiguous hit
 // margin qualifies; two independent landmarks allow the controller to verify motion.
-function staticWheelFrame(visible,owner,display,discover,kids,backdrops,behindDiscover) {
+function staticWheelFrame(visible,owner,display,discover,kids,backdrops,measurementOnly,behindDiscover) {
  const viewport=bounds(owner), skips=visible.filter(n=>/^Skip .+/.test(label(n)));
  if (skips.length!==1 || skips[0].a.class!=='android.widget.Button' || !skips[0].enabled ||
      skips[0].a.clickable!=='true' || !fullyVisible(skips[0])) return null;
@@ -102,15 +102,16 @@ function staticWheelFrame(visible,owner,display,discover,kids,backdrops,behindDi
   /(?:Button|EditText|Picker|SeekBar|Spinner|Switch|TabWidget|WebView)$/.test(n.a.class || '');
  if (path(owner).some(n=>interactive(n,n===owner))) return null;
  const texts=visible.filter(n=>n.a.class==='android.widget.TextView' && label(n) && path(n).includes(owner));
- if (texts.length<2 || texts.length>64) return null;
+ if (!texts.length || texts.length>64) return null;
  const keyFor=n=>hash(['discover-text',n.a['resource-id'] || '',label(n)]);
  const keys=texts.map(keyFor), landmarks=[];
  let point=null;
  for (const [i,n] of texts.entries()) {
-  const lineage=path(n), depth=lineage.indexOf(owner), b=bounds(n);
-  if (keys.indexOf(keys[i])!==keys.lastIndexOf(keys[i]) || kids(n).length || !fullyVisible(n) ||
+  const lineage=path(n), depth=lineage.indexOf(owner), b=bounds(n), measured=measurementOnly.get(n);
+  if (keys.indexOf(keys[i])!==keys.lastIndexOf(keys[i]) || /^(?:(?:elapsed|remaining) time:|\d{1,2}:\d{2}(?::\d{2})?$)/i.test(label(n)) ||
+      kids(n).length || !fullyVisible(n) || (measured && !fullyVisible(n.parent)) ||
       interactive(n) || n.a.clickable!=='false' || b.width<26 || b.height<26) continue;
-  if (lineage.slice(1,depth).some(p=>!['android.view.View','android.view.ViewGroup','android.widget.FrameLayout','android.widget.LinearLayout'].includes(p.a.class) ||
+  if (lineage.slice(measured?2:1,depth).some(p=>!['android.view.View','android.view.ViewGroup','android.widget.FrameLayout','android.widget.LinearLayout'].includes(p.a.class) ||
       interactive(p) || p.a.clickable!=='false' || /(?:picker|tabbar|navigation|slider|input)/i.test(p.a['resource-id'] || ''))) continue;
   const x=Math.floor(b.x+b.width/2), y=Math.floor(b.y+b.height/2), margin=12;
   if (x<viewport.x+margin || x>viewport.x+viewport.width-margin || y<viewport.y+margin || y>viewport.y+viewport.height-margin ||
@@ -119,16 +120,20 @@ function staticWheelFrame(visible,owner,display,discover,kids,backdrops,behindDi
    const box=bounds(other);
    if (!box) return true;
    if (x+margin<box.x || x-margin>=box.x+box.width || y+margin<box.y || y-margin>=box.y+box.height) return false;
-   if (lineage.includes(other) || (other===backdrops.get(n) && !interactive(other))) return false;
+   if (lineage.includes(other) || (other===backdrops.get(n) && !interactive(other)) || measured?.peers.includes(other)) return false;
    if (interactive(other)) return true;
    const [leaf]=kids(other);
    return !behindDiscover(other,box) && !(kids(other).length===1 && behindDiscover(leaf,bounds(leaf)));
   });
   if (covered) continue;
-  point??={x,y};
-  landmarks.push({key:keys[i],...b});
+  if (!measured) point??={x,y};
+  // Compose can report a shortened text rectangle flush with a viewport edge.
+  // Its center can still be passive, but that rectangle cannot measure translation.
+  if (b.y>viewport.y && b.y+b.height<viewport.y+viewport.height) {
+   landmarks.push({key:measured?hash([measured.role,keys[i]]):keys[i],...b});
+  }
  }
- if (landmarks.length<2 || !landmarks.some(n=>Math.abs(n.y-landmarks[0].y)>=24)) return null;
+ if (landmarks.length<2 || !landmarks.some(n=>Math.abs(n.y-landmarks[0].y)>=24)) return {point,frame:null};
  const shape=n=>path(n).map(p=>[p.a.class,p.a['resource-id'] || '',p.a['drawing-order'] || '',bounds(p)]);
  return {point,frame:{ownerKey:hash(['discover-scroll',shape(owner)]),
   chromeKey:hash(['discover-chrome',shape(discover),shape(skips[0]),label(skips[0])]),landmarks}};
@@ -183,14 +188,34 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
   return lower>0 && lower<upper && kids(common).filter(layer=>order(layer)===lower).length===1 &&
    kids(common).filter(layer=>order(layer)===upper).length===1;
  };
- const candidates=[], headingBackdrops=new Map();
+ const candidates=[], headingBackdrops=new Map(), measurementOnly=new Map();
+ // Read-only landmarks are never input targets. The passive text and decorative
+ // native Button must be the sole children of this known, selectable option.
+ const rememberOption=(option,role,backdrop)=>{
+  const text=kids(option).find(n=>n.a.class==='android.widget.TextView');
+  const decoration=kids(option).find(n=>n.a.class==='android.widget.Button');
+  if (['checked','checkable','selected','focused','password'].some(k=>option.a[k]==='true') ||
+      /(?:picker|tabbar|navigation|slider|input)/i.test(option.a['resource-id'] || '') ||
+      ['focused','focusable','long-clickable'].some(k=>decoration.a[k]==='true')) return;
+  measurementOnly.set(text,{role,peers:[decoration,backdrop]});
+ };
  for (const card of kids(owner)) {
   const [body]=kids(card);
   if (!wrapper(card) || kids(card).length!==1 || !wrapper(body) || !bodyFitsCard(card,body)) continue;
   const nodes=kids(body), headings=nodes.filter(n=>inert(n,'android.widget.TextView') && label(n) && !kids(n).length);
+  // The adjacent native panel has one passive label on the left and one
+  // selectable option on the right, within three coincident native wrappers.
+  if (nodes.length===1 && wrapper(nodes[0]) && sameBox(body,nodes[0])) {
+   const [left,right]=kids(nodes[0]), [text]=kids(left);
+   if (kids(nodes[0]).length===2 && wrapper(left) && kids(left).length===1 && inert(text,'android.widget.TextView') &&
+       label(text) && sameBox(left,text) && !kids(text).length && options(right) &&
+       bounds(left).x+bounds(left).width+12<=bounds(right).x) rememberOption(right,'adjacent-option');
+  }
   const choices=nodes.filter(options), backdrops=nodes.filter(n=>wrapper(n) && sameBox(n,card) && !kids(n).length);
-  if (headings.length!==1 || choices.length<2 || choices.length>4 || backdrops.length!==1 ||
-      nodes.filter(contentLike).length!==1 || nodes.length!==choices.length+3) continue;
+  if (headings.length>1 || (!headings.length && sameBox(card,body)) || choices.length<2 || choices.length>4 || backdrops.length!==1 ||
+      nodes.filter(contentLike).length!==1 || nodes.length!==choices.length+headings.length+2) continue;
+  for (const choice of choices) rememberOption(choice,'poll-option',backdrops[0]);
+  if (!headings.length) continue;
   const heading=headings[0], h=bounds(heading), panel=visibleVerticalMedia(body,owner);
   if (!h || !panel || !fullyVisible(heading)) continue;
   // A point on this native heading overlaps the blank sibling's raw bounds.
@@ -217,7 +242,7 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
   });
   if (!blocked) candidates.push({bounds:{x,y:top,width,height:bottom-top},clipped:!sameBox(card,body)});
  }
- const wheel=staticWheelFrame(visible,owner,display,geometry.discover,kids,headingBackdrops,behindDiscover);
+ const wheel=staticWheelFrame(visible,owner,display,geometry.discover,kids,headingBackdrops,measurementOnly,behindDiscover);
  if (wheel) {geometry.wheelPoint=wheel.point;geometry.scrollFrame=wheel.frame;}
  if (mediaSurface) return mediaSurface;
  if (candidates.length!==1) return null;
