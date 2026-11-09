@@ -23,6 +23,8 @@ Choose **Hinge** or **Bumble** in the workspace. Each app opens its own persiste
 
 New web sessions default to **Keep running when this tab closes**. With that setting enabled, you can close the tab or turn off your computer. The server keeps each session’s count and deadline. Closing the tab that shared your location still ends location sharing. If the managed Hinge phone returns to its Android home screen, the session can reopen Hinge and check the previous Like before continuing.
 
+If SpicySwipe can’t verify that Hinge’s Like form shows the photo it reviewed, the form stays unsubmitted. A plain Likes session can reopen Discover and review another prompt or photo on that profile. Reviewing a different item uses no additional slot. If the alternate item cannot be verified, the session waits.
+
 If Hinge is still verifying a previous Like and shows a card with the same name, look below the session count for **Skip this card and continue**. Open it to review the name, then confirm to Skip that card or choose **Cancel** to keep waiting. The previous Like attempt already counts toward the session limit. Confirming uses one more slot. The confirmation expires if the card changes or the review times out.
 
 To change Android preferences on the connected phone, choose **Advanced settings** and **Open Android settings**. Use **Reopen Google Play** to return to the listing during installation, or **Open Hinge** or **Open Bumble** to return to an installed app.

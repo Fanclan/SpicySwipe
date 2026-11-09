@@ -1156,3 +1156,160 @@ test('one-card Skip keeps the session complete when a paced worker queues behind
  assert.equal(x.saved().session.status,'complete');assert.equal(x.saved().pendingAction.kind,'pass');
  assert.deepEqual(x.calls.map(action=>action.kind),['pass']);
 });
+
+function repeatedPhotoFixture({scroll=false,readEvidence}={}){
+ const failedPhoto={key:'first-position',bounds:box,like:control('Like photo'),visual:'123456789abcdef0'};
+ const root=screen({photos:[failedPhoto],reviewScrollSurface:{x:80,y:150,width:360,height:350}});
+ const form=screen({kind:'like',identity:'preview-identity',screenKey:'preview',photos:[{key:'preview',visual:'ffffffffffffffff'}],
+  composerTextVerified:true,controls:{sendLike:control('Send Like')}});
+ const prompt={key:'native-prompt',bounds:box,text:'Prompt: First date. Answer: Hiking',like:{...control('Like prompt'),bounds:{...box,x:100}}};
+ let saved,commits=0;
+ const x=setup(root,{readEvidence,checkpointStore:{read:()=>null,write:cp=>{saved=structuredClone(cp)}}});
+ x.android.deviceIdentity=async()=>({serial:x.android.serial});
+ const step=()=>x.c.sessionStep(x.c.session.config,()=>x.c.session.status==='running'&&x.c.session.now()<x.c.session.endsAt,
+  ()=>{commits++;x.c.session.count++},async()=>true,x.c.token());
+ async function prepare(){
+  await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1,scrollProfile:scroll,browsePhotos:false}});
+  const s=x.c.session;s.status='running';s.endsAt=Date.now()+600000;s.config={...x.c.config.swipe,maxSwipes:100};s.count=x.c.reservedCount=4;
+  x.c.binding={serial:x.android.serial};x.android.tapControl=async(_bounds,valid)=>{assert.equal(valid(),true);x.calls.push('open');x.set(form)};
+  await step();assert.equal(commits,0);assert.equal(x.c.lastAction,null);assert.equal(x.c.session.count,4);
+ }
+ async function reopen(card){
+  x.c.nextFeedRefreshAt=0;x.android.refreshFeed=async()=>x.set(card);await step();
+ }
+ return {...x,root,form,prompt,failedPhoto,prepare,reopen,step,saved:()=>saved,commits:()=>commits};
+}
+test('rejected Hinge photo reopens Discover, ignores its moved alias and binds an exact alternate prompt',async()=>{
+ const x=repeatedPhotoFixture();await x.prepare();
+ const hint=x.saved().rejectedPhoto;assert.ok(hint);assert.ok(!JSON.stringify(hint).includes('Example'));
+ const alias={...x.failedPhoto,key:'changed-position',bounds:{...box,y:75}};
+ await x.reopen({...x.root,screenKey:'fresh-root',photos:[alias],prompts:[x.prompt]});
+ const opened=[];x.android.tapControl=async(bounds,valid,issued)=>{
+  assert.equal(valid(),true);opened.push(bounds);issued?.();
+  x.set(opened.length===1?{...x.form,photos:[],prompts:[{...x.prompt,like:null}]}:screen({name:'Next',identity:'next'}));
+ };
+ await x.step();assert.deepEqual(opened,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+ assert.equal(x.saved().rejectedPhoto??null,null);assert.equal(x.c.session.count,5);
+});
+test('rejected Hinge photo holds without any repeated opening if no verified alternate exists, including after restore',async()=>{
+ const x=repeatedPhotoFixture();await x.prepare();await x.reopen(x.root);const opens=x.calls.length;
+ await x.step();await x.step();assert.equal(x.calls.length,opens);assert.match(x.c.reason,/alternate/i);assert.equal(x.c.session.count,4);
+ const cp=x.saved();assert.ok(cp.rejectedPhoto);
+ const y=setup(x.root,{checkpointStore:{read:()=>cp,write:()=>{}}});await y.c.request('status');assert.equal(y.c.session.status,'paused');
+ y.c.session.status='running';await y.c.sessionStep(cp.session.config,()=>true,()=>assert.fail(),async()=>true,y.c.token());
+ assert.deepEqual(y.calls,[]);assert.match(y.c.reason,/alternate/i);
+});
+test('rejected Hinge photo leaves distinct same-name cards on the ordinary review path',async()=>{
+ const x=repeatedPhotoFixture();await x.prepare();const different={...x.root,identity:'different-person',screenKey:'different',
+  photos:[{...x.failedPhoto,visual:'eeeeeeeeeeeeeeee'}],prompts:[x.prompt]};
+ await x.reopen(different);const opened=[];
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);opened.push(bounds);issued?.();x.set(opened.length===1?{...x.form,identity:different.identity}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.deepEqual(opened,[box,box]);assert.equal(x.commits(),1);
+});
+test('rejected Hinge photo holds a changed, unrecognizable crop after its own scroll without opening it',async()=>{
+ const x=repeatedPhotoFixture({scroll:true});await x.prepare();await x.reopen(x.root);
+ const alias={...x.root,identity:'cropped-identity',screenKey:'cropped',photos:[{...x.failedPhoto,key:'other',like:null,
+   bounds:{...box,height:24},revealDirection:'down',visual:'ffffffffffffffff'}]};
+ let scrolls=0;x.android.scrollProfile=async()=>{scrolls++;x.set(alias)};
+ await x.step();assert.equal(scrolls,1);await x.step();assert.equal(scrolls,1);
+ assert.equal(x.calls.filter(a=>a==='open').length,1);assert.equal(x.commits(),0);
+});
+test('rejected Hinge photo walks past the excluded photo to a pinned native prompt using continuous observations',async()=>{
+ const x=repeatedPhotoFixture({scroll:true});await x.prepare();
+ const inert={...x.prompt,like:null};await x.reopen({...x.root,prompts:[inert]});const moves=[];
+ x.android.scrollProfile=async opts=>{
+  moves.push(opts.direction);x.set(moves.length===1?{...x.root,screenKey:'clipped',photos:[{...x.failedPhoto,like:null,visual:'6767676767676767',visualSquare:x.failedPhoto.visual,revealDirection:'down'}],prompts:[inert]}:
+   {...x.root,identity:'new-viewport',screenKey:'prompt-visible',photos:[],prompts:[x.prompt]});
+ };
+ const taps=[];x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?{...x.form,photos:[],prompts:[x.prompt]}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.deepEqual(moves,['up','up']);assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+test('rejected Hinge photo requires a matching alternate photo on the form even when its profile identity agrees',async()=>{
+ for(const match of [false,true]){
+  const x=repeatedPhotoFixture();await x.prepare();
+  const other={...x.failedPhoto,key:'alternative',visual:'eeeeeeeeeeeeeeee',like:{...control('Like photo'),bounds:{...box,x:80}}};
+  await x.reopen({...x.root,photos:[x.failedPhoto,other]});const taps=[];
+  x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+   {...x.form,identity:x.root.identity,photos:match?[other]:x.form.photos}:screen({name:'Next',identity:'next'}))};
+  await x.step();assert.equal(x.commits(),match?1:0);assert.deepEqual(taps,match?[other.like.bounds,box]:[other.like.bounds]);
+  if(!match){await x.reopen(x.root);await x.step();assert.equal(taps.length,1);assert.equal(x.saved().rejectedPhoto.attempted,true)}
+ }
+});
+test('rejected Hinge photo respects pending guards, exhausted budgets, and cancellation during revalidation',async()=>{
+ for(const mode of ['guard','cap','deadline','pause']){
+  const x=repeatedPhotoFixture();await x.prepare();await x.reopen({...x.root,prompts:[x.prompt]});
+  if(mode==='guard')x.c.lastAction={kind:'like',identity:x.root.identity,name:x.root.name,sessionEndsAt:x.c.session.endsAt};
+  if(mode==='cap')x.c.session.config.maxSwipes=4;
+  if(mode==='deadline')x.c.session.now=()=>x.c.session.endsAt+1;
+  if(mode==='pause'){x.android.deviceIdentity=async()=>{x.c.invalidate('Paused');return {serial:x.android.serial}}}
+  if(mode==='pause')await assert.rejects(x.step());else await x.step();
+  assert.equal(x.calls.filter(action=>action==='open').length,1);assert.equal(x.commits(),0);
+  if(mode==='guard')assert.equal(x.c.lastAction.kind,'like');
+ }
+});
+
+test('rejected Hinge photo with one-bit drift and a new native identity can only block a vote',async()=>{
+ const identity=(name,visual)=>require('node:crypto').createHash('sha256').update(JSON.stringify(['hinge-photo',name,visual])).digest('hex');
+ for(const spent of [false,true]){
+  const x=repeatedPhotoFixture();x.root.identity=identity(x.root.name,x.failedPhoto.visual);await x.prepare();await x.reopen(x.root);
+  if(spent)await x.step();
+  const hint=structuredClone(x.saved().rejectedPhoto),drifted='123456789abcdef1';
+  const alias={...x.root,identity:identity(x.root.name,drifted),screenKey:'drifted',photos:[{...x.failedPhoto,visual:drifted}],prompts:[x.prompt]};
+  assert.notEqual(alias.identity,x.root.identity);
+  x.set(alias);await x.step();await x.step();assert.equal(x.calls.filter(a=>a==='open').length,1);
+  assert.deepEqual(x.saved().rejectedPhoto,hint);assert.equal(x.commits(),0);
+  const otherName='Other',different={...alias,name:otherName,identity:identity(otherName,drifted)};
+  x.set(different);const taps=[];
+  x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();
+   x.set(taps.length===1?{...x.form,name:otherName,identity:different.identity}:screen({name:'Next',identity:'next'}))};
+  await x.step();assert.deepEqual(taps,[box,box]);assert.equal(x.commits(),1);
+ }
+});
+test('rejected Hinge photo holds an exact unidentifiable endpoint before identifying gestures, even after restart',async()=>{
+ const x=repeatedPhotoFixture({scroll:true});await x.prepare();await x.reopen(x.root);
+ const endpoint={...x.root,screenKey:'blank-endpoint-revision',identity:null,photos:[]};let scrolls=0;
+ x.android.scrollProfile=async()=>{scrolls++;x.set(endpoint)};
+ await x.step();assert.equal(scrolls,1);await x.step();assert.equal(scrolls,1);assert.equal(x.commits(),0);
+ const cp=x.saved(),y=setup(endpoint,{wait:()=>new Promise(()=>{}),checkpointStore:{read:()=>cp,write:()=>{}}});
+ await y.c.request('status');await y.c.request('start');assert.equal(y.c.session.status,'running');
+ await y.c.sessionStep(cp.session.config,()=>true,()=>assert.fail(),async()=>true,y.c.token());
+ assert.equal(y.calls.some(a=>a?.direction||a==='tap'),false);y.c.invalidate('Done');
+});
+test('rejected Hinge photo stops when a verified alternate scroll surface is missing or null',async()=>{
+ for(const absent of [false,true]){
+  const x=repeatedPhotoFixture({scroll:true});await x.prepare();const initial={...x.root,reviewScrollSurface:null};
+  if(absent)delete initial.reviewScrollSurface;
+  await x.reopen(initial);x.android.scrollProfile=async()=>assert.fail('No generic swipe permitted');
+  await x.step();assert.match(x.c.reason,/alternate/);assert.equal(x.commits(),0);
+ }
+});
+test('rejected Hinge photo verifies full, 578px, and 425px top crops before choosing a newly visible prompt',async()=>{
+ const {evidence}=require('../desktop/mobile-vision.cjs');
+ function imageFor(box){
+  const top=box.y+box.height-box.width;
+  return {getSize:()=>({width:800,height:1200}),crop:rect=>({resize:({width,height})=>({toBitmap:()=>{
+   const bytes=Buffer.alloc(width*height*4,255);
+   for(let y=0;y<height;y++)for(let x=0;x<width;x++)for(let c=0;c<3;c++){
+    const u=(rect.x+(x+.5)*rect.width/width-box.x)/box.width,v=(rect.y+(y+.5)*rect.height/height-top)/box.width;
+    bytes[(y*width+x)*4+c]=Math.round(116+45*Math.sin(29*u+11*v+c)+38*Math.cos(17*v-13*u+c)+26*Math.cos(51*v+35*u));
+   }
+   return bytes;
+  }})})};
+ }
+ const full={x:40,y:210,width:640,height:640},hashes=new Set();
+ const x=repeatedPhotoFixture({scroll:true,readEvidence:async s=>{
+  if(s.kind!=='profile'||s.photos[0]?.bounds?.width!==640)return {hashes:s.photos.map(p=>p.visual||null)};
+  const result=await evidence(imageFor(s.photos[0].bounds),s);hashes.add(result.hashes[0]);return result;
+ }});
+ x.failedPhoto.bounds=full;await x.prepare();await x.reopen(x.root);
+ const moves=[];x.android.scrollProfile=async(opts,valid)=>{
+  assert.equal(valid(),true);assert.deepEqual(opts.surface,x.root.reviewScrollSurface);moves.push(opts.direction);
+  const height=moves.length===1?578:moves.length===2?425:397,key='crop-'+height;
+  x.set({...x.root,identity:key,screenKey:key,photos:[{...x.failedPhoto,key,bounds:{...full,y:137,height},like:null,revealDirection:'down'}],
+   prompts:height===397?[x.prompt]:[]});
+ };
+ const taps=[];x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();
+  x.set(taps.length===1?{...x.form,photos:[],prompts:[x.prompt]}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.deepEqual(moves,['up','up','up']);assert.ok(hashes.size>=4);
+ assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
