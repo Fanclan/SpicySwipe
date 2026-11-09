@@ -1577,3 +1577,86 @@ test('restoring a legacy unidentified poll observes a changed unidentified scree
  assert.deepEqual(y.calls.map(c=>c.kind),['session']);assert.deepEqual(y.c.rejectedPhoto,sealed);
  y.c.invalidate('Done');
 });
+async function exhaustedDiscover(fromSource=false){
+ const x=await legacyPromptScan();restorePollHold(x,{promptMovesRemaining:0});
+ const card=fromSource?coldPhoto(x):{...x.held,photos:[],prompts:[],identity:null,controls:{...x.held.controls,skip:null}};
+ x.set(card);x.c.nextFeedRefreshAt=0;
+ const hint=structuredClone(x.c.rejectedPhoto),deadline=x.c.session.endsAt;
+ x.android.scrollProfile=x.android.wheelDiscover=x.android.tapControl=async()=>assert.fail('An inventory refresh cannot browse or vote');
+ return {...x,card,hint,deadline};
+}
+test('a consumed Hinge review periodically checks inventory from its exact held poll or cold source',async()=>{
+ for(const [entry,result] of [['poll','same'],['cold','empty'],['poll','new']]){
+  const x=await exhaustedDiscover(entry==='cold');let now=Date.now(),launches=0;
+  x.c.session.now=()=>now;
+  const next=result==='new'?screen({name:'New',identity:'new-card'}):result==='empty'?screen({kind:'empty',identity:null,photos:[],controls:{}}):x.card;
+  x.android.refreshFeed=async(platform,valid,_wait,beforeStop)=>{
+   assert.equal(platform,'hinge');assert.equal(valid(),true);assert.ok(x.saved().nextFeedRefreshAt>=now+300000);
+   assert.deepEqual(x.saved().rejectedPhoto,x.hint);await beforeStop();launches++;x.set(next);
+  };
+  const state=await x.step();assert.equal(launches,1,entry+' '+result);assert.equal(x.c.screen.kind,next.kind);
+  assert.equal(x.commits(),0);assert.equal(x.c.session.count,4);assert.equal(x.c.session.endsAt,x.deadline);
+  assert.deepEqual(x.saved().rejectedPhoto,x.hint);assert.equal(x.c.lastAction,null);
+  if(result==='new')assert.equal(state.phase,'checking next profile');
+  if(result==='empty')assert.equal(state.phase,'waiting for profiles');
+  if(result==='same'){
+   const cp=x.saved();x.c.restoreCheckpoint(cp);x.c.session.status='running';await x.step();assert.equal(launches,1);
+   now+=300001;await x.step();assert.equal(launches,2);assert.deepEqual(x.c.rejectedPhoto,x.hint);
+  }
+ }
+});
+test('exhausted Hinge inventory refresh revalidates the held screen immediately before stopping the native app',async()=>{
+ const x=await exhaustedDiscover();let lookups=0,stops=0;
+ x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{
+  lookups++;x.set({...x.card,kind:'blocked',screenKey:'gate',reason:'Subscription'});await beforeStop();stops++;
+ };
+ await x.step();assert.equal(lookups,1);assert.equal(stops,0);assert.equal(x.commits(),0);
+ assert.deepEqual(x.saved().rejectedPhoto,x.hint);assert.ok(x.saved().nextFeedRefreshAt>Date.now());
+});
+test('exhausted Hinge inventory refresh preserves cooldown after a lost launcher acknowledgment',async()=>{
+ const x=await exhaustedDiscover();let stops=0;
+ x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{
+  await beforeStop();stops++;throw Object.assign(Error('Lost acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ await x.step();const cp=x.saved();assert.equal(stops,1);assert.ok(cp.nextFeedRefreshAt>Date.now());
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';await x.step();assert.equal(stops,1);
+ assert.deepEqual(x.saved().rejectedPhoto,x.hint);assert.equal(x.commits(),0);
+});
+test('inventory checks require an owned exhausted Hinge review and the exact held endpoint or complete source',async()=>{
+ for(const mode of ['pending','draft','stopped','expired','limit','moving','untried','legacy','remaining','wrong-identity','wrong-revision','near-photo','composer','break','unbound','wrong-app','comment-mode','changed-rate']){
+  const x=await exhaustedDiscover(mode==='near-photo');let refreshes=0;
+  x.android.refreshFeed=async()=>{refreshes++};
+  if(mode==='pending')x.c.lastAction={identity:'held',name:x.card.name,kind:'like',sessionEndsAt:x.c.session.endsAt};
+  if(mode==='draft')x.c.draft={text:'draft'};
+  if(mode==='stopped')x.c.session.status='paused';
+  if(mode==='expired')x.c.session.now=()=>x.deadline;
+  if(mode==='limit')x.c.session.config.maxSwipes=4;
+  if(mode==='moving')x.c.rejectedPhoto.promptScan='moving';
+  if(mode==='untried')Object.assign(x.c.rejectedPhoto,{attempted:false,promptScan:undefined,promptMovesRemaining:undefined});
+  if(mode==='legacy')delete x.c.rejectedPhoto.promptMovesRemaining;
+  if(mode==='remaining')x.c.rejectedPhoto.promptMovesRemaining=3;
+  if(mode==='wrong-identity')x.set({...x.card,identity:'unexpected'});
+  if(mode==='wrong-revision')x.set({...x.card,screenKey:'unexpected',identity:'unknown-card',photos:[{...x.failedPhoto,like:null}]});
+  if(mode==='near-photo')x.set({...x.card,photos:[{...x.card.photos[0],visual:'123456789abcdef1'}]});
+  if(mode==='composer')x.set({...x.card,controls:{...x.card.controls,composer:control('compose')}});
+  if(mode==='break')Object.assign(x.c.session,{config:{...x.c.session.config,breaksEnabled:true},breakUntil:x.deadline-1});
+  if(mode==='unbound')x.c.binding=null;
+  if(mode==='comment-mode')x.c.config.mode='comment';
+  if(mode==='changed-rate')x.c.config.swipe.likeRatio=0.5;
+  if(mode==='wrong-app')x.android.hierarchy=async()=>({xml:x.card,foreground:'other.app'});
+  x.android.scrollProfile=x.android.tapControl=async()=>{};
+  await x.step();assert.equal(refreshes,0,mode);assert.equal(x.commits(),0,mode);
+ }
+});
+test('a changed card during the stability wait cannot trigger generic device recovery against its replacement',async()=>{
+ const x=await exhaustedDiscover();x.c.readFailures=3;let launches=0;
+ const unrelated=screen({name:'New',identity:'different',screenKey:'changed'});
+ x.android.refreshFeed=async()=>{launches++};
+ const result=await x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail(),async()=>{x.set(unrelated);return true},x.c.token());
+ assert.equal(launches,0);assert.equal(result.phase,'checking next profile');assert.deepEqual(x.c.rejectedPhoto,x.hint);assert.equal(x.c.nextFeedRefreshAt,0);
+});
+test('a newly explored Hinge prompt pass records exhaustion when its verified route ends early',async()=>{
+ const x=await legacyPromptScan();let moves=0;
+ x.android.scrollProfile=async()=>{moves++;x.set({...x.held,identity:null,photos:[],prompts:[],screenKey:'ended',reviewScrollSurface:null,reviewWheelPoint:null})};
+ await x.step();assert.equal(moves,1);assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,0);assert.equal(x.commits(),0);
+});

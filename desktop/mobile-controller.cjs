@@ -15,6 +15,12 @@ const nameDigest=name=>createHash('sha256').update(name).digest('hex');
 const photoFingerprint=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value);
 const matchesFingerprint=(p,visual,tolerance=6)=>photoFingerprint(visual)&&[p.visual,p.visualSquare].some(v=>photoFingerprint(v)&&hashDistance(v,visual)<=tolerance);
 const visibleFingerprint=(s,visual)=>s.photos?.some(p=>matchesFingerprint(p,visual));
+function exactRejectedSource(card,hint){
+ const photo=card.photos?.[0];
+ return card.identity===hint.sourceIdentity&&card.controls?.skip?.label==='Skip '+card.name&&
+  card.photos?.length===1&&photo.visual===hint.visual&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
+  photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height;
+}
 const alternativeUnavailable=()=>transientError('The reviewed photo could not be verified. Waiting for another profile or a manual review.','MOBILE_ALTERNATE_UNAVAILABLE');
 const promptMoveLimit=8;
 function wheelLandmarks(frame){
@@ -90,22 +96,29 @@ class MobileController{
   this.assert(t,valid);if(s.kind!=='empty')return s;
   return this.refreshKnownFeed(s,t,valid);
  }
- async refreshKnownFeed(s,t,valid){
+ async refreshKnownFeed(s,t,valid,held=null){
   this.assert(t,valid);
   const loading=s.kind==='feedLoading'&&this.platform==='hinge'&&this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft;
-  if(!loading&&s.kind!=='empty'&&!this.resumableLike(s))throw transientError('Cannot reopen the feed from this screen.');
+  const heldScreen=card=>this.exhaustedReview(t)===held&&this.heldInventoryScreen(card,held);
+  const supported=held?heldScreen(s):loading||s.kind==='empty'||this.resumableLike(s);
+  if(!supported)throw transientError('Cannot reopen the feed from this screen.');
   if(!loading&&this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
-  await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
+  const revalidate=async()=>{
+   const current=await this.fresh(s,t,valid);this.assert(t,valid);
+   if(held&&!heldScreen(current))throw transientError('The held Discover profile changed before refresh.','MOBILE_SCREEN_CHANGED');
+  };
+  await this.verifyBinding(t);await revalidate();
   // Reserve the cooldown durably before relaunch, including failed or interrupted attempts.
   this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
   this.reviewContext=null;this.selectedPhoto=null;this.draft=null;this.screen=null;
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
   // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
   // even a lost acknowledgement must not re-arm recovery on the same blank feed.
-  const beforeStop=loading?async()=>{
-   await this.fresh(s,t,valid);this.assert(t,valid);
-   this.loadingFeedRelaunched=true;this.persist();
+  const beforeStop=loading||held?async()=>{
+   if(held)await this.verifyBinding(t);
+   await revalidate();
+   if(loading){this.loadingFeedRelaunched=true;this.persist()}
   }:undefined;
   await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal),beforeStop);
   this.assert(t,valid);
@@ -114,6 +127,37 @@ class MobileController{
    if(s.kind!=='blocked')return s;
   }
   return s;
+ }
+ exhaustedReview(t){
+  const h=this.scopedPhotoRejection(t),s=this.session;
+  return this.platform==='hinge'&&h?.attempted&&h.promptScan==='spent'&&h.promptMovesRemaining===0&&h.heldRevision&&
+   s.status==='running'&&s.now()<s.endsAt&&s.count===this.reservedCount&&s.count<s.config.maxSwipes&&
+   this.config.mode==='like'&&this.config.swipe.likeRatio===1&&s.config.likeRatio===1&&
+   !(s.config.breaksEnabled&&(s.breakUntil||s.count>=s.nextBreakAt))&&this.binding?.serial===t.serial&&
+   !this.draft&&!this.lastAction&&!this.storageError&&this.checkpointStore&&this.android.deviceIdentity&&this.android.refreshFeed?h:null;
+ }
+ heldInventoryScreen(s,hint){
+  if(this.observedForeground!=='co.hinge.app'||s.platform!=='hinge'||s.kind!=='profile'||!s.screenKey||!s.name||nameDigest(s.name)!==hint.nameDigest||
+     s.controls?.composer||s.controls?.sendLike||s.composerText?.trim())return false;
+  // The parser derives both names from one native named Skip under selected Discover.
+  // On an unidentified poll it intentionally exposes no actionable Skip.
+  const named=s.controls?.skip?.label==='Skip '+s.name||(!s.identity&&!s.controls?.skip&&s.context?.name===s.name);
+  return (named&&s.screenKey===hint.heldRevision&&hint.heldIdentity===(s.identity||null))||exactRejectedSource(s,hint);
+ }
+ async checkHeldInventory(s,hint,t,valid,sleep){
+  const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
+  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint;
+  if(this.session.now()<this.nextFeedRefreshAt||!await sleep(30000,waiting.phase))return waiting;
+  this.assert(t,owned);await this.consent(t);this.assert(t,owned);
+  let after;
+  try{after=await this.refreshKnownFeed(s,t,owned,hint)}catch(error){
+   this.assert(t,valid);
+   if(error.code==='MOBILE_SCREEN_CHANGED')return {retryAfter:1000,phase:'checking next profile'};
+   if(transientRead.has(error.code))return waiting;
+   throw error;
+  }
+  if(after.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
+  return this.heldInventoryScreen(after,hint)?waiting:{retryAfter:1000,phase:'checking next profile'};
  }
  async waitForDiscover(s,t,valid,sleep){
   const waiting={retryAfter:30000,phase:'waiting for Discover'};
@@ -178,6 +222,8 @@ class MobileController{
     this.offerPendingSkip();
     return waiting;
    }
+   const held=this.exhaustedReview(t);
+   if(held&&this.heldInventoryScreen(observed,held))return await this.checkHeldInventory(observed,held,t,valid,sleep);
    if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
    // A previous step may have rejected this form because its profile changed.
    // Reopen Discover so every submitted Like is bound to a new verified review.
@@ -560,10 +606,7 @@ class MobileController{
     (route(card)==='wheel'||card.reviewNewChoiceLane===true);
    // A cold launch may return from an unidentified poll to its original full photo.
    // Rebind that one source exactly. Its image is never a vote target in this scan.
-   const photo=card.photos?.[0];
-   return hint.heldIdentity===null&&card.identity===hint.sourceIdentity&&card.controls?.skip?.label==='Skip '+card.name&&
-    card.photos?.length===1&&photo.visual===hint.visual&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
-    photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height;
+   return hint.heldIdentity===null&&exactRejectedSource(card,hint);
   };
   const eligible=card=>official(card)&&(legacy?legacyRoute(card):Boolean(route(card)||nativePrompt(card)));
   if(!owned()||!eligible(s)||!this.checkpointStore||!this.android.deviceIdentity)throw alternativeUnavailable();
@@ -584,7 +627,10 @@ class MobileController{
     this.notify();return s;
    }
    const method=route(s);
-   if(!remaining||!method)throw alternativeUnavailable();
+   if(!remaining||!method){
+    if(remaining&&!method){remaining=0;hold(s)}
+    throw alternativeUnavailable();
+   }
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
    await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
    if(!official(before)||nativePrompt(before)||route(before)!==method||(legacy&&remaining===promptMoveLimit&&!legacyRoute(before)))throw alternativeUnavailable();
