@@ -86,9 +86,56 @@ function visibleVerticalMedia(item, owner) {
  }
  return null;
 }
-// A native choices card can sit between two photos. Its options and Like are
-// interactive, so only its inert heading and the blank space above the choices qualify.
-function choiceHeadingSurface(visible, owner, display) {
+// A wheel scroll has no touch path. Only static native text with an unambiguous hit
+// margin qualifies; two independent landmarks allow the controller to verify motion.
+function staticWheelFrame(visible,owner,display,discover,kids,backdrops,behindDiscover) {
+ const viewport=bounds(owner), skips=visible.filter(n=>/^Skip .+/.test(label(n)));
+ if (skips.length!==1 || skips[0].a.class!=='android.widget.Button' || !skips[0].enabled ||
+     skips[0].a.clickable!=='true' || !fullyVisible(skips[0])) return null;
+ const path=n=>{
+  const out=[];
+  for (let p=n;p?.tag==='node';p=p.parent) out.push(p);
+  return out;
+ };
+ const interactive=(n,allowOwner=false)=>!n.enabled || ['clickable','long-clickable','focusable','focused','checkable','checked','selected','password']
+  .some(k=>n.a[k]==='true') || (!allowOwner && n.a.scrollable==='true') ||
+  /(?:Button|EditText|Picker|SeekBar|Spinner|Switch|TabWidget|WebView)$/.test(n.a.class || '');
+ if (path(owner).some(n=>interactive(n,n===owner))) return null;
+ const texts=visible.filter(n=>n.a.class==='android.widget.TextView' && label(n) && path(n).includes(owner));
+ if (texts.length<2 || texts.length>64) return null;
+ const keyFor=n=>hash(['discover-text',n.a['resource-id'] || '',label(n)]);
+ const keys=texts.map(keyFor), landmarks=[];
+ let point=null;
+ for (const [i,n] of texts.entries()) {
+  const lineage=path(n), depth=lineage.indexOf(owner), b=bounds(n);
+  if (keys.indexOf(keys[i])!==keys.lastIndexOf(keys[i]) || kids(n).length || !fullyVisible(n) ||
+      interactive(n) || n.a.clickable!=='false' || b.width<26 || b.height<26) continue;
+  if (lineage.slice(1,depth).some(p=>!['android.view.View','android.view.ViewGroup','android.widget.FrameLayout','android.widget.LinearLayout'].includes(p.a.class) ||
+      interactive(p) || p.a.clickable!=='false' || /(?:picker|tabbar|navigation|slider|input)/i.test(p.a['resource-id'] || ''))) continue;
+  const x=Math.floor(b.x+b.width/2), y=Math.floor(b.y+b.height/2), margin=12;
+  if (x<viewport.x+margin || x>viewport.x+viewport.width-margin || y<viewport.y+margin || y>viewport.y+viewport.height-margin ||
+      x<display.x+24 || x>display.x+display.width-24 || y<display.y+24 || y>display.y+display.height-24) continue;
+  const covered=visible.some(other=>{
+   const box=bounds(other);
+   if (!box) return true;
+   if (x+margin<box.x || x-margin>=box.x+box.width || y+margin<box.y || y-margin>=box.y+box.height) return false;
+   if (lineage.includes(other) || (other===backdrops.get(n) && !interactive(other))) return false;
+   if (interactive(other)) return true;
+   const [leaf]=kids(other);
+   return !behindDiscover(other,box) && !(kids(other).length===1 && behindDiscover(leaf,bounds(leaf)));
+  });
+  if (covered) continue;
+  point??={x,y};
+  landmarks.push({key:keys[i],...b});
+ }
+ if (landmarks.length<2 || !landmarks.some(n=>Math.abs(n.y-landmarks[0].y)>=24)) return null;
+ const shape=n=>path(n).map(p=>[p.a.class,p.a['resource-id'] || '',p.a['drawing-order'] || '',bounds(p)]);
+ return {point,frame:{ownerKey:hash(['discover-scroll',shape(owner)]),
+  chromeKey:hash(['discover-chrome',shape(discover),shape(skips[0]),label(skips[0])]),landmarks}};
+}
+// Options and their Like are interactive, so only the heading and the blank space above
+// the choices can supply a drag surface. An unobscured photo or prompt keeps precedence.
+function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
  const children = new Map();
  for (const n of visible) {
   if (!children.has(n.parent)) children.set(n.parent, []);
@@ -99,6 +146,14 @@ function choiceHeadingSurface(visible, owner, display) {
   n.a.scrollable !== 'true' && n.a['long-clickable'] !== 'true';
  const wrapper = n => inert(n,'android.view.View') && !label(n);
  const sameBox = (a,b) => Boolean(bounds(a) && bounds(b) && a.a.bounds === b.a.bounds);
+ const bodyFitsCard = (card,body) => {
+  if (sameBox(card,body)) return true;
+  // Compose clips the body at the Discover header before updating its outer
+  // wrapper and backdrop. Only the top edge may differ, at the viewport edge.
+  const full=bounds(card), shown=bounds(body), viewport=bounds(owner);
+  return full && shown && full.y<viewport.y && shown.y===viewport.y && fullyVisible(body) &&
+   full.x===shown.x && full.width===shown.width && full.y+full.height===shown.y+shown.height;
+ };
  const options = n => {
   const parts=kids(n);
   return n.a.class==='android.view.View' && n.a.clickable==='true' && n.enabled &&
@@ -116,7 +171,7 @@ function choiceHeadingSurface(visible, owner, display) {
  // ViewGroup. Use explicit sibling drawing order; tree indices can be reversed.
  const behindDiscover = (n,b) => {
   const back=n.parent, common=back?.parent;
-  if (!wrapper(n) || n.a.focusable==='true' || kids(n).length || !inert(back,'android.view.ViewGroup') ||
+  if (!b || !wrapper(n) || n.a.focusable==='true' || kids(n).length || !inert(back,'android.view.ViewGroup') ||
       label(back) || back.a.focusable==='true' || kids(back).length!==1 || common?.a.class!=='android.view.ViewGroup' ||
       b.x!==display.x || b.y!==display.y || b.width!==display.width || b.height!==display.height ||
       !sameBox(n,back) || !sameBox(back,common)) return false;
@@ -128,16 +183,22 @@ function choiceHeadingSurface(visible, owner, display) {
   return lower>0 && lower<upper && kids(common).filter(layer=>order(layer)===lower).length===1 &&
    kids(common).filter(layer=>order(layer)===upper).length===1;
  };
- const candidates=[];
+ const candidates=[], headingBackdrops=new Map();
  for (const card of kids(owner)) {
   const [body]=kids(card);
-  if (!wrapper(card) || kids(card).length!==1 || !wrapper(body) || !sameBox(card,body)) continue;
+  if (!wrapper(card) || kids(card).length!==1 || !wrapper(body) || !bodyFitsCard(card,body)) continue;
   const nodes=kids(body), headings=nodes.filter(n=>inert(n,'android.widget.TextView') && label(n) && !kids(n).length);
-  const choices=nodes.filter(options), backdrops=nodes.filter(n=>wrapper(n) && sameBox(n,body) && !kids(n).length);
+  const choices=nodes.filter(options), backdrops=nodes.filter(n=>wrapper(n) && sameBox(n,card) && !kids(n).length);
   if (headings.length!==1 || choices.length<2 || choices.length>4 || backdrops.length!==1 ||
       nodes.filter(contentLike).length!==1 || nodes.length!==choices.length+3) continue;
   const heading=headings[0], h=bounds(heading), panel=visibleVerticalMedia(body,owner);
   if (!h || !panel || !fullyVisible(heading)) continue;
+  // A point on this native heading overlaps the blank sibling's raw bounds.
+  // Its explicit drawing order must put the heading in front of that sibling.
+  const below=backdrops[0].a['drawing-order'], above=heading.a['drawing-order'];
+  if (/^\d{1,5}$/.test(below) && /^\d{1,5}$/.test(above) && Number(below)<Number(above)) {
+   headingBackdrops.set(heading,backdrops[0]);
+  }
   const padding=12, width=96, x=Math.floor(h.x+(h.width-width)/2);
   const top=Math.max(panel.y,display.y+Math.ceil(display.height*.1))+padding;
   const bottom=Math.min(...choices.map(n=>bounds(n).y),panel.y+panel.height,display.y+Math.floor(display.height*.9))-padding;
@@ -154,9 +215,14 @@ function choiceHeadingSurface(visible, owner, display) {
    const overlaps=x-padding<b.x+b.width && b.x<x+width+padding && top-padding<b.y+b.height && b.y<bottom+padding;
    return overlaps && (interactive || !behindDiscover(n,b));
   });
-  if (!blocked) candidates.push({x,y:top,width,height:bottom-top});
+  if (!blocked) candidates.push({bounds:{x,y:top,width,height:bottom-top},clipped:!sameBox(card,body)});
  }
- return candidates.length===1 ? candidates[0] : null;
+ const wheel=staticWheelFrame(visible,owner,display,geometry.discover,kids,headingBackdrops,behindDiscover);
+ if (wheel) {geometry.wheelPoint=wheel.point;geometry.scrollFrame=wheel.frame;}
+ if (mediaSurface) return mediaSurface;
+ if (candidates.length!==1) return null;
+ geometry.newChoiceLane=candidates[0].clipped;
+ return candidates[0].bounds;
 }
 function discoverScrollSurfaces(visible, discover, media) {
  const tab = bounds(discover);
@@ -173,10 +239,12 @@ function discoverScrollSurfaces(visible, discover, media) {
  });
  let root = discover;
  while (root.parent?.tag === 'node') root = root.parent;
+ const geometry={discover,wheelPoint:null,scrollFrame:null,newChoiceLane:false};
  return {
   // Existing reviews use an explicit surface only when a banner compresses the viewport.
   compressed:compressed.length ? mediaScrollSurface(visible, media, compressed, root, false) : undefined,
-  review:discover.enabled && fullyVisible(discover) ? mediaScrollSurface(visible, media, owners, root, true) : null
+  review:discover.enabled && fullyVisible(discover) ? mediaScrollSurface(visible, media, owners, root, geometry) : null,
+  wheelPoint:geometry.wheelPoint,scrollFrame:geometry.scrollFrame,newChoiceLane:geometry.newChoiceLane
  };
 }
 function mediaScrollSurface(visible, media, owners, root, alternate) {
@@ -210,7 +278,8 @@ function mediaScrollSurface(visible, media, owners, root, alternate) {
   });
   if (!obstructed) surfaces.push(b);
  }
- return surfaces.sort((a,b) => b.height - a.height)[0] || (alternate ? choiceHeadingSurface(visible,owner,display) : null);
+ const mediaSurface=surfaces.sort((a,b) => b.height - a.height)[0] || null;
+ return alternate ? alternateScrollSurface(visible,owner,display,mediaSurface,alternate) : mediaSurface;
 }
 function sharesPhotoCard(photo, button) {
  const box = bounds(photo);
@@ -433,6 +502,9 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const surfaces = discoverScrollSurfaces(visible, nav[0], [...pictures, ...staticPrompts]);
  if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;
  result.reviewScrollSurface = surfaces.review;
+ result.reviewNewChoiceLane = surfaces.newChoiceLane===true;
+ result.reviewWheelPoint = surfaces.wheelPoint || null;
+ result.reviewScrollFrame = surfaces.scrollFrame || null;
  const likes = [...find('Like photo'),...find('Like photo prompt')];
  result.photos = pictures.map(n => {
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });

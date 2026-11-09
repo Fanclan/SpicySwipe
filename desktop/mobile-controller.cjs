@@ -16,6 +16,27 @@ const photoFingerprint=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(val
 const matchesFingerprint=(p,visual,tolerance=6)=>photoFingerprint(visual)&&[p.visual,p.visualSquare].some(v=>photoFingerprint(v)&&hashDistance(v,visual)<=tolerance);
 const visibleFingerprint=(s,visual)=>s.photos?.some(p=>matchesFingerprint(p,visual));
 const alternativeUnavailable=()=>transientError('The reviewed photo could not be verified. Waiting for another profile or a manual review.','MOBILE_ALTERNATE_UNAVAILABLE');
+const promptMoveLimit=8;
+function wheelLandmarks(frame){
+ if(!frame?.ownerKey||!frame.chromeKey||!Array.isArray(frame.landmarks))return null;
+ const points=new Map();
+ for(const mark of frame.landmarks){
+  if(!mark?.key||points.has(mark.key)||!['x','y','width','height'].every(k=>Number.isInteger(mark[k]))||mark.width<=0||mark.height<=0)return null;
+  points.set(mark.key,mark);
+ }
+ return points.size>=2?points:null;
+}
+function wheelAdvanced(before,after){
+ if(!before||!after||before.ownerKey!==after.ownerKey||before.chromeKey!==after.chromeKey)return false;
+ const a=wheelLandmarks(before),b=wheelLandmarks(after),offsets=[],rows=new Set();
+ if(!a||!b)return false;
+ for(const [key,start] of a){
+  const end=b.get(key);if(!end)continue;
+  if(start.x!==end.x||start.width!==end.width||start.height!==end.height)return false;
+  offsets.push(start.y-end.y);rows.add(start.y);
+ }
+ return rows.size>=2&&Math.min(...offsets)>=4&&Math.max(...offsets)-Math.min(...offsets)<=2;
+}
 // Pixel changes alone cannot establish a new same-name Bumble profile.
 const distinctBumbleProfile=(before,after)=>after.kind==='profile'&&Boolean(after.identity)&&after.identity!==before.identity&&after.name===before.name&&Boolean(before.profileDiscriminator)&&Boolean(after.profileDiscriminator)&&after.profileDiscriminator!==before.profileDiscriminator&&after.controls?.like?.direction==='right';
 class MobileController{
@@ -51,7 +72,9 @@ class MobileController{
   if(hint&&(!/^[0-9a-f]{64}$/.test(hint.nameDigest)||!photoFingerprint(hint.visual)||!(hint.entryVisual===null||photoFingerprint(hint.entryVisual))||
     ![hint.sourceIdentity,hint.entryIdentity,hint.serial].every(v=>typeof v==='string'&&v.length>0)||
     !(hint.heldIdentity===null||typeof hint.heldIdentity==='string')||!(hint.heldRevision===null||typeof hint.heldRevision==='string')||!(hint.avd===null||typeof hint.avd==='string')||
-    (hint.promptScan!==undefined&&!['moving','spent'].includes(hint.promptScan))||typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
+    (hint.promptScan!==undefined&&!['moving','spent'].includes(hint.promptScan))||
+    (hint.promptMovesRemaining!==undefined&&(!hint.promptScan||!Number.isInteger(hint.promptMovesRemaining)||hint.promptMovesRemaining<0||hint.promptMovesRemaining>promptMoveLimit))||
+    typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
   this.rejectedPhoto=hint||null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
@@ -499,8 +522,9 @@ class MobileController{
   const hint=this.scopedPhotoRejection(t);
   if(!hint?.attempted||s.kind!=='profile'||!s.screenKey||!s.name||nameDigest(s.name)!==hint.nameDigest)return false;
   if(s.screenKey===hint.heldRevision)return true;
-  // A lost motion acknowledgement can leave a different, unidentified poll viewport after restart.
-  return hint.promptScan==='moving'&&this.observedForeground==='co.hinge.app'&&this.binding?.serial===t.serial&&
+  // Observe an unidentified restored poll without attempting any discovery gesture in start().
+  const restoredPoll=hint.promptScan==='spent'&&hint.heldIdentity===null&&hint.promptMovesRemaining===undefined&&!s.identity&&!s.photos?.length;
+  return (hint.promptScan==='moving'||restoredPoll)&&this.observedForeground==='co.hinge.app'&&this.binding?.serial===t.serial&&
    !this.lastAction&&!this.draft&&this.session.count===this.reservedCount&&this.session.count<this.session.config.maxSwipes&&this.session.now()<hint.endsAt;
  }
  matchesRejectedPhoto(s,h,includeEndpoint=true){
@@ -524,29 +548,59 @@ class MobileController{
    return prompts.find(p=>p.key&&typeof p.text==='string'&&p.text.length>0&&p.like?.key&&p.like.label==='Like prompt'&&
     prompts.filter(other=>other.text===p.text).length===1);
   };
-  if(!owned()||!official(s)||(!s.reviewScrollSurface&&!nativePrompt(s))||!this.checkpointStore)throw alternativeUnavailable();
+  const route=card=>{
+   if(card.reviewScrollSurface)return 'drag';
+   const p=card.reviewWheelPoint;
+   return this.android.wheelDiscover&&Number.isInteger(p?.x)&&Number.isInteger(p?.y)&&wheelLandmarks(card.reviewScrollFrame)?'wheel':null;
+  };
+  const legacy=hint.promptScan==='spent';
+  const legacyRoute=card=>{
+   if(hint.promptMovesRemaining!==undefined||!hint.heldRevision||nativePrompt(card)||!route(card))return false;
+   if(card.screenKey===hint.heldRevision)return hint.heldIdentity===(card.identity||null)&&
+    (route(card)==='wheel'||card.reviewNewChoiceLane===true);
+   // A cold launch may return from an unidentified poll to its original full photo.
+   // Rebind that one source exactly. Its image is never a vote target in this scan.
+   const photo=card.photos?.[0];
+   return hint.heldIdentity===null&&card.identity===hint.sourceIdentity&&card.controls?.skip?.label==='Skip '+card.name&&
+    card.photos?.length===1&&photo.visual===hint.visual&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
+    photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height;
+  };
+  const eligible=card=>official(card)&&(legacy?legacyRoute(card):Boolean(route(card)||nativePrompt(card)));
+  if(!owned()||!eligible(s)||!this.checkpointStore||!this.android.deviceIdentity)throw alternativeUnavailable();
   await this.consent(t);await this.verifyBinding(t);s=await this.fresh(s,t,owned);
-  hint.promptScan='spent';this.persist();
-  for(let moves=0;;moves++){
-   if(!official(s))throw alternativeUnavailable();
-   hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;hint.promptScan='spent';this.persist();
+  if(!eligible(s))throw alternativeUnavailable();
+  let remaining=promptMoveLimit;
+  const hold=card=>{hint.heldIdentity=card.identity||null;hint.heldRevision=card.screenKey;hint.promptScan='spent';hint.promptMovesRemaining=remaining;this.persist()};
+  if(!legacy)hold(s);
+  for(;;){
    const candidate=nativePrompt(s);
    if(candidate){
     // Discard the rejected photo context. This target belongs only to this newly verified Discover card.
     s=await this.fresh(s,t,owned);const fresh=nativePrompt(s);
-    if(!fresh||fresh.key!==candidate.key||fresh.text!==candidate.text||fresh.like.key!==candidate.like.key)throw alternativeUnavailable();
+    if(!official(s)||!fresh||fresh.key!==candidate.key||fresh.text!==candidate.text||fresh.like.key!==candidate.like.key)throw alternativeUnavailable();
     this.selectedPrompt={...fresh,type:'prompt'};this.selectedPhoto=null;
     this.reviewContext={identity:s.identity,screenKey:s.screenKey,alternate:hint,promptScan:true,expectedTarget:this.selectedPrompt,
      context:{name:s.name,bio:s.context?.bio||'',history:[]}};
     this.notify();return s;
    }
-   if(moves===8||!s.reviewScrollSurface)throw alternativeUnavailable();
+   const method=route(s);
+   if(!remaining||!method)throw alternativeUnavailable();
    if(this.config.swipe.browsePhotos)await this.pauseFor(1000*(this.config.swipe.minPhotoSeconds+this.random()*(this.config.swipe.maxPhotoSeconds-this.config.swipe.minPhotoSeconds)),t,sleep);
-   this.assert(t,owned);hint.promptScan='moving';this.persist();
-   const before=await this.scrollHinge(s,{fraction:.36,duration:450,direction:'up'},t,owned,true);
+   await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
+   if(!official(before)||nativePrompt(before)||route(before)!==method||(legacy&&remaining===promptMoveLimit&&!legacyRoute(before)))throw alternativeUnavailable();
+   const point=before.reviewWheelPoint;
+   if(method==='wheel'&&(point.x!==s.reviewWheelPoint.x||point.y!==s.reviewWheelPoint.y||
+      before.reviewScrollFrame.ownerKey!==s.reviewScrollFrame.ownerKey||before.reviewScrollFrame.chromeKey!==s.reviewScrollFrame.chromeKey))throw alternativeUnavailable();
+   // Charge the shared budget before dispatch. An interrupted movement is never replayed.
+   this.assert(t,owned);hint.promptScan='moving';hint.promptMovesRemaining=--remaining;this.persist();
+   const current=()=>{try{this.assert(t,owned);return true}catch{return false}};
+   if(method==='wheel')await this.android.wheelDiscover(point,current);
+   else await this.android.scrollProfile({fraction:.36,duration:450,direction:'up',surface:before.reviewScrollSurface},current);
    await this.pauseFor(450,t,sleep);s=await this.read(t);this.assert(t,owned);
-   if(!official(s)){hint.promptScan='spent';this.persist();throw alternativeUnavailable()}
-   if(s.screenKey===before.screenKey){hint.promptScan='spent';this.persist();throw alternativeUnavailable()}
+   if(!official(s)){hint.promptScan='spent';hint.promptMovesRemaining=0;this.persist();throw alternativeUnavailable()}
+   const advanced=s.screenKey!==before.screenKey&&(method!=='wheel'||wheelAdvanced(before.reviewScrollFrame,s.reviewScrollFrame));
+   if(!advanced)remaining=0;
+   hold(s);if(!advanced)throw alternativeUnavailable();
   }
  }
  async review(t,sleep,observed,kind,valid=()=>true){
@@ -557,10 +611,11 @@ class MobileController{
   if(hint?.attempted&&s.kind==='profile'&&s.name&&nameDigest(s.name)===hint.nameDigest){
    if(hint.promptScan==='moving'){
     // A prior worker may have scrolled before it stopped. Observe its endpoint and retire the pass.
-    hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;hint.promptScan='spent';this.persist();throw alternativeUnavailable();
+    hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;hint.promptScan='spent';hint.promptMovesRemaining=0;this.persist();throw alternativeUnavailable();
    }
    const held=this.heldReviewEndpoint(s,t);
    if(!hint.promptScan&&hint.heldRevision&&(held||this.matchesRejectedPhoto(s,hint,false)))return this.reviewHeldPrompt(s,hint,t,valid,sleep);
+   if(hint.promptScan==='spent'&&hint.promptMovesRemaining===undefined&&(held||hint.heldIdentity===null))return this.reviewHeldPrompt(s,hint,t,valid,sleep);
    if(held)throw alternativeUnavailable();
   }
   s=await this.identifyProfile(s,t,valid);this.supported(s,['profile']);

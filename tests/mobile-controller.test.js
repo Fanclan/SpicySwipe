@@ -1408,3 +1408,172 @@ test('held Hinge prompt scan preserves budgets and refuses Rose, message variant
   assert.equal(x.commits(),0);assert.equal(x.c.session.count,4);
  }
 });
+function wheelViewport(x,index,{drag=false,prompt=false}={}){
+ const landmarks=[{key:'first',x:120,y:600-index*20,width:110,height:32},{key:'second',x:50,y:800-index*20,width:150,height:34}];
+ return {...x.held,screenKey:index?'wheel-'+index:x.held.screenKey,reviewScrollSurface:drag?x.held.reviewScrollSurface:null,
+  reviewWheelPoint:{x:175,y:615},reviewScrollFrame:{ownerKey:'scroller',chromeKey:'header-footer',landmarks},
+  prompts:prompt?[x.prompt]:[]};
+}
+function restoreSpent(x){
+ const cp=x.saved();cp.rejectedPhoto.promptScan='spent';delete cp.rejectedPhoto.promptMovesRemaining;
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+}
+test('fresh Hinge prompt search shares eight durably charged moves between drag and wheel',async()=>{
+ const x=await legacyPromptScan();let moves=0;const modes=[],taps=[];
+ x.set(wheelViewport(x,0,{drag:true}));
+ const move=mode=>{
+  modes.push(mode);moves++;
+  assert.equal(x.saved().rejectedPhoto.promptScan,'moving');assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,8-moves);
+  x.set(wheelViewport(x,moves,{drag:moves%2===0,prompt:moves===8}));
+ };
+ x.android.wheelDiscover=async(p,valid)=>{assert.equal(valid(),true);assert.deepEqual(p,{x:175,y:615});move('wheel')};
+ x.android.scrollProfile=async(opts,valid)=>{assert.equal(valid(),true);assert.deepEqual(opts.surface,x.held.reviewScrollSurface);move('drag')};
+ x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+  {...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send priority like')}}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.deepEqual(modes,Array(4).fill(['drag','wheel']).flat());
+ assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+test('wheel requires forward translation of distinct passive landmarks under the original fixed chrome and scroller',async()=>{
+ for(const mode of ['stationary','backwards','one','duplicate','inconsistent','sideways','chrome','owner','foreign','no-frame']){
+  const x=await legacyPromptScan();let moves=0,taps=0;const before=wheelViewport(x,0);x.set(before);
+  x.android.wheelDiscover=async()=>{
+   moves++;const after=wheelViewport(x,1,{prompt:true}),frame=after.reviewScrollFrame;
+   if(mode==='stationary')frame.landmarks=before.reviewScrollFrame.landmarks;
+   if(mode==='backwards')frame.landmarks.forEach(l=>l.y+=40);
+   if(mode==='one')frame.landmarks.pop();
+   if(mode==='duplicate')frame.landmarks[1].key=frame.landmarks[0].key;
+   if(mode==='inconsistent')frame.landmarks[1].y+=12;
+   if(mode==='sideways')frame.landmarks[1].x+=20;
+   if(mode==='chrome')frame.chromeKey='changed';
+   if(mode==='owner')frame.ownerKey='nested';
+   if(mode==='foreign')after.name='Other';
+   if(mode==='no-frame')after.reviewScrollFrame=null;
+   x.set(after);
+  };
+  x.android.tapControl=async()=>{taps++};
+  await x.step();assert.equal(moves,1,mode);assert.equal(taps,0,mode);assert.equal(x.commits(),0,mode);
+  if(mode!=='foreign'){await x.step();assert.equal(moves,1,mode);assert.equal(taps,0,mode)}
+ }
+});
+test('legacy spent Hinge scan requires a newly proven route at the exact endpoint',async()=>{
+ for(const mode of ['wheel','clipped-heading','old-drag','changed-revision','different-identity','no-frame','visible-prompt','no-ack']){
+  const x=await legacyPromptScan();restoreSpent(x);let moves=0,taps=0;
+  const before=wheelViewport(x,0,{drag:['old-drag','clipped-heading'].includes(mode),prompt:mode==='visible-prompt'});
+  if(mode==='changed-revision')before.screenKey='changed';
+  if(mode==='different-identity')before.identity='different';
+  if(mode==='clipped-heading')before.reviewNewChoiceLane=true;
+  if(mode==='no-frame')before.reviewScrollFrame=null;
+  x.set(before);
+  const move=()=>{
+   moves++;assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,7);
+   assert.equal(x.saved().rejectedPhoto.promptScan,'moving');
+   x.set({...wheelViewport(x,1),reviewWheelPoint:null});if(mode==='no-ack')throw Object.assign(Error('Lost receipt'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  };
+  x.android.scrollProfile=async()=>{assert.equal(mode,'clipped-heading');move()};
+  x.android.wheelDiscover=async()=>{assert.ok(['wheel','no-ack'].includes(mode));move()};
+  x.android.tapControl=async()=>{taps++};
+  await x.step();const cp=x.saved();x.c.restoreCheckpoint(cp);x.c.session.status='running';await x.step();await x.step();
+  const expected=['wheel','clipped-heading','no-ack'].includes(mode)?1:0;
+  assert.equal(moves,expected,mode);assert.equal(taps,0,mode);assert.equal(x.commits(),0,mode);
+  if(!expected)assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,undefined,mode);
+ }
+});
+test('one legacy wheel move can bind a new static prompt only through a verified blank ordinary Like form',async()=>{
+ const x=await legacyPromptScan();restoreSpent(x);const before=wheelViewport(x,0);x.set(before);
+ let moves=0;const taps=[];
+ x.android.wheelDiscover=async()=>{moves++;x.set(wheelViewport(x,1,{prompt:true}))};
+ x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+  {...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send priority like')}}:screen({name:'Next',identity:'next'}))};
+ await x.step();assert.equal(moves,1);assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+ assert.equal(x.c.session.count,5);assert.equal(x.saved().rejectedPhoto??null,null);
+});
+test('legacy wheel grant remains untouched when its independently reread point, route or owner changes',async()=>{
+ for(const mode of ['point','route','owner','chrome','revision']){
+  const x=await legacyPromptScan();restoreSpent(x);const before=wheelViewport(x,0);x.set(before);const sealed=structuredClone(x.c.rejectedPhoto);
+  const read=x.android.hierarchy;let reads=0,moves=0;
+  x.android.hierarchy=async()=>{const result=await read();if(++reads<4)return result;
+   const changed=structuredClone(before);
+   if(mode==='point')changed.reviewWheelPoint.x++;
+   if(mode==='route')changed.reviewScrollSurface=x.held.reviewScrollSurface;
+   if(mode==='owner')changed.reviewScrollFrame.ownerKey='nested';
+   if(mode==='chrome')changed.reviewScrollFrame.chromeKey='changed';
+   if(mode==='revision')changed.screenKey='changed';
+   return {...result,xml:changed};
+  };
+  x.android.wheelDiscover=x.android.scrollProfile=async()=>{moves++};
+  await x.step();assert.equal(moves,0,mode);assert.deepEqual(x.c.rejectedPhoto,sealed,mode);assert.equal(x.commits(),0);
+ }
+});
+function coldPhoto(x){
+ return {...x.root,photos:[{...x.failedPhoto,bounds:{x:40,y:160,width:640,height:640},revealDirection:null}]};
+}
+function restorePollHold(x,extra={}){
+ const cp=structuredClone(x.c.checkpoint());Object.assign(cp.rejectedPhoto,{attempted:true,heldIdentity:null,promptScan:'spent'},extra);
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+}
+test('legacy poll hold can reach a fresh prompt after several moves from a cold original photo or its newly navigable saved endpoint',async()=>{
+ for(const entry of ['cold-photo','cold-captioned-photo','saved-poll']){
+  const x=await legacyPromptScan();restorePollHold(x);
+  const root=coldPhoto(x);if(entry==='cold-captioned-photo')root.photos[0].like=control('Like photo prompt');
+  x.set(entry==='saved-poll'?{...wheelViewport(x,0,{drag:true}),identity:null,reviewNewChoiceLane:true,photos:[]}:root);
+  const taps=[],moves=[];
+  const move=(mode,valid)=>{
+   assert.equal(valid(),true);moves.push(mode);const receipt=x.saved().rejectedPhoto;
+   assert.equal(receipt.promptScan,'moving');assert.equal(receipt.promptMovesRemaining,8-moves.length);
+   x.set(wheelViewport(x,moves.length,{drag:moves.length%2===0,prompt:moves.length===5}));
+  };
+  x.android.scrollProfile=async(o,v)=>{assert.equal(o.direction,'up');move('drag',v)};
+  x.android.wheelDiscover=async(p,v)=>move('wheel',v);
+  x.android.tapControl=async(b,valid,issued)=>{assert.equal(valid(),true);taps.push(b);issued?.();x.set(taps.length===1?
+   {...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send priority like')}}:screen({name:'Next',identity:'next'}))};
+  await x.step();assert.deepEqual(moves,['drag','wheel','drag','wheel','drag'],entry);
+  assert.deepEqual(taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);assert.equal(x.c.session.count,5);
+ }
+});
+test('cold legacy photo recovery never navigates from a weak source or reissues a started pass',async()=>{
+ for(const mode of ['one-bit','square-only','duplicate','cropped','unowned','poll-control','different-identity','different-profile','known-hold','tried','moving','deadline','cap','draft','pending']){
+  const x=await legacyPromptScan();restorePollHold(x,mode==='known-hold'?{heldIdentity:'known'}:
+   mode==='tried'?{promptMovesRemaining:4}:mode==='moving'?{promptScan:'moving'}:{});
+  const card=coldPhoto(x),p=card.photos[0];
+  if(mode==='one-bit')p.visual='123456789abcdef1';
+  if(mode==='square-only'){p.visualSquare=p.visual;p.visual='ffffffffffffffff'}
+  if(mode==='duplicate')card.photos.push({...p,key:'other'});
+  if(mode==='cropped'){p.bounds.height-=40;p.revealDirection='down'}
+  if(mode==='unowned')p.like=null;
+  if(mode==='poll-control')p.like=control('Like poll');
+  if(mode==='different-identity')card.identity='other-with-same-name-and-photo';
+  if(mode==='different-profile'){card.identity='other-with-same-name';p.visual='ffffffffffffffff'}
+  if(mode==='deadline')x.c.session.now=()=>x.c.session.endsAt;
+  if(mode==='cap')x.c.session.config.maxSwipes=4;
+  if(mode==='draft')x.c.draft={text:'unsubmitted'};
+  if(mode==='pending')x.c.lastAction={identity:card.identity,name:card.name,kind:'like',sessionEndsAt:x.c.session.endsAt};
+  x.set(card);let moves=0,taps=0;x.android.wheelDiscover=x.android.scrollProfile=async()=>{moves++};x.android.tapControl=async()=>{taps++};
+  await x.step();assert.equal(moves,0,mode);assert.equal(taps,0,mode);assert.equal(x.commits(),0,mode);
+ }
+});
+test('legacy cold recovery survives a worker restart after input without rearming the original source',async()=>{
+ const x=await legacyPromptScan();restorePollHold(x);const root=coldPhoto(x);x.set(root);
+ let issued=0,saved;
+ x.android.scrollProfile=async()=>{issued++;saved=x.saved();throw Object.assign(Error('Lost receipt'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();assert.equal(issued,1);assert.equal(saved.rejectedPhoto.promptScan,'moving');assert.equal(saved.rejectedPhoto.promptMovesRemaining,7);
+ const y=setup(root,{wait:()=>new Promise(()=>{}),checkpointStore:{read:()=>saved,write:()=>{}}});
+ await y.c.request('status');await y.c.request('start');
+ for(let i=0;i<2;i++)await y.c.sessionStep(y.c.session.config,()=>true,()=>assert.fail(),async()=>true,y.c.token());
+ assert.deepEqual(y.calls.map(c=>c.kind),['session']);assert.equal(y.c.checkpoint().rejectedPhoto.promptMovesRemaining,0);assert.equal(y.c.session.count,4);
+ y.c.invalidate('Done');
+});
+test('a foreground switch before wheel dispatch leaves the session available to retire that motion',async()=>{
+ const x=await legacyPromptScan();x.set(wheelViewport(x,0));let preflights=0;
+ x.android.wheelDiscover=async()=>{preflights++;throw Object.assign(Error('App switched'),{code:'ANDROID_FOREGROUND_UNAVAILABLE'})};
+ await x.step();assert.equal(x.c.session.status,'running');assert.equal(x.saved().rejectedPhoto.promptScan,'moving');
+ await x.step();assert.equal(preflights,1);assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,0);assert.equal(x.commits(),0);
+});
+test('restoring a legacy unidentified poll observes a changed unidentified screen without identifying gestures',async()=>{
+ const x=await legacyPromptScan();restorePollHold(x);const cp=structuredClone(x.c.checkpoint()),sealed=structuredClone(cp.rejectedPhoto);
+ const poll={...x.held,identity:null,photos:[],prompts:[],screenKey:'other-poll-revision'};
+ const y=setup(poll,{wait:()=>new Promise(()=>{}),checkpointStore:{read:()=>cp,write:()=>{}}});
+ await y.c.request('status');await y.c.request('start');
+ await y.c.sessionStep(y.c.session.config,()=>true,()=>assert.fail(),async()=>true,y.c.token());
+ assert.deepEqual(y.calls.map(c=>c.kind),['session']);assert.deepEqual(y.c.rejectedPhoto,sealed);
+ y.c.invalidate('Done');
+});

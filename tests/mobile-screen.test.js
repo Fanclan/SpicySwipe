@@ -503,6 +503,7 @@ test('alternate Discover can cross only the clear heading and padding of an owne
   button('[40,972][160,1092]','clickable="true" content-desc="Skip Sample"')+extra)+'</hierarchy>';
  const s=read(feed(frame(elements)));
  assert.equal(s.kind,'profile');
+ assert.equal(s.reviewNewChoiceLane,false);
  assert.equal(s.identity,null);
  assert.equal(s.controls.like,null);
  assert.equal(s.prompts.length,0);
@@ -514,9 +515,9 @@ test('alternate Discover can cross only the clear heading and padding of an owne
  assert.ok(lane.height>=120 && lane.width>=96 && center>=88 && center<=403);
  assert.ok(lane.y>=650+10 && lane.y+lane.height<=862-10,'all device motion stays above the choice hit boxes');
  const display='[0,0][720,1280]';
- const ordered=(backOrder,frontOrder='3',backAttr='')=>{
+ const ordered=(backOrder,frontOrder='3',backAttr='',content=frame(elements))=>{
   const behind=xmlNode('view.ViewGroup',display,'clickable="false" '+backOrder,view(display,'',backAttr));
-  const foreground=feed(frame(elements)).slice('<hierarchy>'.length,-'</hierarchy>'.length)
+  const foreground=feed(content).slice('<hierarchy>'.length,-'</hierarchy>'.length)
    .replace('class="android.widget.FrameLayout"', 'class="android.widget.FrameLayout" drawing-order="'+frontOrder+'"');
   return '<hierarchy>'+xmlNode('view.ViewGroup',display,'package="co.hinge.app"',foreground+behind)+'</hierarchy>';
  };
@@ -539,4 +540,68 @@ test('alternate Discover can cross only the clear heading and padding of an owne
   feed('',frame(elements)),
   feed(frame(elements).replaceAll(panel,'[40,760][680,1112]')),
  ]) assert.ok(read(xml).reviewScrollSurface==null,'unexpected or obstructed panel cannot supply a lane');
+
+ // Once the card scrolls behind the native header, Compose clips the body
+ // while its outer wrapper and inert backdrop keep their original top edge.
+ const outer='[40,108][680,672]', clipped='[40,137][680,672]';
+ const observedHeading=text('[88,248][403,288]','Choose one').replace('clickable="false"','drawing-order="1" clickable="false"');
+ const observedChoices=opt('[89,320][295,416]','[88,320][296,416]','[124,336][260,398]')+
+  opt('[317,320][523,416]','[316,320][524,416]','[352,336][488,398]')+
+  opt('[89,436][370,532]','[88,436][371,532]','[164,452][335,514]');
+ const observedLike=view('[544,536][680,672]',view('[544,536][680,672]',
+  button('[564,556][660,652]','clickable="true" content-desc="Like"')));
+ const inside=(backdrop=outer)=>view(backdrop,'','drawing-order="0"')+observedHeading+observedChoices+observedLike;
+ const card=(body=clipped,backdrop=outer)=>view(outer,view(body,inside(backdrop)));
+ const canonical=read(feed(card()));
+ assert.deepEqual(canonical.reviewScrollSurface,{x:197,y:149,width:96,height:159});
+ assert.equal(canonical.reviewNewChoiceLane,true);
+ assert.equal(canonical.controls.like,null);assert.equal(canonical.identity,null);
+ for(const xml of [
+  feed(card('[41,137][680,672]')), feed(card('[40,137][679,672]')),
+  feed(card('[40,138][680,672]')), feed(card('[40,136][680,672]')), feed(card('[40,137][680,671]')),
+  feed(card(clipped,'[40,107][680,672]')), feed(card(clipped,'[40,108][680,671]')),
+  feed(view(outer)+view(clipped,inside())), feed(view(outer,view(clipped,inside())+view(clipped))),
+  feed(card(),button('[240,160][250,270]','clickable="true" content-desc="Like"')),
+ ]) assert.ok(read(xml).reviewScrollSurface==null,'a different offset, edge, owner or overlay cannot authorize the clipped lane');
+
+ // A wheel event has no touch path. Its entire hit margin must land on a
+ // static native text leaf inside the verified scroller; two landmarks prove movement.
+ const adjacent=key=>view('[40,712][680,891]',view('[40,712][680,891]',
+  view('[80,752][408,851]',text('[80,752][408,851]',key))+
+  opt('[440,745][640,841]','[440,752][640,834]','[507,776][573,810]')));
+ const pair=card()+adjacent('A second static landmark');
+ const both=read(feed(pair));
+ assert.deepEqual(both.reviewWheelPoint,{x:245,y:268});
+ const inForeground=ordered('drawing-order="2"','3','',pair);
+ assert.deepEqual(read(inForeground).reviewWheelPoint,both.reviewWheelPoint);
+ const marker=both.reviewScrollFrame;
+ assert.match(marker.ownerKey,/^[a-f0-9]{64}$/);assert.match(marker.chromeKey,/^[a-f0-9]{64}$/);
+ assert.deepEqual(marker.landmarks.map(({x,y,width,height})=>[x,y,width,height]),[[88,248,315,40],[80,752,328,99]]);
+ assert.equal(new Set(marker.landmarks.map(n=>n.key)).size,2);
+ assert.doesNotMatch(JSON.stringify(marker),/Choose one|second static|Sample/);
+ const shifted=pair.replaceAll('[88,248][403,288]','[88,216][403,256]').replaceAll('[80,752][408,851]','[80,720][408,819]');
+ const moved=read(feed(shifted));
+ assert.equal(marker.chromeKey,moved.reviewScrollFrame.chromeKey);
+ assert.equal(marker.ownerKey,moved.reviewScrollFrame.ownerKey);
+ assert.deepEqual(moved.reviewScrollFrame.landmarks.map(n=>[n.key,n.y]),marker.landmarks.map(n=>[n.key,n.y-32]));
+ for(const xml of [
+  feed(card()), feed(card()+adjacent('Choose one')),
+  ordered('drawing-order="4"','3','',pair), ordered('drawing-order="3"','3','',pair),
+  ordered('','3','',pair), ordered('drawing-order="2"','3','focusable="true"',pair),
+  inForeground.replace('bounds="[0,0][720,1280]" clickable="false" ></node>','bounds="invalid" clickable="false" ></node>'),
+  feed(pair.replace('drawing-order="0"','drawing-order="2"')), feed(pair.replace('drawing-order="1"','')),
+  feed(pair.replace('clickable="false" text="Choose one"','clickable="false" focusable="true" text="Choose one"')),
+  feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.widget.NumberPicker" bounds="[80,752][408,851]"')),
+  feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.view.View" scrollable="true" bounds="[80,752][408,851]"')),
+  feed(pair.replace('class="android.view.View" bounds="[80,752][408,851]"','class="android.view.View" selected="true" bounds="[80,752][408,851]"')),
+  feed(pair,button('[249,276][280,290]','clickable="true" content-desc="Like"')),
+  feed(pair,xmlNode('view.View','[235,258][255,278]','clickable="false" content-desc="Unowned overlay"')),
+  feed(pair,xmlNode('view.View','[0,0][720,1280]','scrollable="true"')),
+  feed(pair,button('invalid','clickable="false"')),
+  feed(pair+view('[0,137][720,1112]','','scrollable="true"')),
+ ]) {
+  const rejected=read(xml);
+  assert.ok(rejected.reviewWheelPoint==null,'an unsafe or ambiguous landmark cannot supply a wheel point');
+  assert.ok(rejected.reviewScrollFrame==null);
+ }
 });

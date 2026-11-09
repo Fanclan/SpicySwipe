@@ -493,6 +493,17 @@ class Android {
     await pending;this._guard(serial,epoch,valid);return {ok:true};
   }
 
+  async wheelDiscover(point, valid) {
+    const epoch = this.inputEpoch;
+    if (!point || !Number.isInteger(point.x) || !Number.isInteger(point.y)) throw new Error('Invalid Discover wheel point.');
+    if (typeof valid !== 'function') throw new Error('A current Discover validity check is required.');
+    const serial = await this._selected(); this._guard(serial, epoch, valid);
+    const { width, height } = await this._dimensions(serial); this._guard(serial, epoch, valid);
+    if (point.x < 0 || point.x >= width || point.y < height * .1 || point.y >= height * .9) throw new Error('Discover wheel point is outside the safe display area.');
+    if (await this._foreground(serial, epoch) !== 'co.hinge.app') throw Object.assign(new Error('Hinge is no longer in the foreground.'), { code: 'ANDROID_FOREGROUND_UNAVAILABLE' });
+    await this._guardedOn(serial, epoch, ['shell', 'input', 'mouse', 'scroll', String(point.x), String(point.y), '--axis', 'VSCROLL,-1'], valid);
+  }
+
   async scrollProfile({ fraction = .4, duration = 400, direction = 'up', surface } = {}, valid) {
     const epoch = this.inputEpoch;
     if (!Number.isFinite(fraction) || fraction < .2 || fraction > .65 || !Number.isInteger(duration) || duration < 250 || duration > 900 || !['up', 'down'].includes(direction)) throw new Error('Profile scroll requires fraction 0.2–0.65, duration 250–900 ms, and direction up or down.');

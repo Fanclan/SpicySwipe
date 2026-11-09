@@ -618,3 +618,20 @@ test('blank Discover relaunch reserves the write after launcher verification and
  assert.equal(writes,0);
  await refresh(async()=>{reserved++;});assert.equal(writes,1);
 });
+
+test('wheelDiscover dispatches one bounded generic mouse scroll to the foreground Hinge phone',async t=>{
+ const f=fixture(t);await f.android.select('emulator-5554');let pkg='co.hinge.app';
+ f.setHandler(args=>args.includes('activities')?'mResumedActivity: ActivityRecord{123 u0 '+pkg+'/.Main t1}':
+  args.includes('dumpsys')?'Viewport INTERNAL: displayId=0, logicalFrame=[0, 0, 720, 1280], isActive=[1]':undefined);
+ const point={x:320,y:375};
+ await f.android.wheelDiscover(point,()=>true);
+ const commands=()=>f.calls.filter(c=>c.args.includes('mouse')||c.args.includes('tap')||c.args.includes('swipe')).map(c=>c.args);
+ assert.deepEqual(commands(),[['-s','emulator-5554','shell','input','mouse','scroll','320','375','--axis','VSCROLL,-1']]);
+ for(const invalid of [null,{x:720,y:375},{x:-1,y:375},{x:320,y:1300},{x:1.5,y:375}]){
+  await assert.rejects(f.android.wheelDiscover(invalid,()=>true),/point|coordinate|display/i);
+ }
+ await assert.rejects(f.android.wheelDiscover(point),/valid/i);
+ await assert.rejects(f.android.wheelDiscover(point,()=>false),/cancel|valid|changed/i);
+ pkg='other.app';await assert.rejects(f.android.wheelDiscover(point,()=>true),{code:'ANDROID_FOREGROUND_UNAVAILABLE'});
+ assert.equal(commands().length,1);
+});
