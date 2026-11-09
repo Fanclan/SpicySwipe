@@ -6,6 +6,9 @@
   const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   function mount(root, { request, platform = 'hinge', web = false, notify = () => {}, prepareStart = null }) {
     let current = platform, connected = false, generation = 0, pending = 0, state = {}, error = '', draftKey = '', draftSource = '', starting = false;
+    let reviewedSkip = null, skipTimer = null, skipDeadline = 0;
+    let streamConnected = !web || global.spicyDesktop?.mobileStreamConnected !== false;
+    const submittedSkips = new Map();
     const forms = new Map(), hydrated = new Set();
     const title = () => current === 'bumble' ? 'Bumble' : 'Hinge';
     const button = (key, text, primary = false) => `<button type="button" data-mobile="${key}"${primary ? ' class="primary"' : ''}>${text}</button>`;
@@ -29,13 +32,20 @@
       <div class="ma-checks">${check('breaksEnabled', 'Take breaks')}${check('allowBackground', web ? 'Keep running when this tab closes' : 'Continue while app is hidden')}</div><div class="ma-fields">${number('breakEvery', 'Break after profiles', 1, 1000)}${number('breakMinSeconds', 'Minimum break (seconds)', 10, 1800)}${number('breakMaxSeconds', 'Maximum break (seconds)', 10, 1800)}</div>
       <p class="ma-hint">Background operation does not prevent computer sleep. Pausing retains the original session deadline.</p></details>
       <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
+      <div data-mobile="held-card" class="ma-held-card" hidden>
+        <div data-mobile="skip-intro"><strong>Hinge is still showing this card</strong><p>You can keep waiting or skip the card shown on the phone.</p>${button('review-skip', 'Skip this card and continue')}</div>
+        <div data-mobile="skip-review" role="group" aria-labelledby="ma-confirm-skip-title" aria-describedby="ma-confirm-skip-cost" hidden>
+          <strong data-mobile="skip-title" id="ma-confirm-skip-title"></strong><p id="ma-confirm-skip-cost">Check the card on the phone. This Skip uses one additional profile from your session limit. The earlier Like attempt stays counted.</p>
+          <div class="ma-actions">${button('cancel-skip', 'Cancel')}${button('confirm-skip', 'Confirm Skip')}</div>
+        </div>
+      </div><p data-mobile="skip-notice" class="ma-reason" role="status" tabindex="-1"></p>
       <details><summary>Draft options and automatic openers</summary><div class="ma-fields"><label>Tone<select name="tone">${options(C.tones.map(t => [t, t.charAt(0).toUpperCase() + t.slice(1)]))}</select></label><label>Language<select name="language">${options(Object.entries(C.languages))}</select></label><label>Length<select name="length"><option value="short">Short</option><option value="medium">Medium</option></select></label></div><label>Extra instruction<textarea name="instruction" rows="2" maxlength="1200"></textarea></label><div class="ma-checks">${check('autoOpeners', 'Generate openers for the open empty chat')}${check('autoSend', 'Send those openers automatically')}</div><p class="ma-hint">Open an empty Hinge chat, select your choices, then Save settings to arm its watcher. Generation and sending are separate opt-ins. Pause, Stop, or manual device input disarms it. Existing conversations require manual drafting.</p></details></form>
       <section class="ma-card"><h3>Draft from recognized context</h3><p class="ma-hint">Generation sends the profile or conversation text shown above to your configured AI provider. Check AI settings for provider and consent. No unseen photo contents are sent or inferred.</p>${button('generate', 'Generate draft', true)}<label>Editable draft<textarea name="draft" rows="4" maxlength="4000" placeholder="Read a recognized screen, then generate a draft."></textarea></label><div class="ma-actions">${button('copy', 'Copy')}${button('insert', 'Insert')}${button('send', 'Send')}</div><p class="ma-hint">Insert requires the same recognized conversation or Like composer and an empty field. Send requires verified inserted text in a recognized conversation. Android entry currently supports printable ASCII; use manual device entry for emoji or other characters.</p></section>`;
     const el = key => root.querySelector(`[data-mobile="${key}"]`);
     const field = key => root.querySelector(`[name="${key}"]`);
     const manual=root.firstElementChild,drafts=root.lastElementChild,form=el('form');
     const tools=document.createElement('details');tools.className='ma-manual';tools.innerHTML='<summary>Manual controls and profile details</summary>';tools.append(manual,drafts);root.prepend(form);root.append(tools);
-    const sessionButtons=el('start').parentElement;form.insertBefore(sessionButtons,form.children[1]);sessionButtons.after(el('session'),el('reason'));
+    const sessionButtons=el('start').parentElement;form.insertBefore(sessionButtons,form.children[1]);sessionButtons.after(el('session'),el('reason'),el('held-card'),el('skip-notice'));
     const intro=document.createElement('p');intro.className='ma-hint';intro.textContent='Press Start session. Device setup, profile review and plain Likes run automatically.';sessionButtons.before(intro);
     const advanced=form.querySelector('details');advanced.querySelector('summary').after(field('likeRatio').closest('label'));advanced.append(el('quick').parentElement,el('save'));
     el('preset-note').textContent='Start uses your settings below. Plain Likes are the default.';
@@ -64,7 +74,7 @@
       return config;
     }
     function clearContext() { state = {}; draftKey = ''; draftSource = ''; field('draft').value = ''; }
-    function invalidate() { generation++; pending = 0; error = ''; clearContext(); render(); }
+    function invalidate() { generation++; pending = 0; error = ''; reviewedSkip = null; el('skip-notice').textContent = ''; clearContext(); render(); }
     function handleState(snapshot) {
       if (!snapshot || snapshot.platform !== current) return;
       state = connected ? snapshot : { ...snapshot, screen: null, draft: null, selectedPhoto: null };
@@ -95,6 +105,54 @@
       finally { if (token === generation) { pending = Math.max(0, pending - 1); render(); } }
     }
     const time = value => value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    function currentSkipOffer() {
+      const offer = state.pendingSkipOffer, screen = state.screen, skip = screen?.controls?.skip;
+      if (!connected || !streamConnected || current !== 'hinge' || state.session?.status !== 'running' ||
+          screen?.kind !== 'profile' || !screen.identity || !skip || skip.enabled === false || skip.disabled === true ||
+          typeof offer?.token !== 'string' || !offer.token || typeof offer.name !== 'string' || !offer.name.trim() ||
+          offer.name !== screen.name || !Number.isFinite(offer.expiresAt) || offer.expiresAt <= Date.now() ||
+          submittedSkips.has(offer.token)) return null;
+      return offer;
+    }
+    function sameReviewedSkip(offer) {
+      return reviewedSkip && offer && reviewedSkip.token === offer.token && reviewedSkip.name === offer.name &&
+        reviewedSkip.expiresAt === offer.expiresAt && reviewedSkip.identity === state.screen.identity &&
+        reviewedSkip.screenKey === state.screen.screenKey;
+    }
+    function renderSkip() {
+      const now = Date.now();
+      for (const [token, deadline] of submittedSkips) if (deadline <= now) submittedSkips.delete(token);
+      const offer = currentSkipOffer(), notice = el('skip-notice');
+      if (reviewedSkip && !sameReviewedSkip(offer)) {
+        const hadFocus = el('skip-review').contains(document.activeElement);
+        notice.textContent = reviewedSkip.expiresAt <= now ? 'Your confirmation expired.' : 'The card or session changed. Review the current card before choosing a Skip.';
+        reviewedSkip = null;
+        if (hadFocus) notice.focus();
+      }
+      const deadline = offer?.expiresAt || 0;
+      if (deadline !== skipDeadline) {
+        clearTimeout(skipTimer); skipDeadline = deadline;
+        if (deadline) skipTimer = setTimeout(() => { skipDeadline = 0; renderSkip(); }, Math.min(2147483647, deadline - now));
+      }
+      const blocked = !offer || pending > 0 || state.busy;
+      el('held-card').hidden = !offer;
+      el('skip-intro').hidden = Boolean(reviewedSkip);
+      el('review-skip').disabled = Boolean(blocked || reviewedSkip);
+      el('skip-review').hidden = !reviewedSkip;
+      el('cancel-skip').disabled = !reviewedSkip;
+      el('confirm-skip').disabled = Boolean(blocked || !reviewedSkip);
+      el('skip-title').textContent = reviewedSkip ? `Skip the Hinge card for ${reviewedSkip.name}?` : '';
+    }
+    function forgetSkipOffer() {
+      state = { ...state, pendingSkipOffer: null };
+      renderSkip();
+    }
+    document.addEventListener('visibilitychange', () => { if (document.hidden) forgetSkipOffer(); });
+    global.addEventListener('pagehide', forgetSkipOffer);
+    if (web) global.addEventListener('spicy-mobile-stream-reset', event => {
+      streamConnected = event.detail?.connected !== false;
+      forgetSkipOffer();
+    });
     function render() {
       root.hidden = !['hinge', 'bumble'].includes(current);
       el('title').textContent = `${title()} manual tools`;
@@ -137,6 +195,7 @@
       disable('send', !idle || !bound || s?.kind !== 'conversation' || !available(controls.sendMessage) || !draft.inserted || text !== draft.text || s.composerText !== text);
       for (const input of el('form').querySelectorAll('input, select, textarea')) input.disabled = active || (['autoOpeners','autoSend'].includes(input.name) && current!=='hinge') || (input.name==='autoSend'&&!field('autoOpeners').checked);
       disable('quick', active); disable('overnight', active);
+      renderSkip();
     }
     root.addEventListener('input', event => {
       if (event.target.name && event.target.name !== 'draft') forms.set(current, collect());
@@ -147,6 +206,28 @@
       const target = event.target.closest('button[data-mobile]');
       if (!target || target.disabled) return;
       const action = target.dataset.mobile;
+      if (action === 'review-skip') {
+        const offer = currentSkipOffer();
+        if (!offer || pending || state.busy) { renderSkip(); return; }
+        reviewedSkip = { ...offer, identity: state.screen.identity, screenKey: state.screen.screenKey };
+        el('skip-notice').textContent = ''; renderSkip(); el('cancel-skip').focus(); return;
+      }
+      if (action === 'cancel-skip') {
+        reviewedSkip = null; renderSkip(); el('review-skip').focus(); return;
+      }
+      if (action === 'confirm-skip') {
+        const offer = currentSkipOffer();
+        if (!sameReviewedSkip(offer) || pending || state.busy) { renderSkip(); return; }
+        submittedSkips.set(offer.token, offer.expiresAt);
+        reviewedSkip = null;
+        el('skip-notice').textContent = 'Checking this card on the phone…';
+        el('skip-notice').focus();
+        run(async token => {
+          try { await call('confirmPendingSkip', { token: offer.token }, token); }
+          finally { if (generation === token) el('skip-notice').textContent = ''; }
+        });
+        return;
+      }
       if (action === 'quick' || action === 'overnight') {
         const config = collect();
         config.swipe = { ...config.swipe, maxSwipes: action === 'quick' ? 10 : 100, sessionMinutes: action === 'quick' ? 15 : 480, minDelaySeconds: 15, maxDelaySeconds: action === 'quick' ? 45 : 90, randomizeTiming: true, breaksEnabled: true, allowBackground: action === 'overnight' || (web && config.swipe.allowBackground) };

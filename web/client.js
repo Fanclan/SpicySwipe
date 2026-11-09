@@ -1,6 +1,17 @@
 'use strict';
 (() => {
   const events = new EventSource('/api/events');
+  let streamInterrupted = false;
+  events.addEventListener('error', () => {
+    streamInterrupted = true;
+    window.dispatchEvent(new CustomEvent('spicy-mobile-stream-reset', { detail: { connected: false } }));
+  });
+  events.addEventListener('open', () => {
+    if (streamInterrupted) {
+      streamInterrupted = false;
+      window.dispatchEvent(new CustomEvent('spicy-mobile-stream-reset', { detail: { connected: true } }));
+    }
+  });
   function returnToSignIn() {
     events.close();
     window.location.replace('/login');
@@ -202,6 +213,7 @@
   setTimeout(refresh,650);
   window.spicyDesktop = {
     web: true,
+    get mobileStreamConnected() { return !streamInterrupted; },
     signOut: () => signOut.click(),
     request(action,data){
       if(action==='android:docs'){window.open('https://developer.android.com/studio/run/managing-avds','_blank','noopener');return Promise.resolve();}

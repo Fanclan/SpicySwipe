@@ -1007,3 +1007,135 @@ test('Hinge binds a deep photo preview only within the reviewed plain Like opera
   assert.ok(!JSON.stringify(x.c.checkpoint()).includes('windows'), 'raw image samples never enter a checkpoint');
  }
 });
+
+function confirmedSkipFixture({count=74,limit=1000,extra={}}={}){
+ const current=screen({controls:{skip:{...control('native-skip'),label:'Skip Example'}}});
+ let saved;
+ const x=setup(current,{checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}},...extra});
+ const step=()=>x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail('Unexpected worker action'),async()=>true,x.c.token());
+ async function prepare(){
+  await x.c.request('status');
+  const s=x.c.session;
+  s.status='running';s.count=count;s.endsAt=Date.now()+3600000;
+  s.config={...s.config,likeRatio:1,maxSwipes:limit,breaksEnabled:true};
+  s.nextBreakAt=count+1;s.breakUntil=null;x.c.reservedCount=count;
+  x.c.binding={serial:x.android.serial,avd:'hinge-phone'};x.android.deviceIdentity=async()=>({...x.c.binding});
+  x.c.lastAction={kind:'like',sessionEndsAt:s.endsAt,name:'Example',identity:'earlier-photo'};
+  x.c.nextFeedRefreshAt=Date.now()+300000;await step();
+ }
+ return {...x,current,prepare,step,saved:()=>saved,offer:()=>x.c.snapshot().pendingSkipOffer,
+  confirm:token=>x.c.request('confirmPendingSkip',{token})};
+}
+test('one-card Skip reserves once before input and worker independently verifies transition',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();
+ const offer=x.offer();assert.deepEqual(Object.keys(offer).sort(),['expiresAt','name','token']);
+ assert.equal(offer.name,'Example');assert.ok(offer.expiresAt>Date.now());assert.ok(offer.token.length>=20);
+ const deadline=x.c.session.endsAt;
+ let taps=0;
+ x.android.tapControl=async(bounds,valid,issued)=>{
+  assert.equal(valid(),true);assert.deepEqual(bounds,box);assert.equal(x.saved().session.count,75);
+  assert.equal(x.saved().pendingAction.kind,'pass');assert.equal(x.saved().pendingAction.identity,x.current.identity);
+  taps++;issued();
+ };
+ const outcomes=await Promise.allSettled([x.confirm(offer.token),x.confirm(offer.token)]);
+ assert.deepEqual(outcomes.map(r=>r.status),['fulfilled','rejected']);assert.equal(taps,1);
+ assert.equal(x.offer(),null);assert.equal(x.c.session.count,75);assert.equal(x.c.session.endsAt,deadline);
+ assert.equal(x.c.session.nextBreakAt,75);assert.equal(x.c.session.breakUntil,null);
+ await x.step();assert.equal(x.offer(),null);assert.equal(x.c.lastAction.kind,'pass');
+ x.set(screen({identity:'new',name:'Next'}));await x.step();assert.equal(x.c.lastAction,null);
+ assert.deepEqual(x.calls.map(r=>r.kind),['pass']);
+});
+test('one-card Skip expires on observed away-and-back, changed fresh evidence, deadline, timeout or cancellation',async()=>{
+ for(const scenario of ['away','changed','expired','deadline','pause','stop','device','draft','break']){
+  const x=confirmedSkipFixture();await x.prepare();const token=x.offer().token,guard=x.c.lastAction;
+  if(scenario==='away'){x.set(screen({kind:'blocked'}));await x.c.request('context');x.set(x.current);await x.c.request('context')}
+  if(scenario==='changed')x.set({...x.current,screenKey:'changed'});
+  if(scenario==='expired')x.c.session.now=()=>Date.now()+300000;
+  if(scenario==='deadline')x.c.session.endsAt=Date.now()-1;
+  if(scenario==='pause'||scenario==='stop')await x.c.request(scenario);
+  if(scenario==='device')x.android.deviceIdentity=async()=>({serial:x.android.serial,avd:'another-phone'});
+  if(scenario==='draft')x.c.draft={text:'draft'};
+  if(scenario==='break')x.c.session.breakUntil=Date.now()+60000;
+  await assert.rejects(x.confirm(token),undefined,scenario);assert.equal(x.c.lastAction,guard,scenario);
+  assert.equal(x.c.session.count,74);assert.deepEqual(x.calls,[]);
+ }
+});
+test('one-card Skip never opens from an in-flight Like, ambiguous legacy guard, other screen, or a pending pass',async()=>{
+ for(const scenario of ['inflight','unknown','pass','offer','other-session','other-name','unverified-control','other-screen']){
+  const x=confirmedSkipFixture();await x.prepare();
+  x.c.lastAction={...x.c.lastAction};
+  if(scenario==='inflight'){x.c.reserveAction({...x.c.lastAction});await x.c.read(x.c.token())}
+  if(scenario==='unknown')delete x.c.lastAction.kind;
+  if(scenario==='pass')x.c.lastAction.kind='pass';
+  if(scenario==='offer')x.c.lastAction.offerKey='offer';
+  if(scenario==='other-session')x.c.lastAction.sessionEndsAt--;
+  if(scenario==='other-name')x.set({...x.current,name:'Other'});
+  if(scenario==='unverified-control')x.set({...x.current,controls:{skip:control('skip')}});
+  if(scenario==='other-screen')x.set({...x.current,kind:'like'});
+  if(scenario!=='inflight')await x.step();
+  assert.equal(x.offer(),null,scenario);assert.deepEqual(x.calls,[]);
+ }
+});
+test('one-card Skip at limit keeps its durable reservation on lost acknowledgement and restart',async()=>{
+ const x=confirmedSkipFixture({count:999});await x.prepare();const token=x.offer().token;
+ x.android.tapControl=async()=>{assert.equal(x.saved().session.count,1000);throw Error('Lost acknowledgement')};
+ await assert.rejects(x.confirm(token),/acknowledgement/);assert.equal(x.c.session.count,1000);
+ assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.completionReason,'limit');
+ const restored=setup();restored.c.restoreCheckpoint(x.saved());
+ assert.equal(restored.c.session.count,1000);assert.equal(restored.c.lastAction.kind,'pass');
+ assert.equal(restored.c.snapshot().pendingSkipOffer,null);await assert.rejects(x.confirm(token));
+});
+test('one-card Skip declines failed storage and leaves the original count and Like guard on disk',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const token=x.offer().token;
+ const write=x.c.checkpointStore.write;
+ x.c.checkpointStore.write=value=>{if(value.pendingAction?.kind==='pass')throw Error('No space');write(value)};
+ await assert.rejects(x.confirm(token),/No space/);assert.deepEqual(x.calls,[]);
+ assert.equal(x.c.lastAction.kind,'like');assert.equal(x.saved().pendingAction.kind,'like');
+ assert.equal(x.c.session.count,74);assert.equal(x.c.reservedCount,74);assert.equal(x.saved().session.count,74);
+ assert.equal(x.offer(),null);assert.notEqual(x.c.session.status,'running');
+});
+test('one-card Skip rejects an observation interrupted before a successful retry on the same card',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const token=x.offer().token;
+ const read=x.android.hierarchy;let first=true;x.android.hierarchy=async()=>{
+  if(first){first=false;throw Object.assign(Error('Interrupted observation'),{code:'ANDROID_COMMAND_FAILED'})}
+  return read();
+ };
+ await assert.rejects(x.confirm(token));assert.deepEqual(x.calls,[]);assert.equal(x.c.session.count,74);
+});
+test('one-card Skip tokens cannot survive a relaunch or server restart',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const token=x.offer().token;
+ x.c.nextFeedRefreshAt=0;await x.step();const renewed=x.offer().token;
+ assert.notEqual(token,renewed);await assert.rejects(x.confirm(token));assert.deepEqual(x.calls,[]);
+ const restored=setup(x.current,{checkpointStore:{read:x.saved,write:()=>{}}});await restored.c.request('status');
+ assert.equal(restored.c.session.status,'paused');assert.equal(restored.c.snapshot().pendingSkipOffer,null);
+ await assert.rejects(restored.c.request('confirmPendingSkip',{token:renewed}));
+});
+test('one-card Skip remains budgeted when paused between reservation and device input',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const token=x.offer().token;
+ x.android.tapControl=async(_bounds,valid)=>{await x.c.request('pause');assert.equal(valid(),false);throw Error('Canceled before input')};
+ await assert.rejects(x.confirm(token));assert.deepEqual(x.calls,[]);assert.equal(x.saved().session.count,75);
+ assert.equal(x.saved().pendingAction.kind,'pass');assert.equal(x.saved().session.status,'paused');
+ const restored=setup();restored.c.restoreCheckpoint(x.saved());assert.equal(restored.c.session.count,75);
+ assert.equal(restored.c.session.nextBreakAt,75);assert.equal(restored.c.lastAction.kind,'pass');
+});
+test('one-card Skip becomes available for an uncertain ordinary Like only after the worker has verified the held card',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const like=screen({kind:'like',controls:{sendLike:control('Send Like')}});
+ x.set(like);x.c.lastAction=null;const holds=deferred(),release=deferred();
+ x.android.tapControl=async(_bounds,valid,issued)=>{
+  assert.equal(valid(),true);issued();x.set(x.current);
+  await x.c.read(x.c.token());holds.resolve();await release.promise;
+ };
+ const submitting=x.c.submitLike(like,x.current,x.c.token(),()=>true,()=>x.c.session.count++);
+ await holds.promise;assert.equal(x.offer(),null);assert.equal(x.saved().pendingAction.kind,'like');
+ assert.equal(x.saved().pendingAction.sessionEndsAt,x.c.session.endsAt);release.resolve();
+ await assert.rejects(submitting,/confirm the action transition/);assert.equal(x.offer(),null);
+ x.c.session.nextBreakAt++;await x.step();assert.ok(x.offer()?.token);
+ assert.equal(x.c.session.count,75);assert.deepEqual(x.calls.map(a=>a.kind),['like']);
+});
+test('one-card Skip keeps the same offer during a read-only poll while the UI is busy',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();const offer=x.offer();const ready=deferred(),release=deferred();
+ x.android.hierarchy=async()=>{ready.resolve();await release.promise;return {xml:x.current,foreground:'co.hinge.app'}};
+ const polling=x.c.request('context');await ready.promise;
+ assert.equal(x.c.snapshot().busy,true);assert.deepEqual(x.offer(),offer);release.resolve();await polling;
+ assert.deepEqual(x.offer(),offer);
+});

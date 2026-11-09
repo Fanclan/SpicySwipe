@@ -1,4 +1,5 @@
 'use strict';
+const {randomUUID}=require('node:crypto');
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
 const {sameClippedPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
@@ -18,7 +19,7 @@ class MobileController{
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
- snapshot(){return {platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
+ snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
@@ -26,7 +27,7 @@ class MobileController{
   this.changed(this.snapshot());
  }
  reserveAction(action,increment=1){
-  this.lastAction=action;
+  this.skipOffer=null;this.lastAction=action;
   if(this.session.status==='running')this.reservedCount=Math.max(this.session.count,this.reservedCount)+increment;
   this.persist();
  }
@@ -136,7 +137,9 @@ class MobileController{
    if(observed.kind==='feedError')return await this.retryFeed(observed,t,valid);
    if(this.lastAction){
     if(await this.reconcilePending(this.lastAction,t,valid)){this.reason='';this.readFailures=0;return {retryAfter:1000,phase:'checking next profile'}}
-    return this.pendingWait();
+    const waiting=this.pendingWait();
+    this.offerPendingSkip();
+    return waiting;
    }
    if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
    // A previous step may have rejected this form because its profile changed.
@@ -183,8 +186,65 @@ class MobileController{
   this.session.count=Math.max(this.session.count,this.reservedCount);
   if(this.session.count>=this.session.config.maxSwipes)this.session.finish('limit');
   const operation=error?.diagnostics?.operation;
+  if(error)this.skipOffer=null;
   this.reason='The previous action is still being verified. No duplicate Like will be sent.'+(operation?' Recovering '+operation+'.':'');
   this.persist();return {retryAfter:30000,phase:'verifying previous action'};
+ }
+ // A Like guard can survive a restart. Permission to Skip belongs only to one live observation.
+ eligibleForSkip(){
+  const {session,screen,binding,lastAction}=this,skip=screen?.controls?.skip;
+  return this.platform==='hinge'&&this.observedForeground==='co.hinge.app'&&this.loaded&&Boolean(this.checkpointStore)&&!this.storageError&&
+   session.status==='running'&&session.endsAt>session.now()&&session.count>0&&session.count===this.reservedCount&&session.count<session.config.maxSwipes&&
+   !(session.config.breaksEnabled&&(session.breakUntil||session.count>=session.nextBreakAt))&&
+   binding?.serial===this.android.serial&&Boolean(binding?.serial)&&!this.draft&&lastAction?.kind==='like'&&Boolean(lastAction.identity)&&!lastAction.offerKey&&
+   lastAction.sessionEndsAt===session.endsAt&&screen?.kind==='profile'&&Boolean(screen.identity&&screen.screenKey&&screen.name)&&
+   screen.name===lastAction.name&&!screen.composerText?.trim()&&!screen.controls?.composer&&!screen.controls?.sendLike&&
+   Boolean(skip?.key&&skip.bounds)&&skip.enabled!==false&&skip.disabled!==true&&skip.label==='Skip '+screen.name;
+ }
+ currentSkipOffer(){
+  const offer=this.skipOffer;
+  if(offer&&(!this.eligibleForSkip()||offer.expiresAt<=this.session.now()||offer.guard!==this.lastAction||
+    offer.count!==this.session.count||offer.sessionEpoch!==this.session.epoch||offer.epoch!==this.epoch||
+    offer.serial!==this.android.serial||offer.inputEpoch!==this.android.inputEpoch||offer.avd!==this.binding?.avd||
+    offer.identity!==this.screen.identity||offer.revision!==this.screen.screenKey||offer.skipKey!==this.screen.controls.skip.key)){
+   this.skipOffer=null;
+  }
+  return this.skipOffer||null;
+ }
+ offerPendingSkip(){
+  if(this.currentSkipOffer()||!this.eligibleForSkip())return;
+  const {screen,session}=this;
+  this.skipOffer={token:randomUUID(),expiresAt:Math.min(session.now()+120000,session.endsAt),name:screen.name,
+   guard:this.lastAction,count:session.count,sessionEpoch:session.epoch,epoch:this.epoch,serial:this.android.serial,
+   inputEpoch:this.android.inputEpoch,avd:this.binding.avd,identity:screen.identity,revision:screen.screenKey,skipKey:screen.controls.skip.key};
+ }
+ async confirmPendingSkip(token,t){
+  const offer=this.currentSkipOffer();
+  if(!offer||offer.token!==token)throw Error('This Skip confirmation expired. Review the current card again.');
+  const stillOffered=()=>this.currentSkipOffer()===offer;
+  try{
+   await this.consent(t);this.assert(t,stillOffered);
+   await this.verifyBinding(t);this.assert(t,stillOffered);
+   const card=await this.fresh(this.screen,t,stillOffered);
+   this.assert(t,stillOffered);
+   const skipGuard={kind:'pass',identity:card.identity,name:card.name};
+   // One atomic checkpoint replaces the Like guard and charges the Skip, even if the acknowledgement is lost.
+   try{this.reserveAction(skipGuard)}catch(error){
+    // No input was dispatched. The atomic store kept the previous checkpoint.
+    this.lastAction=offer.guard;this.reservedCount=offer.count;this.session.pause();throw error;
+   }
+   this.session.count=this.reservedCount;
+   const ownsReservation=()=>this.lastAction===skipGuard&&!this.storageError&&this.session.epoch===offer.sessionEpoch&&
+    this.session.status==='running'&&this.session.now()<offer.expiresAt&&this.session.now()<this.session.endsAt;
+   try{
+    this.assert(t,ownsReservation);
+    await this.finalTap(card.controls.skip,t,ownsReservation,()=>{},'pass');
+   }finally{
+    if(this.session.count>=this.session.config.maxSwipes&&this.session.status==='running')this.session.finish('limit');
+   }
+   // The worker verifies the new guard independently before continuing its original session.
+   if(this.session.status==='running')this.reason='Skip counted. Verifying that Hinge advanced to the next profile.';
+  }finally{this.skipOffer=null}
  }
  async load(t){
   if(!this.loaded){
@@ -198,7 +258,7 @@ class MobileController{
   // Retry only an observation, never the tap/scroll that may already have reached the device.
   // Rebuild hierarchy and image evidence together so no stale partial read survives recovery.
   try{return await this.readOnce(t)}catch(error){
-   this.assert(t);
+   this.skipOffer=null;this.assert(t);
    if(!['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','ANDROID_FOREGROUND_UNAVAILABLE'].includes(error.code))throw error;
    await this.pauseFor(750,t);
    return this.readOnce(t);
@@ -310,7 +370,7 @@ class MobileController{
   const stalledLike=this.platform==='hinge'&&current.kind==='like'&&current.name===original.name&&current.composerTextVerified===true&&!current.composerText?.trim();
   if(!stalledProfile&&!stalledLike)return false;
   await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);
-  this.lastAction.refreshAttempted=true;this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
+  this.skipOffer=null;this.lastAction.refreshAttempted=true;this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
   if(this.session.status==='running'){this.session.phase='checking swipe result';this.notify()}
   await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);
   let candidate=null;
@@ -468,7 +528,7 @@ class MobileController{
  }
  async submitLike(screen,original,t,valid,commit){
   await this.fresh(screen,t,valid);this.assert(t,valid);
-  this.reserveAction({identity:original.identity,name:original.name,...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})});
+  this.reserveAction({identity:original.identity,name:original.name,...(this.session.status==='running'&&this.config.mode==='like'&&screen.kind==='like'?{kind:'like',sessionEndsAt:this.session.endsAt}:{}),...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})});
   let issued=false;const onIssued=()=>{issued=true};
   try{
    await this.android.tapControl(screen.controls.sendLike.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
@@ -487,7 +547,7 @@ class MobileController{
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;
   if(kind==='pass'){
-   await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({identity:s.identity,name:s.name});
+   await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({kind:'pass',identity:s.identity,name:s.name});
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
   if(s.kind==='profile'){
@@ -579,6 +639,7 @@ class MobileController{
     if(pausedConfig){this.session.config=pausedConfig;this.persist()}
     return this.snapshot();
    }
+   if(action==='confirmPendingSkip')return this.confirmPendingSkip(data.token,t);
    if(action==='review'){await this.review(t);return this.snapshot()}
    if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&!this.resumableLike(s)){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');

@@ -6,8 +6,9 @@ const tick = () => new Promise(r => setImmediate(r));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const control = { bounds: { x: 1, y: 1, width: 50, height: 50 } };
 const snapshot = (patch = {}) => ({ platform: 'hinge', session: { status: 'idle', phase: 'idle', count: 0, limit: 30, error: '', endsAt: null, nextActionAt: null }, screen: { kind: 'profile', name: 'Example', identity: 'profile-1', reason: '', context: { name: 'Example', bio: 'Likes hiking', history: [] }, photos: [{ key: 'photo-1' }], controls: { like: control, skip: control, sendLike: null, comment: null, composer: null, sendMessage: null }, composerText: '', emptyConversation: false }, config: null, draft: null, selectedPhoto: null, busy: false, reason: '', ...patch });
-async function fixture(t, options = {}) {
-  const dom = new JSDOM('<div id="root"></div>', { runScripts: 'outside-only' });
+async function fixture(t, options = {}, withWebClient = false) {
+  const html = withWebClient ? fs.readFileSync('desktop/index.html', 'utf8') : '<div id="root"></div>';
+  const dom = new JSDOM(html, { runScripts: 'outside-only' });
   t.after(() => dom.window.close());
   const w = dom.window, calls = [], notes = [], copied = [];
   let respond = () => snapshot();
@@ -15,7 +16,14 @@ async function fixture(t, options = {}) {
   w.eval(fs.readFileSync('shared/core.js', 'utf8'));
   if (fs.existsSync('desktop/mobile-automation.js')) w.eval(fs.readFileSync('desktop/mobile-automation.js', 'utf8'));
   assert.equal(typeof w.SSMobileAutomation?.mount, 'function', 'mobile automation mount must be available');
-  const root = w.document.querySelector('#root');
+  let events;
+  if (withWebClient) {
+    w.EventSource = class extends w.EventTarget { constructor() { super(); events = this; } };
+    w.fetch = async () => ({ ok: true, json: async () => ({ result: {} }) });
+    w.eval(fs.readFileSync('web/client.js', 'utf8'));
+    if (withWebClient === 'offline') events.dispatchEvent(new w.Event('error'));
+  }
+  const root = w.document.querySelector(withWebClient ? '#mobile-automation' : '#root');
   const ui = w.SSMobileAutomation.mount(root, { platform: 'hinge', ...options, request: async (action, data) => { calls.push({ action, data }); return respond(action, data); }, notify: (...args) => notes.push(args) });
   await tick();
   const el = key => root.querySelector(`[data-mobile="${key}"]`);
@@ -23,7 +31,7 @@ async function fixture(t, options = {}) {
   const input = (key, value) => { const e = field(key); if (e.type === 'checkbox') e.checked = value; else e.value = value; e.dispatchEvent(new w.Event('input', { bubbles: true })); };
   const click = async key => { el(key).click(); await tick(); };
   ui.setConnected(true); ui.handleState(snapshot());
-  return { w, root, ui, calls, notes, copied, el, field, input, click, respond: fn => { respond = fn; } };
+  return { w, root, ui, calls, notes, copied, events, el, field, input, click, respond: fn => { respond = fn; } };
 }
 test('web Quick preset preserves the phone background setting',async t=>{
   const f=await fixture(t,{web:true});
@@ -161,4 +169,152 @@ test('manual Hinge Like can use a verified prompt when no photo Like is availabl
   await f.click('like');
   assert.equal(f.calls.at(-1).action, 'act');
   assert.equal(f.calls.at(-1).data.kind, 'like');
+});
+
+function heldHingeCard(token = 'offer-a', name = 'Example', expiresAt = Date.now() + 60000) {
+  const s = snapshot();
+  s.session = { status: 'running', phase: 'verifying previous action', count: 74, limit: 1000 };
+  s.screen.name = name;
+  s.screen.screenKey = 'card-' + token;
+  s.pendingSkipOffer = { token, name, expiresAt };
+  return s;
+}
+
+test('one-card Skip requires a named review and explicit confirmation; Cancel and double-click never issue a second action', async t => {
+  const f = await fixture(t, { web: true });
+  const name = 'Alex <img src=x>', s = heldHingeCard('opaque-token', name), gate = deferred();
+  f.ui.handleState(s);
+  assert.equal(f.el('review-skip').closest('details'), null);
+  assert.equal(f.el('review-skip').textContent, 'Skip this card and continue');
+  assert.equal(f.el('skip').disabled, true, 'ordinary manual Skip stays disabled during a run');
+  await f.click('review-skip');
+  assert.equal(f.el('skip-review').hidden, false);
+  assert.ok(f.el('skip-review').textContent.includes(name));
+  assert.match(f.el('skip-review').textContent, /1 (additional )?profile|one (additional )?profile/i);
+  assert.equal(f.root.querySelector('img'), null);
+  assert.equal(f.w.document.activeElement, f.el('cancel-skip'));
+  await f.click('cancel-skip');
+  assert.equal(f.el('skip-review').hidden, true);
+  assert.equal(f.w.document.activeElement, f.el('review-skip'));
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+  await f.click('review-skip');
+  f.respond(() => gate.promise);
+  f.el('confirm-skip').click();
+  f.el('confirm-skip').click();
+  assert.deepEqual(f.calls.map(call => call.action), ['status', 'confirmPendingSkip']);
+  assert.deepEqual({ ...f.calls.at(-1).data }, { token: 'opaque-token' });
+  gate.resolve(s); await tick();
+  f.ui.handleState(s);
+  await f.click('review-skip'); await f.click('confirm-skip');
+  assert.equal(f.calls.length, 2, 'a repeated stale snapshot cannot re-arm a consumed offer');
+});
+
+test('a changed Hinge card cancels review even if the earlier card returns', async t => {
+  const f = await fixture(t), a = heldHingeCard('a', 'Alex'), b = heldHingeCard('b', 'Alex');
+  f.ui.handleState(a); await f.click('review-skip');
+  f.ui.handleState(b);
+  assert.equal(f.el('skip-review').hidden, true);
+  f.ui.handleState(a);
+  await f.click('confirm-skip');
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+  f.ui.handleState(b); await f.click('review-skip');
+  const changed = { ...b, screen: { ...b.screen, screenKey: 'different-content' } };
+  f.ui.handleState(changed);
+  await f.click('confirm-skip');
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+});
+
+test('one-card Skip expires locally while confirmation is open', async t => {
+  const f = await fixture(t);
+  let now = Date.now(), expire;
+  f.w.Date.now = () => now;
+  f.w.setTimeout = (callback, delay) => { assert.equal(delay, 60000); expire = callback; return 1; };
+  for (const delayedTimer of [false, true]) {
+    const s = heldHingeCard('offer-' + now, 'Alex', now + 60000);
+    f.ui.handleState(s); await f.click('review-skip');
+    assert.equal(f.el('skip-review').hidden, false);
+    now += 60000;
+    if (!delayedTimer) expire();
+    await f.click('confirm-skip');
+    assert.equal(f.el('skip-review').hidden, true);
+    assert.match(f.el('skip-notice').textContent, /expired/i);
+  }
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+});
+
+test('one-card Skip closes on platform switch, device or stream disconnect, and leaving the page', async t => {
+  const f = await fixture(t, { web: true });
+  const s = heldHingeCard();
+  for (const leave of [
+    () => { f.ui.setPlatform('bumble'); f.ui.setPlatform('hinge'); },
+    () => { f.ui.setConnected(false); f.ui.handleState(s); f.ui.setConnected(true); },
+    () => f.w.dispatchEvent(new f.w.Event('spicy-mobile-stream-reset')),
+    () => f.w.document.dispatchEvent(new f.w.Event('visibilitychange')),
+  ]) {
+    f.ui.handleState(s); await f.click('review-skip');
+    assert.equal(f.el('skip-review').hidden, false);
+    leave(); await tick();
+    assert.equal(f.el('skip-review').hidden, true);
+    f.ui.handleState(s); await f.click('confirm-skip');
+  }
+  assert.equal(f.calls.some(call => ['confirmPendingSkip', 'act'].includes(call.action)), false);
+});
+
+test('only a connected running Hinge profile with an eligible offer can open one-card review', async t => {
+  const f = await fixture(t), s = heldHingeCard();
+  for (const patch of [
+    { pendingSkipOffer: null }, { session: { status: 'paused' } },
+    { screen: { ...s.screen, kind: 'likeOffer' } }, { screen: { ...s.screen, controls: {} } },
+    { pendingSkipOffer: { ...s.pendingSkipOffer, name: 'Different' } },
+  ]) {
+    f.ui.handleState({ ...s, ...patch });
+    assert.equal(f.el('review-skip').disabled, true);
+    await f.click('review-skip'); await f.click('confirm-skip');
+  }
+  f.ui.setPlatform('bumble'); await tick();
+  f.ui.handleState({ ...s, platform: 'bumble' });
+  assert.equal(f.el('review-skip').disabled, true);
+  assert.equal(f.calls.some(call => ['confirmPendingSkip', 'act'].includes(call.action)), false);
+});
+
+test('one-card review survives a routine same-card read with Confirm disabled while busy', async t => {
+  const f = await fixture(t), s = heldHingeCard();
+  f.ui.handleState(s); await f.click('review-skip');
+  f.ui.handleState({ ...s, busy: true });
+  assert.equal(f.el('skip-review').hidden, false);
+  assert.equal(f.el('confirm-skip').disabled, true);
+  await f.click('confirm-skip');
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+  f.ui.handleState(s);
+  assert.equal(f.el('confirm-skip').disabled, false);
+  f.ui.handleState({ ...s, busy: true, pendingSkipOffer: null });
+  assert.equal(f.el('skip-review').hidden, true, 'a real revocation is final, even while busy');
+  f.ui.handleState(s); await f.click('confirm-skip');
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+});
+
+test('web EventSource disconnect revokes one-card review and reopening needs a fresh snapshot and choice', async t => {
+  const f = await fixture(t, { web: true }, true), s = heldHingeCard();
+  f.ui.handleState(s); await f.click('review-skip');
+  f.events.dispatchEvent(new f.w.Event('open'));
+  assert.equal(f.el('skip-review').hidden, false);
+  f.events.dispatchEvent(new f.w.Event('error'));
+  assert.equal(f.el('skip-review').hidden, true);
+  f.ui.handleState(s);
+  assert.equal(f.el('review-skip').disabled, true, 'a late snapshot during disconnect stays unusable');
+  f.events.dispatchEvent(new f.w.Event('open'));
+  assert.equal(f.el('review-skip').disabled, true);
+  f.ui.handleState(s);
+  assert.equal(f.el('review-skip').disabled, false);
+  await f.click('confirm-skip');
+  assert.deepEqual(f.calls.map(call => call.action), ['status']);
+});
+
+test('one-card review stays unavailable if the event stream dropped before mobile controls mounted', async t => {
+  const f = await fixture(t, { web: true }, 'offline'), s = heldHingeCard();
+  f.ui.handleState(s);
+  assert.equal(f.el('review-skip').disabled, true);
+  f.events.dispatchEvent(new f.w.Event('open'));
+  f.ui.handleState(s);
+  assert.equal(f.el('review-skip').disabled, false);
 });
