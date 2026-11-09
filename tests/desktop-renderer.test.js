@@ -395,6 +395,29 @@ function webAndroidStatus(platform, extra = {}) {
     managedSerial: platform === 'hinge' ? 'emulator-5554' : 'emulator-5556', managedSerials: ['emulator-5554', 'emulator-5556'], usesManagedDevice: true, ...extra };
 }
 
+test('the web Hinge panel sends a confirmed one-card Skip to its assigned phone', async t => {
+  const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus,
+    prepare: () => ({ ready: true, serial: 'emulator-5554' }) });
+  const card = { kind: 'profile', name: 'Example', identity: 'sample-profile', screenKey: 'sample-screen',
+    context: {}, controls: { skip: { label: 'Skip Example', bounds: { x: 20, y: 80, width: 10, height: 10 } } } };
+  const token = 'synthetic-one-card-token';
+  f.emit({ type: 'mobile:state', data: { platform: 'hinge', screen: card,
+    session: { status: 'running', phase: 'verifying previous action', count: 74, limit: 1000 },
+    pendingSkipOffer: { name: card.name, token, expiresAt: Date.now() + 60000 } } });
+  const panel = f.w.document.querySelector('#mobile-automation');
+  const review = panel.querySelector('[data-mobile="review-skip"]');
+  assert.ok(review && !review.disabled && !review.closest('[hidden]'), 'the active Hinge tab offers a review');
+  const confirmations = () => f.calls.filter(call => call.action === 'mobile:request' && call.data.action === 'confirmPendingSkip');
+  await f.click('[data-mobile="review-skip"]');
+  assert.equal(confirmations().length, 0);
+  await f.click('[data-mobile="confirm-skip"]');
+  assert.equal(confirmations().length, 1);
+  const { platform, expectedSerial, data } = confirmations()[0].data;
+  assert.equal(platform, 'hinge');
+  assert.equal(expectedSerial, 'emulator-5554');
+  assert.equal(data.token, token);
+});
+
 test('web prepares the platform phone inline and allows interactive Play Store installation', async t => {
   const startup = deferred();
   const f = await fixture(t, { web: true, seamless: true, status: webAndroidStatus, prepare: () => startup.promise });
