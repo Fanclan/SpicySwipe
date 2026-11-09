@@ -483,3 +483,60 @@ test('ordinary Discover alternate review owns an inert scroll lane in the visibl
  const prompt = photo.replace('android.widget.ImageView','android.view.View').replace('Sample&apos;s photo','Prompt: On weekends. Answer: Hiking.');
  assert.deepEqual(readCard(owner+prompt+'</node>').reviewScrollSurface,{x:40,y:347,width:640,height:640});
 });
+
+test('alternate Discover can cross only the clear heading and padding of an owned native choices card', () => {
+ const xmlNode=(cls,rect,attr='',children='')=>'<node class="android.'+cls+'" bounds="'+rect+'" '+attr+'>'+children+'</node>';
+ const view=(rect,children='',attr='')=>xmlNode('view.View',rect,'clickable="false" '+attr,children);
+ const text=(rect,value)=>xmlNode('widget.TextView',rect,'clickable="false" text="'+value+'"');
+ const button=(rect,attr)=>xmlNode('widget.Button',rect,attr);
+ const panel='[40,650][680,1112]';
+ const opt=(rect,buttonRect,childRect)=>xmlNode('view.View',rect,'clickable="true"',text(childRect,'Option')+button(buttonRect,'clickable="false"'));
+ const group=opt('[89,862][295,958]','[88,862][296,958]','[124,878][260,940]')+
+  opt('[317,862][523,958]','[316,862][524,958]','[352,878][488,940]')+
+  opt('[89,978][370,1074]','[88,978][371,1074]','[164,994][335,1056]');
+ const like=view('[544,1078][680,1112]',view('[544,1078][680,1112]',button('[564,1098][660,1112]','clickable="true" content-desc="Like"')));
+ const elements=view(panel)+text('[88,790][403,830]','Choose one')+group+like;
+ const frame=(children)=>view(panel,view(panel,children));
+ const feed=(children,extra='')=>'<hierarchy>'+xmlNode('widget.FrameLayout','[0,0][720,1280]','package="co.hinge.app"',
+  view('[0,137][720,1112]',children,'scrollable="true"')+
+  xmlNode('view.View','[0,1112][144,1228]','content-desc="Discover" selected="true"')+
+  button('[40,972][160,1092]','clickable="true" content-desc="Skip Sample"')+extra)+'</hierarchy>';
+ const s=read(feed(frame(elements)));
+ assert.equal(s.kind,'profile');
+ assert.equal(s.identity,null);
+ assert.equal(s.controls.like,null);
+ assert.equal(s.prompts.length,0);
+ assert.equal(s.photos.length,0);
+ assert.equal(Object.hasOwn(s,'scrollSurface'),false);
+ const lane=s.reviewScrollSurface;
+ assert.ok(lane);
+ const center=lane.x+lane.width/2;
+ assert.ok(lane.height>=120 && lane.width>=96 && center>=88 && center<=403);
+ assert.ok(lane.y>=650+10 && lane.y+lane.height<=862-10,'all device motion stays above the choice hit boxes');
+ const display='[0,0][720,1280]';
+ const ordered=(backOrder,frontOrder='3',backAttr='')=>{
+  const behind=xmlNode('view.ViewGroup',display,'clickable="false" '+backOrder,view(display,'',backAttr));
+  const foreground=feed(frame(elements)).slice('<hierarchy>'.length,-'</hierarchy>'.length)
+   .replace('class="android.widget.FrameLayout"', 'class="android.widget.FrameLayout" drawing-order="'+frontOrder+'"');
+  return '<hierarchy>'+xmlNode('view.ViewGroup',display,'package="co.hinge.app"',foreground+behind)+'</hierarchy>';
+ };
+ assert.deepEqual(read(ordered('drawing-order="2"')).reviewScrollSurface,lane);
+ for(const xml of [
+  ordered('drawing-order="4"'),ordered('drawing-order="3"'),ordered(''),
+  ordered('drawing-order="2"','3','long-clickable="true"'),
+  feed(frame(elements),button('[201,650][287,862]','clickable="true" content-desc="Like"')),
+  feed(frame(elements),button('invalid','clickable="false"')),
+  feed(frame(elements),xmlNode('view.View','[195,650][298,862]','long-clickable="true"')),
+  feed(frame(elements),xmlNode('view.View','[195,650][298,862]','clickable="false" content-desc="Unknown overlay"')),
+  feed(frame(elements),xmlNode('app.Dialog','[195,650][298,862]','')),
+  feed(frame(elements.replace('text="Choose one"','text=""'))),
+  feed(frame(elements.replace('text="Choose one"','text="Choose one" scrollable="true"'))),
+  feed(frame(elements.replace('content-desc="Like"','content-desc="Like video"'))),
+  feed(frame(elements.replace(group,''))),
+  feed(frame(elements+button('[125,660][375,855]','clickable="true" content-desc="More"'))),
+  feed(frame(elements).replace('clickable="false"','clickable="true"')),
+  feed(frame(elements)+frame(elements)),
+  feed('',frame(elements)),
+  feed(frame(elements).replaceAll(panel,'[40,760][680,1112]')),
+ ]) assert.ok(read(xml).reviewScrollSurface==null,'unexpected or obstructed panel cannot supply a lane');
+});
