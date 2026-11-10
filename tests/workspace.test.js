@@ -4,12 +4,12 @@ async function setup(t,{compact=false,initial={},web=false}={}){
  const dom=new JSDOM('<div id="root"></div>',{url:'https://extension.test/',runScripts:'outside-only'});t.after(()=>dom.window.close());
  for(const file of ['shared/core.js','ui/icons.js','ui/workspace.js'])dom.window.eval(fs.readFileSync(file,'utf8'));
  let state=C.publicSettings(C.migrate({sidebarConsentGiven:true,hasCompletedOnboarding:true,...initial}));
- let context={conversationId:'A',name:'A',canMessage:true};const sent=[],pageActions=[];let pendingGenerate=async()=>({response:'Draft for A',modelUsed:'test',durationMs:100}),pendingModels=async()=>({models:[],message:'Okay'});let subscriber;
- const bridge={compact,load:async()=>state,save:async p=>{state={...state,...p};subscriber?.({type:'settings',data:state});return state},subscribe:fn=>{subscriber=fn;return()=>{}},authorizeOllama:async()=>true,request:async(action,payload)=>action==='generate'?pendingGenerate():pendingModels(payload),page:async(action,data)=>{pageActions.push(action);if(action==='send'){sent.push(data);if(data.conversationId!==context.conversationId)throw new Error('Conversation changed');return {ok:true}}return {connected:true,context,session:{status:'idle',count:0,limit:30}}}};
+ let context={conversationId:'A',name:'A',canMessage:true};const sent=[],pageActions=[],pageCalls=[];let pageHandler,pendingGenerate=async()=>({response:'Draft for A',modelUsed:'test',durationMs:100}),pendingModels=async()=>({models:[],message:'Okay'});let subscriber;
+ const bridge={compact,load:async()=>state,save:async p=>{state={...state,...p};subscriber?.({type:'settings',data:state});return state},subscribe:fn=>{subscriber=fn;return()=>{}},authorizeOllama:async()=>true,request:async(action,payload)=>action==='generate'?pendingGenerate():pendingModels(payload),page:async(action,data)=>{pageActions.push(action);pageCalls.push({action,data});if(pageHandler)return pageHandler(action,data);if(action==='send'){sent.push(data);if(data.conversationId!==context.conversationId)throw new Error('Conversation changed');return {ok:true}}return {connected:true,context,session:{status:'idle',count:0,limit:30}}}};
  bridge.web=web;
  const root=dom.window.document.getElementById('root'),app=await dom.window.SSWorkspace.mount(root,bridge);t.after(()=>app.destroy());
  const click=async selector=>{root.querySelector(selector).click();await tick();await tick()};
- return {root,app,click,sent,pageActions,read:()=>state,changeContext:c=>context=c,setGenerate:fn=>pendingGenerate=fn,setModels:fn=>pendingModels=fn,update:p=>subscriber({type:'settings',data:{...state,...p}}),updateSession:session=>subscriber({type:'page',data:{connected:true,context,session}})};
+ return {root,app,click,sent,pageActions,pageCalls,setPage:fn=>pageHandler=fn,updatePage:data=>subscriber({type:'page',data}),read:()=>state,changeContext:c=>context=c,setGenerate:fn=>pendingGenerate=fn,setModels:fn=>pendingModels=fn,update:p=>subscriber({type:'settings',data:{...state,...p}}),updateSession:session=>subscriber({type:'page',data:{connected:true,context,session}})};
 }
 test('failed regeneration cannot rebind an existing draft to another match',async t=>{
  const x=await setup(t);x.app.navigate('messages');await x.click('[data-action="generate"]');
@@ -128,4 +128,98 @@ test('resuming Tinder with an unfinished edit uses the limits of the paused run'
  await x.click('[data-action="start"]');
  assert.equal(x.pageActions.at(-1),'start');
  assert.ok(x.read().swipeConfig.maxSwipes);
+});
+
+const heldId='a'.repeat(32);
+function handed(stage='held',session={},details={}){
+ const source={version:1,runId:heldId,count:250,limit:1000,endsAt:null};
+ return {connected:true,context:{page:'/app/recs'},session:{status:'held',count:250,limit:1000,endsAt:null,runId:heldId,...session},
+  tinderHandoff:{stage,source,minimumOnly:false,rendererSession:{status:'idle',phase:'idle',runId:null,count:0,endsAt:null},...details}};
+}
+async function heldWorkspace(t){
+ const x=await setup(t,{web:true});const snap=handed();x.setPage(async()=>snap);
+ x.app.navigate('swiping');await tick();x.updatePage(snap);return x;
+}
+test('held Tinder exposes its original count, remaining Likes, uncertain delivery and no deadline',async t=>{
+ const x=await heldWorkspace(t);const q=s=>x.root.querySelector(s);
+ assert.equal(q('#session-count').textContent,'250');assert.equal(q('#session-progress').max,1000);
+ assert.match(q('#session-message').textContent,/confirm.*last Like/i);
+ assert.match(q('#session-deadline').textContent,/750.*no time limit/i);
+ for(const name of ['start','pause','stop'])assert.equal(q('[data-action="'+name+'"]').disabled,true);
+ assert.equal(q('[data-action="reviewHeld"]').hidden,false);
+});
+test('Tinder recovery requires explicit confirmation tied to the source budget and leaves form settings alone',async t=>{
+ const x=await heldWorkspace(t);
+ const original=JSON.stringify(x.read().swipeConfig);
+ await x.click('[data-action="reviewHeld"]');
+ assert.equal(x.pageActions.includes('continueHeld'),false);
+ const modal=x.root.querySelector('[role="dialog"]');assert.match(modal.textContent,/first Like.*repeat/i);assert.match(modal.textContent,/750/);
+ await x.click('[data-action="dismiss"]');assert.equal(x.pageActions.includes('continueHeld'),false);
+ await x.click('[data-action="reviewHeld"]');await x.click('[data-action="confirmHeld"]');
+ const calls=x.pageCalls.filter(c=>c.action==='continueHeld');assert.equal(calls.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(calls[0].data)),{sourceRunId:heldId,sourceCount:250,remaining:750,acceptPossibleRepeat:true});
+ assert.equal(x.pageActions.includes('start'),false);assert.equal(JSON.stringify(x.read().swipeConfig),original);
+});
+test('a changed Tinder source, lost connection or closed review invalidates a pending confirmation',async t=>{
+ const x=await heldWorkspace(t);const snap=handed();
+ for(const next of [handed('dispatching'),handed('held',{}, {source:{...snap.tinderHandoff.source,runId:'b'.repeat(32)}}),{...snap,connected:false}]){
+  x.updatePage(snap);await x.click('[data-action="reviewHeld"]');
+  const confirm=x.root.querySelector('[data-action="confirmHeld"]');x.updatePage(next);confirm.click();await tick();
+  assert.equal(x.root.querySelector('.modal-layer').hidden,true);
+ }
+ assert.equal(x.pageActions.includes('continueHeld'),false);
+});
+test('an unconfirmed dispatch shows a lower bound, suppresses a fresh Start, and an invalid hold shows no invented count',async t=>{
+ const x=await heldWorkspace(t),q=s=>x.root.querySelector(s);
+ x.updatePage(handed('dispatching',{}, {minimumOnly:true}));
+ assert.match(q('.session-progress').textContent,/at least 250/i);
+ assert.doesNotMatch(q('#session-deadline').textContent,/750.*remaining/i);
+ assert.equal(q('[data-action="start"]').disabled,true);assert.equal(q('[data-action="reviewHeld"]').hidden,true);
+ x.updatePage(handed('invalid',{count:null,limit:null},{source:null,rendererSession:null,minimumOnly:true}));
+ assert.equal(q('#session-progress').hidden,true);assert.doesNotMatch(q('#session-count').textContent,/^0$/);
+ assert.equal(q('[data-action="start"]').disabled,true);
+});
+test('an acknowledged Tinder run uses its cumulative count and can resume only the live paused segment',async t=>{
+ const x=await heldWorkspace(t),q=s=>x.root.querySelector(s);
+ const segment={status:'paused',runId:'b'.repeat(32),count:9,limit:750,endsAt:null};
+ const current=handed('acknowledged',{status:'paused',count:259},{rendererSession:segment});
+ x.updatePage(current);assert.equal(q('#session-count').textContent,'259');assert.match(q('#session-limit').textContent,/1000/);
+ assert.equal(q('[data-action="start"]').disabled,false);assert.match(q('[data-action="start"]').textContent,/resume/i);
+ x.updatePage(handed('acknowledged',{status:'error',count:259},{rendererSession:{...segment,status:'error'}}));
+ assert.equal(q('[data-action="start"]').disabled,true);
+ x.updatePage(handed('complete',{status:'complete',phase:'complete',count:1000,completionReason:'limit'}));
+ assert.equal(q('[data-action="start"]').disabled,true);assert.match(q('#session-message').textContent,/limit reached/i);
+});
+test('an older context response cannot replace a newer Tinder handoff event',async t=>{
+ const x=await heldWorkspace(t),snap=handed();let finish;
+ x.setPage(action=>action==='context'?new Promise(resolve=>{finish=resolve}):Promise.resolve(snap));
+ x.app.navigate('swiping');assert.equal(typeof finish,'function');
+ x.updatePage(handed('acknowledged',{status:'running',phase:'waiting',count:258},{rendererSession:{status:'running',runId:'b'.repeat(32),count:8,limit:750,endsAt:null}}));
+ finish(snap);await tick();await tick();
+ assert.equal(x.root.querySelector('#session-count').textContent,'258');
+ assert.equal(x.root.querySelector('[data-action="reviewHeld"]').hidden,true);
+});
+test('a pending recovery cannot be submitted again while a fresh status still reports the old hold',async t=>{
+ const x=await heldWorkspace(t),snap=handed();let finish;
+ x.setPage(action=>action==='continueHeld'?new Promise(resolve=>{finish=resolve}):Promise.resolve(snap));
+ await x.click('[data-action="reviewHeld"]');await x.click('[data-action="confirmHeld"]');
+ x.updatePage(snap);
+ assert.equal(x.root.querySelector('[data-action="reviewHeld"]').disabled,true);
+ await x.click('[data-action="reviewHeld"]');
+ assert.equal(x.pageActions.filter(a=>a==='continueHeld').length,1);
+ finish(handed('dispatching',{}, {minimumOnly:true}));await tick();
+ assert.equal(x.root.querySelector('[data-action="reviewHeld"]').hidden,true);
+});
+test('a terminal Tinder session must be archived explicitly before a separate session can start',async t=>{
+ const x=await heldWorkspace(t),q=s=>x.root.querySelector(s);
+ const final=handed('complete',{status:'complete',phase:'complete',count:1000,completionReason:'limit'});
+ const archived={connected:true,context:{},session:{status:'idle',count:0,limit:30},tinderHandoffArchived:{source:final.tinderHandoff.source,count:1000,status:'complete'}};
+ x.setPage(async action=>action==='archiveHeld'?archived:final);x.updatePage(final);
+ assert.equal(q('[data-action="start"]').disabled,true);
+ await x.click('[data-action="reviewArchive"]');assert.ok(!x.pageActions.includes('archiveHeld'));await x.click('[data-action="dismiss"]');
+ await x.click('[data-action="reviewArchive"]');await x.click('[data-action="confirmArchive"]');
+ const archive=x.pageCalls.filter(c=>c.action==='archiveHeld');assert.equal(archive.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(archive[0].data)),{sourceRunId:heldId,finalCount:1000});
+ assert.equal(x.pageActions.includes('start'),false);assert.equal(q('[data-action="start"]').disabled,false);
+ assert.match(q('#session-controls-help').textContent,/archived.*1000/i);
 });
