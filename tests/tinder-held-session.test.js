@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const Held=require('../desktop/tinder-held-session.cjs');
+const emulateWebDirectoryDescriptor=require('./fixtures/web-receipt-directory.cjs');
 const seed={version:1,runId:'a'.repeat(32),count:250,limit:1000,endsAt:null};
 const next='b'.repeat(32);
 const approval={sourceRunId:seed.runId,sourceCount:250,remaining:750,acceptPossibleRepeat:true};
@@ -9,10 +10,11 @@ function view(status='idle',count=0,runId=null,limit=750){
   return {connected:true,capabilities:{budgetGuard:1},context:{page:'/app/recs'},session:{status,phase:status,runId,count,limit,endsAt:null,
     nextActionAt:null,completionReason:status==='complete'?'limit':'',error:''}};
 }
-function setup(t){
+function setup(t,emulateDirectory=process.platform==='win32'){
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ss-held-'));
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   const file=path.join(directory,'sessions','tinder-held.json');
+  if(emulateDirectory)emulateWebDirectoryDescriptor(t,path.dirname(file));
   const open=(input=JSON.stringify(seed))=>new Held(file,input);
   let screen=view(),ready=true,starts=0,saves=0;
   const send=async(action,data)=>{
@@ -44,7 +46,35 @@ test('source hold survives restart and reports the original receipt on cold or l
     assert.equal(v.session.count,250);
     for(const action of ['start','stop'])await assert.rejects(h.control(action,{},async()=>assert.fail('no raw action')));
   }
-  assert.equal(fs.statSync(x.file).mode&0o777,0o600);
+});
+test('the POSIX web store creates owner-only receipt and dispatch files',{skip:process.platform==='win32'&&'POSIX mode bits are unavailable on Windows'},async t=>{
+  const x=setup(t),h=x.open();
+  await h.control('continueHeld',approval,x.send,x.prepare);
+  assert.equal(fs.statSync(path.dirname(x.file)).mode&0o777,0o700);
+  for(const file of [x.file,x.file+'.dispatch']){
+    const stat=fs.lstatSync(file);
+    assert.ok(stat.isFile());assert.equal(stat.mode&0o777,0o600);
+  }
+});
+test('failure to flush the native claim directory blocks dispatch and prevents replay',async t=>{
+  const x=setup(t,false),dir=path.dirname(x.file);
+  fs.mkdirSync(dir,{mode:0o700});
+  fs.writeFileSync(x.file,JSON.stringify({source:seed,stage:'held',successorId:null,successorCount:0}),{mode:0o600});
+  if(process.platform!=='win32'){
+    const open=fs.openSync;
+    t.mock.method(fs,'openSync',(file,flags,...rest)=>{
+      if(file===dir&&flags==='r')throw Object.assign(Error('Directory handle unavailable'),{code:'EACCES'});
+      return open(file,flags,...rest);
+    });
+  }
+  const h=x.open('');
+  assert.equal(h.stage,'held');
+  await assert.rejects(h.control('continueHeld',approval,x.send,x.prepare),/reserved|saved/);
+  assert.equal(h.stage,'invalid');assert.deepEqual(JSON.parse(fs.readFileSync(x.file+'.dispatch','utf8')),{runId:seed.runId});
+  const reopened=x.open('');
+  assert.equal(reopened.stage,'dispatching');
+  await assert.rejects(reopened.control('continueHeld',approval,x.send,x.prepare));
+  assert.equal(x.starts(),0);
 });
 test('invalid source data, conflicting seed and unreadable disk fail closed for Tinder only',async t=>{
   const x=setup(t);
@@ -106,8 +136,8 @@ test('lost acknowledgement is never inferred from lookalike events or retried af
   assert.equal(x.open('').project(view('running',5,next)).tinderHandoff.minimumOnly,true);
   assert.equal(x.starts(),1);
 });
-test('two overlapping hosts observing two eligible idle views spend one shared reservation',async t=>{
-  const x=setup(t),first=x.open(),second=x.open(),gates=[];
+for(const descriptorFixture of process.platform==='win32'?[true]:[false,true])test('two overlapping hosts spend one shared reservation with '+(descriptorFixture?'fixture':'native')+' directory flush',async t=>{
+  const x=setup(t,descriptorFixture),first=x.open(),second=x.open(),gates=[];
   let prepared,release;
   const bothPrepared=new Promise(r=>{prepared=r});
   const blocked=new Promise(r=>{release=r});
