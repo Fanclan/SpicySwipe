@@ -101,6 +101,35 @@ test('mobile status respects the active session limits while waiting for profile
   assert.match(f.el('session').textContent,/12 \/ 1000/);
   assert.doesNotMatch(f.el('session').textContent+' '+f.el('reason').textContent,/deadline/i);
 });
+test('Hinge distinguishes a held profile, a Discover reopen check, and a verified empty feed',async t=>{
+  const f=await fixture(t),session={status:'running',count:26,limit:1000,nextActionAt:Date.now()+30000};
+  const empty={kind:'empty',context:{},controls:{}};
+  for(const [phase,kind,expected] of [
+    ['waiting for another profile','profile','No verified Like target on this profile'],
+    ['waiting to reopen Discover','like','Waiting to reopen Discover'],
+    ['waiting for profiles','empty','No profiles available'],
+    ['waiting for another profile','empty','No profiles available'],
+    ['waiting to reopen Discover','empty','No profiles available']
+  ]){
+    const screen=kind==='empty'?empty:{...snapshot().screen,kind};
+    f.ui.handleState(snapshot({screen,session:{...session,phase}}));
+    const status=f.el('session').textContent;
+    assert.ok(status.startsWith(expected),status);
+    assert.match(status,/26 \/ 1000 issued profile actions.*Next check/);
+    assert.doesNotMatch(status,/deadline|next action/i);
+    if(kind==='empty')assert.match(f.el('reason').textContent,/Waiting for new profiles/);
+  }
+});
+test('Hinge held-profile labels apply only to running Hinge sessions',async t=>{
+  const f=await fixture(t),session={phase:'waiting for another profile',count:7,limit:null,endsAt:Date.now()+60000};
+  f.ui.handleState(snapshot({session:{...session,status:'paused'}}));
+  assert.match(f.el('session').textContent,/paused.*7 issued profile actions.*deadline/);
+  assert.doesNotMatch(f.el('session').textContent,/No verified Like target/);
+  f.ui.setPlatform('bumble');await tick();
+  f.ui.handleState(snapshot({platform:'bumble',session:{...session,status:'running'}}));
+  assert.match(f.el('session').textContent,/running.*7 issued profile actions.*deadline/);
+  assert.doesNotMatch(f.el('session').textContent,/No verified Like target/);
+});
 test('an invalid mobile start leaves both its device and saved settings alone',async t=>{
   let preparations=0;
   const f=await fixture(t,{prepareStart:async()=>{preparations++;}});
