@@ -175,9 +175,13 @@
       el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'Waiting for new profiles. The session will check again automatically.' : s?.reason) || '';
       const limit = session.limit === undefined || session.status === 'idle' ? field('maxSwipes').value : session.limit;
       const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} issued profile actions`;
-      const waitingForProfiles = active && (session.phase === 'waiting for profiles' || (s?.kind === 'empty' && ['waiting', 'reviewing'].includes(session.phase)));
-      const recoveryLabel=active&&({'verifying previous action':'Verifying previous action','recovering screen':'Recovering device screen','waiting for supported screen':'Waiting for a supported screen','checking swipe result':'Refreshing to verify previous action','recovering device':'Recovering device','revalidating device':'Revalidating device','checking next profile':'Checking next profile'}[session.phase]);
-      const statusText = recoveryLabel || (waitingForProfiles ? 'No profiles available' : `${session.status || 'idle'}${session.phase && session.phase !== session.status ? ` · ${session.phase}` : ''}`);
+      const hingeWaitLabel = active && current === 'hinge' && ({
+        'waiting for another profile': 'No verified Like target on this profile',
+        'waiting to reopen Discover': 'Waiting to reopen Discover'
+      }[session.phase]);
+      const waitingForProfiles = active && (session.phase === 'waiting for profiles' || (s?.kind === 'empty' && (hingeWaitLabel || ['waiting', 'reviewing'].includes(session.phase))));
+      const recoveryLabel=hingeWaitLabel || active&&({'verifying previous action':'Verifying previous action','recovering screen':'Recovering device screen','waiting for supported screen':'Waiting for a supported screen','checking swipe result':'Refreshing to verify previous action','recovering device':'Recovering device','revalidating device':'Revalidating device','checking next profile':'Checking next profile'}[session.phase]);
+      const statusText = waitingForProfiles ? 'No profiles available' : recoveryLabel || `${session.status || 'idle'}${session.phase && session.phase !== session.status ? ` · ${session.phase}` : ''}`;
       el('session').textContent = `${statusText} · ${progress}${session.endsAt ? ` · deadline ${time(session.endsAt)}` : ''}${session.nextActionAt ? ` · ${waitingForProfiles || recoveryLabel ? 'Next check' : 'next action'} ${time(session.nextActionAt)}` : ''}${session.completionReason ? ` · ${session.completionReason}` : ''}`;
       el('preset-note').textContent=state.openerArmed?'Empty-chat watcher armed. Pause or Stop disarms it.':el('preset-note').textContent.startsWith('Empty-chat watcher')?'Watcher stopped. Save settings to arm again.':el('preset-note').textContent;
       el('comment-note').textContent = field('mode').value === 'comment' ? 'AI comments are enabled by this choice. Selected profile text goes to your configured provider; unseen photo content is not described. Like submission must support an ordinary Like and a verified comment field.' : 'Plain Likes are selected. No AI comment is generated or sent with a Like.';
