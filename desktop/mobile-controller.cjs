@@ -21,6 +21,12 @@ function exactRejectedSource(card,hint){
   card.photos?.length===1&&photo.visual===hint.visual&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
   photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height;
 }
+function sameSessionRun(session,runId,endsAt){
+ if(endsAt!==session.endsAt)return false;
+ if(runId!==undefined)return typeof runId==='string'&&runId.length>0&&runId===session.runId;
+ // Only legacy timed receipts lack an ID. A new run can have the same numeric deadline.
+ return Number.isFinite(endsAt)&&(!session.runId||session.runId==='legacy:'+endsAt);
+}
 const alternativeUnavailable=()=>transientError('The reviewed photo could not be verified. Waiting for another profile or a manual review.','MOBILE_ALTERNATE_UNAVAILABLE');
 const promptMoveLimit=8;
 function wheelLandmarks(frame){
@@ -80,12 +86,13 @@ class MobileController{
     !(hint.heldIdentity===null||typeof hint.heldIdentity==='string')||!(hint.heldRevision===null||typeof hint.heldRevision==='string')||!(hint.avd===null||typeof hint.avd==='string')||
     (hint.promptScan!==undefined&&!['moving','spent'].includes(hint.promptScan))||
     (hint.promptMovesRemaining!==undefined&&(!hint.promptScan||!Number.isInteger(hint.promptMovesRemaining)||hint.promptMovesRemaining<0||hint.promptMovesRemaining>promptMoveLimit))||
-    typeof hint.attempted!=='boolean'||!Number.isFinite(hint.endsAt)||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
+    typeof hint.attempted!=='boolean'||(hint.runId!==undefined&&!(typeof hint.runId==='string'&&hint.runId.length>0))||
+    !(Number.isFinite(hint.endsAt)||(hint.endsAt===null&&hint.runId))||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
   this.rejectedPhoto=hint||null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
   this.nextHomeLaunchAt=saved.nextHomeLaunchAt??0;
-  this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue within the original deadline.':'';
+  this.reason=this.lastAction?'An earlier action is uncertain. It will not be repeated.':this.session.status==='paused'?'Saved progress restored. Resume to revalidate the device and continue with the original limits.':'';
  }
  token(){return {epoch:this.epoch,serial:this.android.serial,inputEpoch:this.android.inputEpoch,signal:this.abort.signal}}
  assert(t,valid=()=>true){if(t.epoch!==this.epoch||t.serial!==this.android.serial||t.inputEpoch!==this.android.inputEpoch||!t.serial||t.signal.aborted||!valid())throw Error('Mobile action canceled: device, screen ownership, or session changed.');}
@@ -115,7 +122,7 @@ class MobileController{
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
   // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
   // even a lost acknowledgement must not re-arm recovery on the same blank feed.
-  const beforeStop=loading||held?async()=>{
+  const beforeStop=loading||held||s.kind==='empty'?async()=>{
    if(held)await this.verifyBinding(t);
    await revalidate();
    if(loading){this.loadingFeedRelaunched=true;this.persist()}
@@ -131,7 +138,7 @@ class MobileController{
  exhaustedReview(t){
   const h=this.scopedPhotoRejection(t),s=this.session;
   return this.platform==='hinge'&&h?.attempted&&h.promptScan==='spent'&&h.promptMovesRemaining===0&&h.heldRevision&&
-   s.status==='running'&&s.now()<s.endsAt&&s.count===this.reservedCount&&s.count<s.config.maxSwipes&&
+   s.status==='running'&&!s.timeExpired()&&s.count===this.reservedCount&&!s.reachedProfileLimit()&&
    this.config.mode==='like'&&this.config.swipe.likeRatio===1&&s.config.likeRatio===1&&
    !(s.config.breaksEnabled&&(s.breakUntil||s.count>=s.nextBreakAt))&&this.binding?.serial===t.serial&&
    !this.draft&&!this.lastAction&&!this.storageError&&this.checkpointStore&&this.android.deviceIdentity&&this.android.refreshFeed?h:null;
@@ -224,7 +231,15 @@ class MobileController{
    }
    const held=this.exhaustedReview(t);
    if(held&&this.heldInventoryScreen(observed,held))return await this.checkHeldInventory(observed,held,t,valid,sleep);
-   if(observed.kind==='empty'){observed=await this.refreshEmpty(observed,t,valid);this.assert(t,valid);if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}}
+   if(observed.kind==='empty'){
+    try{observed=await this.refreshEmpty(observed,t,valid)}catch(error){
+     this.assert(t,valid);
+     if(error.code==='MOBILE_SCREEN_CHANGED')return {retryAfter:1000,phase:'checking next profile'};
+     throw error;
+    }
+    this.assert(t,valid);
+    if(observed.kind==='empty'){this.readFailures=0;this.persist();return {retryAfter:300000,phase:'waiting for profiles'}}
+   }
    // A previous step may have rejected this form because its profile changed.
    // Reopen Discover so every submitted Like is bound to a new verified review.
    if(this.resumableLike(observed)){
@@ -272,7 +287,7 @@ class MobileController{
  }
  pendingWait(error){
   this.session.count=Math.max(this.session.count,this.reservedCount);
-  if(this.session.count>=this.session.config.maxSwipes)this.session.finish('limit');
+  if(this.session.reachedProfileLimit())this.session.finish('limit');
   const operation=error?.diagnostics?.operation;
   if(error)this.skipOffer=null;
   this.reason='The previous action is still being verified. No duplicate Like will be sent.'+(operation?' Recovering '+operation+'.':'');
@@ -282,10 +297,10 @@ class MobileController{
  eligibleForSkip(){
   const {session,screen,binding,lastAction}=this,skip=screen?.controls?.skip;
   return this.platform==='hinge'&&this.observedForeground==='co.hinge.app'&&this.loaded&&Boolean(this.checkpointStore)&&!this.storageError&&
-   session.status==='running'&&session.endsAt>session.now()&&session.count>0&&session.count===this.reservedCount&&session.count<session.config.maxSwipes&&
+   session.status==='running'&&!session.timeExpired()&&session.count>0&&session.count===this.reservedCount&&!session.reachedProfileLimit()&&
    !(session.config.breaksEnabled&&(session.breakUntil||session.count>=session.nextBreakAt))&&
    binding?.serial===this.android.serial&&Boolean(binding?.serial)&&!this.draft&&lastAction?.kind==='like'&&Boolean(lastAction.identity)&&!lastAction.offerKey&&
-   lastAction.sessionEndsAt===session.endsAt&&screen?.kind==='profile'&&Boolean(screen.identity&&screen.screenKey&&screen.name)&&
+   sameSessionRun(session,lastAction.runId,lastAction.sessionEndsAt)&&screen?.kind==='profile'&&Boolean(screen.identity&&screen.screenKey&&screen.name)&&
    screen.name===lastAction.name&&!screen.composerText?.trim()&&!screen.controls?.composer&&!screen.controls?.sendLike&&
    Boolean(skip?.key&&skip.bounds)&&skip.enabled!==false&&skip.disabled!==true&&skip.label==='Skip '+screen.name;
  }
@@ -302,7 +317,7 @@ class MobileController{
  offerPendingSkip(){
   if(this.currentSkipOffer()||!this.eligibleForSkip())return;
   const {screen,session}=this;
-  this.skipOffer={token:randomUUID(),expiresAt:Math.min(session.now()+120000,session.endsAt),name:screen.name,
+  this.skipOffer={token:randomUUID(),expiresAt:Math.min(session.now()+120000,session.endsAt??Infinity),name:screen.name,
    guard:this.lastAction,count:session.count,sessionEpoch:session.epoch,epoch:this.epoch,serial:this.android.serial,
    inputEpoch:this.android.inputEpoch,avd:this.binding.avd,identity:screen.identity,revision:screen.screenKey,skipKey:screen.controls.skip.key};
  }
@@ -323,12 +338,12 @@ class MobileController{
    }
    this.session.count=this.reservedCount;
    const ownsReservation=()=>this.lastAction===skipGuard&&!this.storageError&&this.session.epoch===offer.sessionEpoch&&
-    this.session.status==='running'&&this.session.now()<offer.expiresAt&&this.session.now()<this.session.endsAt;
+    this.session.status==='running'&&this.session.now()<offer.expiresAt&&!this.session.timeExpired();
    try{
     this.assert(t,ownsReservation);
     await this.finalTap(card.controls.skip,t,ownsReservation,()=>{},'pass');
    }finally{
-    if(this.session.count>=this.session.config.maxSwipes&&this.session.status==='running')this.session.finish('limit');
+    if(this.session.reachedProfileLimit()&&this.session.status==='running')this.session.finish('limit');
    }
    // The worker verifies the new guard independently before continuing its original session.
    if(this.session.status==='running')this.reason='Skip counted. Verifying that Hinge advanced to the next profile.';
@@ -497,7 +512,7 @@ class MobileController{
   if(control?.direction!==direction)throw Error('The Bumble swipe card is not verified.');
   await this.fresh(s,t,valid);let issuedCount=0,confirmed=false,reminderDismissed=false;
   const same=after=>after.kind===s.kind&&after.name===s.name&&after.identity===s.identity&&after.screenKey===s.screenKey;
-  const budget=()=>this.session.status==='running'&&this.session.count+issuedCount<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
+  const budget=()=>this.session.status==='running'&&!this.session.reachedProfileLimit(this.session.count+issuedCount)&&!this.session.timeExpired();
   try{
    for(let attempt=0;attempt<2;attempt++){
     let issued=false;
@@ -562,7 +577,7 @@ class MobileController{
  }
  scopedPhotoRejection(t){
   const hint=this.rejectedPhoto;
-  return hint&&hint.endsAt===this.session.endsAt&&hint.count===this.session.count&&hint.serial===t.serial&&hint.avd===(this.binding?.avd||null)?hint:null;
+  return hint&&sameSessionRun(this.session,hint.runId,hint.endsAt)&&hint.count===this.session.count&&hint.serial===t.serial&&hint.avd===(this.binding?.avd||null)?hint:null;
  }
  heldReviewEndpoint(s,t){
   const hint=this.scopedPhotoRejection(t);
@@ -571,7 +586,7 @@ class MobileController{
   // Observe an unidentified restored poll without attempting any discovery gesture in start().
   const restoredPoll=hint.promptScan==='spent'&&hint.heldIdentity===null&&hint.promptMovesRemaining===undefined&&!s.identity&&!s.photos?.length;
   return (hint.promptScan==='moving'||restoredPoll)&&this.observedForeground==='co.hinge.app'&&this.binding?.serial===t.serial&&
-   !this.lastAction&&!this.draft&&this.session.count===this.reservedCount&&this.session.count<this.session.config.maxSwipes&&this.session.now()<hint.endsAt;
+   !this.lastAction&&!this.draft&&this.session.count===this.reservedCount&&!this.session.reachedProfileLimit()&&!this.session.timeExpired();
  }
  matchesRejectedPhoto(s,h,includeEndpoint=true){
   if(!s.name||nameDigest(s.name)!==h.nameDigest)return false;
@@ -581,9 +596,9 @@ class MobileController{
  }
  async reviewHeldPrompt(s,hint,t,valid,sleep){
   const session=this.session,epoch=session.epoch;
-  const owned=()=>valid()&&session.status==='running'&&session.epoch===epoch&&session.now()<session.endsAt&&
+  const owned=()=>valid()&&session.status==='running'&&session.epoch===epoch&&!session.timeExpired()&&
    this.scopedPhotoRejection(t)===hint&&this.binding?.serial===t.serial&&this.reservedCount===session.count&&
-   session.count<session.config.maxSwipes&&!this.lastAction&&!this.draft&&!this.storageError&&
+   !session.reachedProfileLimit()&&!this.lastAction&&!this.draft&&!this.storageError&&
    session.config.likeRatio===1&&this.config.mode==='like'&&this.config.swipe.scrollProfile&&
    !(session.config.breaksEnabled&&(session.breakUntil||session.count>=session.nextBreakAt));
   const official=card=>this.observedForeground==='co.hinge.app'&&card.kind==='profile'&&card.screenKey&&card.name&&
@@ -674,7 +689,7 @@ class MobileController{
   if(denyAlias(s))throw alternativeUnavailable();
   if(alternate){
    this.assert(t,valid);
-   if(alternate.attempted||this.lastAction||this.draft||this.session.now()>=this.session.endsAt||this.reservedCount>=this.session.config.maxSwipes)throw alternativeUnavailable();
+   if(alternate.attempted||this.lastAction||this.draft||this.session.timeExpired()||this.session.reachedProfileLimit(this.reservedCount))throw alternativeUnavailable();
    await this.verifyBinding(t);await this.fresh(s,t,valid);this.assert(t,valid);
    // Charge the single alternative review before any navigation; it never authorizes a vote.
    alternate.attempted=true;this.persist();
@@ -757,7 +772,13 @@ class MobileController{
  async submitLike(screen,original,t,valid,commit,verifyForm){
   const fresh=await this.fresh(screen,t,valid);this.assert(t,valid);
   if(verifyForm&&!verifyForm(fresh))throw alternativeUnavailable();
-  this.reserveAction({identity:original.identity,name:original.name,...(this.session.status==='running'&&this.config.mode==='like'&&screen.kind==='like'?{kind:'like',sessionEndsAt:this.session.endsAt}:{}),...(screen.kind==='likeOffer'?{offerKey:screen.screenKey}:{})});
+  const action={identity:original.identity,name:original.name};
+  if(this.session.status==='running'&&this.config.mode==='like'&&screen.kind==='like'){
+   action.kind='like';action.sessionEndsAt=this.session.endsAt;
+   if(this.session.runId)action.runId=this.session.runId;
+  }
+  if(screen.kind==='likeOffer')action.offerKey=screen.screenKey;
+  this.reserveAction(action);
   let issued=false;const onIssued=()=>{issued=true};
   try{
    await this.android.tapControl(screen.controls.sendLike.bounds,()=>{try{this.assert(t,valid);return true}catch{return false}},onIssued);onIssued();
@@ -785,8 +806,8 @@ class MobileController{
    let photo;
    if(selection?.alternate){
     this.assert(t,valid);
-    if(this.session.now()>=selection.alternate.endsAt||this.session.count!==selection.alternate.count||
-      this.reservedCount>=this.session.config.maxSwipes||this.draft||this.lastAction)throw alternativeUnavailable();
+    if(this.scopedPhotoRejection(t)!==selection.alternate||this.session.timeExpired()||this.session.count!==selection.alternate.count||
+      this.session.reachedProfileLimit(this.reservedCount)||this.draft||this.lastAction)throw alternativeUnavailable();
     const expected=selection.expectedTarget;
     const source=expected.type==='prompt'?s.prompts:s.photos;
     photo=source?.find(p=>p.key===expected.key&&p.like&&(expected.type==='prompt'?p.text===expected.text:p.visual===expected.visual));
@@ -817,7 +838,7 @@ class MobileController{
      form.prompts[0].text===photo.text&&!form.photos?.length&&['Send like','Send priority like'].includes(form.controls?.sendLike?.label)&&
      form.composerTextVerified===true&&form.composerText===''&&!this.draft&&!this.lastAction&&
      this.scopedPhotoRejection(t)===selection.alternate&&this.reservedCount===this.session.count&&
-     this.session.count<this.session.config.maxSwipes&&this.session.now()<this.session.endsAt;
+     !this.session.reachedProfileLimit()&&!this.session.timeExpired();
     if(!verifyForm(s))throw alternativeUnavailable();
    }
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
@@ -834,7 +855,7 @@ class MobileController{
       !this.draft&&!this.lastAction&&this.session.count===this.reservedCount){
      this.assert(t,valid);
      this.rejectedPhoto={nameDigest:nameDigest(original.name),sourceIdentity:original.identity,visual:photo.visual,entryIdentity:selection.entry.identity,entryVisual:selection.entry.visual,
-      heldIdentity:null,heldRevision:null,attempted:false,endsAt:this.session.endsAt,count:this.session.count,serial:t.serial,avd:this.binding.avd||null};
+      heldIdentity:null,heldRevision:null,attempted:false,...(this.session.runId?{runId:this.session.runId}:{}),endsAt:this.session.endsAt,count:this.session.count,serial:t.serial,avd:this.binding.avd||null};
      this.persist();throw transientError('The selected photo could not be verified in the Like form.','MOBILE_PHOTO_MISMATCH');
     }
     throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
@@ -899,7 +920,29 @@ class MobileController{
    }
    if(action==='confirmPendingSkip')return this.confirmPendingSkip(data.token,t);
    if(action==='review'){await this.review(t);return this.snapshot()}
-   if(action==='start'){if(this.busy&&this.session.status==='running')throw Error('Session is already running.');await this.consent(t);await this.verifyBinding(t);const resuming=['error','paused'].includes(this.session.status);if(this.session.status==='error'&&this.session.endsAt)this.session.restore(this.checkpoint().session);if(resuming&&(this.session.now()>=this.session.endsAt||this.session.count>=this.session.config.maxSwipes)){this.session.finish(this.session.count>=this.session.config.maxSwipes?'limit':'time');return this.snapshot()}let s=await this.read(t);if(this.platform==='bumble'){s=await this.dismissBumbleReminder(s,t);if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');}else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&!this.resumableLike(s)&&!(resuming&&this.heldReviewEndpoint(s,t))){s=await this.identifyProfile(s,t);this.supported(s,['profile']);}if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');if(this.session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}this.persist();this.session.start(this.config.swipe);await this.record('session');this.openerArmed=this.config.autoOpeners===true;return this.snapshot()}
+   if(action==='start'){
+    const session=this.session;
+    if(this.busy&&session.status==='running')throw Error('Session is already running.');
+    await this.consent(t);await this.verifyBinding(t);
+    const resuming=['error','paused'].includes(session.status);
+    if(session.status==='error')session.restore(this.checkpoint().session);
+    if(resuming&&(session.timeExpired()||session.reachedProfileLimit())){
+     session.finish(session.reachedProfileLimit()?'limit':'time');return this.snapshot();
+    }
+    let s=await this.read(t);
+    if(this.platform==='bumble'){
+     s=await this.dismissBumbleReminder(s,t);
+     if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');
+     if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');
+    }else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&
+             !this.resumableLike(s)&&!(resuming&&this.heldReviewEndpoint(s,t))){
+     s=await this.identifyProfile(s,t);this.supported(s,['profile']);
+    }
+    if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');
+    if(session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}
+    this.persist();session.start(this.config.swipe);await this.record('session');
+    this.openerArmed=this.config.autoOpeners===true;return this.snapshot();
+   }
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
   });
  }

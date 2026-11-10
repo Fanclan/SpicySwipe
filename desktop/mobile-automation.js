@@ -12,7 +12,8 @@
     const forms = new Map(), hydrated = new Set();
     const title = () => current === 'bumble' ? 'Bumble' : 'Hinge';
     const button = (key, text, primary = false) => `<button type="button" data-mobile="${key}"${primary ? ' class="primary"' : ''}>${text}</button>`;
-    const number = (key, text, min, max, step = 1) => `<label>${text}<input name="${key}" type="number" min="${min}" max="${max}" step="${step}" required></label>`;
+    const limitFields = ['maxSwipes', 'sessionMinutes'];
+    const number = (key, text, min, max, step = 1) => `<label>${text}<input name="${key}" type="number" min="${min}" max="${max}" step="${step}" ${limitFields.includes(key) ? 'placeholder="No limit" aria-describedby="ma-limit-help"' : 'required'}></label>`;
     const check = (key, text, disabled = false) => `<label class="ma-check"><input name="${key}" type="checkbox"${disabled ? ' disabled' : ''}>${text}</label>`;
     const options = entries => entries.map(([key, name]) => `<option value="${escape(key)}">${escape(name)}</option>`).join('');
     root.classList.add('mobile-automation');
@@ -24,18 +25,19 @@
       <p class="ma-hint">Review varies the scroll depth and selects a visible photo or a text prompt when no photo is available; it does not Like or Skip. Photo contents are not analyzed by AI. Final actions require a fresh recognized screen.</p></section>
       <form data-mobile="form" class="ma-card"><div class="ma-heading"><h3>Auto-like profiles</h3><div class="ma-actions">${button('quick', 'Quick preset')}${button('overnight', 'Overnight preset')}</div></div>
       <p data-mobile="preset-note" class="ma-hint">Presets fill the form. Save or Start applies your choices.</p>
-      <div class="ma-fields">${number('maxSwipes', 'Profile limit', 1, 10000)}${number('sessionMinutes', 'Duration (minutes)', 1, 720)}${number('likeRatio', 'Like probability (0 to 1)', 0, 1, .05)}
+      <p class="ma-hint" id="ma-limit-help">Set at least one limit. Leave the other blank, or set both to stop at whichever comes first.</p>
+      <div class="ma-fields">${number('maxSwipes', 'Profile limit', 1, 10000)}${number('sessionMinutes', 'Time limit (minutes)', 1, 720)}${number('likeRatio', 'Like probability (0 to 1)', 0, 1, .05)}
       <label>Like mode<select name="mode"><option value="like">Plain Like</option><option value="comment">AI photo comment (opt in)</option></select></label></div>
       <p data-mobile="comment-note" class="ma-hint"></p>
       <details><summary>Timing, review and breaks</summary><div class="ma-checks">${check('randomizeTiming', 'Randomize waits')}${check('scrollProfile', 'Scroll through profile')}${check('browsePhotos', 'Dwell on visible photos')}</div>
       <div class="ma-fields">${number('delaySeconds', 'Fixed wait (seconds)', 3, 600)}${number('minDelaySeconds', 'Minimum wait (seconds)', 3, 600)}${number('maxDelaySeconds', 'Maximum wait (seconds)', 3, 600)}${number('scrollMin', 'Minimum scrolls', 0, 10)}${number('scrollMax', 'Maximum scrolls', 0, 10)}${number('fractionMin', 'Minimum scroll distance (%)', 20, 65)}${number('fractionMax', 'Maximum scroll distance (%)', 20, 65)}${number('minPhotoSeconds', 'Minimum review dwell (seconds)', 1, 30)}${number('maxPhotoSeconds', 'Maximum review dwell (seconds)', 1, 30)}</div>
       <div class="ma-checks">${check('breaksEnabled', 'Take breaks')}${check('allowBackground', web ? 'Keep running when this tab closes' : 'Continue while app is hidden')}</div><div class="ma-fields">${number('breakEvery', 'Break after profiles', 1, 1000)}${number('breakMinSeconds', 'Minimum break (seconds)', 10, 1800)}${number('breakMaxSeconds', 'Maximum break (seconds)', 10, 1800)}</div>
-      <p class="ma-hint">Background operation does not prevent computer sleep. Pausing retains the original session deadline.</p></details>
+      <p class="ma-hint">Background operation does not prevent computer sleep. Resume keeps your count and any end time.</p></details>
       <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
       <div data-mobile="held-card" class="ma-held-card" hidden>
         <div data-mobile="skip-intro"><strong>Hinge is still showing this card</strong><p>You can keep waiting or skip the card shown on the phone.</p>${button('review-skip', 'Skip this card and continue')}</div>
         <div data-mobile="skip-review" role="group" aria-labelledby="ma-confirm-skip-title" aria-describedby="ma-confirm-skip-cost" hidden>
-          <strong data-mobile="skip-title" id="ma-confirm-skip-title"></strong><p id="ma-confirm-skip-cost">Check the card on the phone. This Skip uses one additional profile from your session limit. The earlier Like attempt stays counted.</p>
+          <strong data-mobile="skip-title" id="ma-confirm-skip-title"></strong><p id="ma-confirm-skip-cost">Check the card on the phone. This Skip adds one additional profile to your session count. The earlier Like attempt stays counted.</p>
           <div class="ma-actions">${button('cancel-skip', 'Cancel')}${button('confirm-skip', 'Confirm Skip')}</div>
         </div>
       </div><p data-mobile="skip-notice" class="ma-reason" role="status" tabindex="-1"></p>
@@ -50,12 +52,12 @@
     const advanced=form.querySelector('details');advanced.querySelector('summary').after(field('likeRatio').closest('label'));advanced.append(el('quick').parentElement,el('save'));
     el('preset-note').textContent='Start uses your settings below. Plain Likes are the default.';
     const topNumbers = ['scrollMin', 'scrollMax', 'fractionMin', 'fractionMax'];
-    const swipeNumbers = ['maxSwipes', 'sessionMinutes', 'likeRatio', 'delaySeconds', 'minDelaySeconds', 'maxDelaySeconds', 'minPhotoSeconds', 'maxPhotoSeconds', 'breakEvery', 'breakMinSeconds', 'breakMaxSeconds'];
+    const swipeNumbers = [...limitFields, 'likeRatio', 'delaySeconds', 'minDelaySeconds', 'maxDelaySeconds', 'minPhotoSeconds', 'maxPhotoSeconds', 'breakEvery', 'breakMinSeconds', 'breakMaxSeconds'];
     const swipeChecks = ['randomizeTiming', 'scrollProfile', 'browsePhotos', 'breaksEnabled', 'allowBackground'];
     function fill(config) {
       const d = defaults(), c = { ...d, ...config, swipe: { ...d.swipe, ...config?.swipe } };
       for (const key of ['mode', 'tone', 'language', 'length', 'instruction', ...topNumbers]) field(key).value = key.startsWith('fraction') ? Math.round(c[key] * 100) : c[key];
-      for (const key of swipeNumbers) field(key).value = c.swipe[key];
+      for (const key of swipeNumbers) field(key).value = c.swipe[key] ?? '';
       for (const key of swipeChecks) field(key).checked = c.swipe[key];
       field('autoOpeners').checked = c.autoOpeners; field('autoSend').checked = c.autoSend;
     }
@@ -64,9 +66,13 @@
       const config = { ...defaults(), autoOpeners:field('autoOpeners').checked,autoSend:field('autoSend').checked&&field('autoOpeners').checked,swipe: {} };
       for (const key of ['mode', 'tone', 'language', 'length', 'instruction']) config[key] = field(key).value;
       for (const key of topNumbers) config[key] = Number(field(key).value) / (key.startsWith('fraction') ? 100 : 1);
-      for (const key of swipeNumbers) config.swipe[key] = Number(field(key).value);
+      for (const key of swipeNumbers) {
+        const value = field(key).value;
+        config.swipe[key] = limitFields.includes(key) && value === '' ? null : Number(value);
+      }
       for (const key of swipeChecks) config.swipe[key] = field(key).checked;
       if (validate) {
+        C.requireSessionLimit(config.swipe);
         const pairs = [[config.scrollMin, config.scrollMax, 'scroll count'], [config.fractionMin, config.fractionMax, 'scroll distance'], ...[['minDelaySeconds', 'maxDelaySeconds'], ['minPhotoSeconds', 'maxPhotoSeconds'], ['breakMinSeconds', 'breakMaxSeconds']].map(([a,b]) => [config.swipe[a], config.swipe[b], 'timing'])];
         for (const [a, b, name] of pairs) if (a > b) throw Error(`Minimum ${name} must not exceed maximum.`);
       }
@@ -166,8 +172,9 @@
       el('context').textContent = [context.name, context.bio, history].filter(Boolean).join('\n\n');
       const photo = state.selectedPhoto;
       el('photo').textContent = s ? state.selectedPrompt ? 'Selected visible text prompt: ready' : photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
-      el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'No profiles are available right now. We will check again automatically until the session deadline. No Likes are sent while waiting.' : s?.reason) || '';
-      const progress = `${session.count || 0} / ${session.limit || field('maxSwipes').value} issued profile actions`;
+      el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'Waiting for new profiles. The session will check again automatically.' : s?.reason) || '';
+      const limit = session.limit === undefined || session.status === 'idle' ? field('maxSwipes').value : session.limit;
+      const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} issued profile actions`;
       const waitingForProfiles = active && (session.phase === 'waiting for profiles' || (s?.kind === 'empty' && ['waiting', 'reviewing'].includes(session.phase)));
       const recoveryLabel=active&&({'verifying previous action':'Verifying previous action','recovering screen':'Recovering device screen','waiting for supported screen':'Waiting for a supported screen','checking swipe result':'Refreshing to verify previous action','recovering device':'Recovering device','revalidating device':'Revalidating device','checking next profile':'Checking next profile'}[session.phase]);
       const statusText = recoveryLabel || (waitingForProfiles ? 'No profiles available' : `${session.status || 'idle'}${session.phase && session.phase !== session.status ? ` · ${session.phase}` : ''}`);
@@ -239,6 +246,9 @@
       }
       if (action === 'pause' || action === 'stop') { run(token => call(action, {}, token), true); return; }
       run(async token => {
+        // Setup can start the phone and load its saved settings. Check the current
+        // form before setup, then collect the active phone's values before saving.
+        if(action==='start' && prepareStart) collect(true);
         if(action==='start'||action==='resume'){starting=true;render();try{await prepareStart?.(()=>token===generation);if(token!==generation)return;}finally{if(token===generation){starting=false;render()}}}
         if (['save', 'start', 'generate', 'like', 'review'].includes(action)) {
           const config = collect(true); forms.set(current, config);

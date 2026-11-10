@@ -5,6 +5,7 @@ if (window.top === window && ['tinder.com','www.tinder.com'].includes(location.h
   const listeners = new Set();
   globalThis.SSClient = {
     rpc: (action, data) => ipcRenderer.invoke('tinder:service', action, data),
+    refreshEmpty: runId => ipcRenderer.send('tinder:refresh-empty', {documentId,runId}),
     subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }
   };
   ipcRenderer.on('tinder:settings', (_event, data) => listeners.forEach(fn => fn({type:'settings',data})));
@@ -17,10 +18,14 @@ if (window.top === window && ['tinder.com','www.tinder.com'].includes(location.h
     try {
       if (!ready) throw Error('Tinder is loading. Wait a moment and try again.');
       let result;
-      if (action === 'prepareLocationReload' || action === 'restoreLocationReload') {
+      if (['prepareLocationReload','prepareEmptyRefresh','restoreLocationReload'].includes(action)) {
         if (data?.documentId !== documentId) throw Error('Tinder document changed during the location reload.');
         if (action === 'prepareLocationReload') result = globalThis.SSTinder.prepareLocationReload();
-        else globalThis.SSTinder.restoreLocationReload(data.checkpoint);
+        else if (action === 'prepareEmptyRefresh') result = globalThis.SSTinder.prepareEmptyRefresh(data.runId);
+        else {
+          globalThis.SSTinder.restoreLocationReload(data.checkpoint);
+          result = globalThis.SSTinder.snapshot().session;
+        }
       }
       else result = await globalThis.SSTinder.request(action, data);
       ipcRenderer.send('tinder:result', {id,result});

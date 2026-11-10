@@ -9,7 +9,7 @@ async function setup(t,{compact=false,initial={},web=false}={}){
  bridge.web=web;
  const root=dom.window.document.getElementById('root'),app=await dom.window.SSWorkspace.mount(root,bridge);t.after(()=>app.destroy());
  const click=async selector=>{root.querySelector(selector).click();await tick();await tick()};
- return {root,app,click,sent,pageActions,read:()=>state,changeContext:c=>context=c,setGenerate:fn=>pendingGenerate=fn,setModels:fn=>pendingModels=fn,update:p=>subscriber({type:'settings',data:{...state,...p}})};
+ return {root,app,click,sent,pageActions,read:()=>state,changeContext:c=>context=c,setGenerate:fn=>pendingGenerate=fn,setModels:fn=>pendingModels=fn,update:p=>subscriber({type:'settings',data:{...state,...p}}),updateSession:session=>subscriber({type:'page',data:{connected:true,context,session}})};
 }
 test('failed regeneration cannot rebind an existing draft to another match',async t=>{
  const x=await setup(t);x.app.navigate('messages');await x.click('[data-action="generate"]');
@@ -77,4 +77,55 @@ test('web Quick preset preserves the selected background setting',async t=>{
   await x.click('[data-action="quickPreset"]');
   assert.equal(field.checked,value);
  }
+});
+test('Tinder saves one or both session limits and restores the empty field',async t=>{
+ const x=await setup(t,{web:true});
+ for(const [profiles,minutes] of [[1000,null],[null,45],[70,20]]){
+  x.app.navigate('swiping');
+  x.root.querySelector('[name="maxSwipes"]').value=profiles??'';
+  x.root.querySelector('[name="sessionMinutes"]').value=minutes??'';
+  await x.click('[data-action="start"]');
+  assert.equal(x.pageActions.at(-1),'start');
+  assert.equal(x.read().swipeConfig.maxSwipes,profiles);
+  assert.equal(x.read().swipeConfig.sessionMinutes,minutes);
+  x.app.navigate('overview');x.app.navigate('swiping');
+  assert.equal(x.root.querySelector('[name="maxSwipes"]').value,String(profiles??''));
+  assert.equal(x.root.querySelector('[name="sessionMinutes"]').value,String(minutes??''));
+ }
+});
+test('Tinder rejects two empty limits before save or start and presets restore valid limits',async t=>{
+ const x=await setup(t);x.app.navigate('swiping');
+ x.root.querySelector('[name="maxSwipes"]').value='';
+ x.root.querySelector('[name="sessionMinutes"]').value='';
+ for(const action of ['saveSwiping','start']){
+  await x.click(`[data-action="${action}"]`);
+  assert.match(x.root.querySelector('.toast').textContent,/profile limit.*time limit/i);
+  assert.equal(x.pageActions.includes('start'),false);
+  assert.ok(x.read().swipeConfig.maxSwipes);
+ }
+ await x.click('[data-action="quickPreset"]');
+ await x.click('[data-action="start"]');
+ assert.equal(x.pageActions.at(-1),'start');
+});
+test('Tinder shows a time-only count without a profile target and a profile-only session without a deadline',async t=>{
+ const x=await setup(t);x.app.navigate('swiping');await tick();
+ const phase={status:'running',phase:'waiting for profiles',count:17,nextActionAt:Date.now()+300000};
+ x.updateSession({...phase,limit:null,endsAt:Date.now()+60000});
+ assert.match(x.root.querySelector('.session-progress').textContent,/17\s*profiles/i);
+ assert.equal(x.root.querySelector('#session-progress').hidden,true);
+ assert.match(x.root.querySelector('#session-deadline').textContent,/Ends at/i);
+ x.updateSession({...phase,limit:1000,endsAt:null});
+ assert.equal(x.root.querySelector('#session-progress').hidden,false);
+ assert.equal(x.root.querySelector('#session-progress').max,1000);
+ assert.equal(x.root.querySelector('#session-deadline').textContent,'');
+ assert.doesNotMatch(x.root.querySelector('#session-message').textContent,/deadline/i);
+});
+test('resuming Tinder with an unfinished edit uses the limits of the paused run',async t=>{
+ const x=await setup(t);x.app.navigate('swiping');await tick();
+ x.updateSession({status:'paused',phase:'paused',limit:1000,count:16,endsAt:null});
+ x.root.querySelector('[name="maxSwipes"]').value='';
+ x.root.querySelector('[name="sessionMinutes"]').value='';
+ await x.click('[data-action="start"]');
+ assert.equal(x.pageActions.at(-1),'start');
+ assert.ok(x.read().swipeConfig.maxSwipes);
 });

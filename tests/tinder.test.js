@@ -341,3 +341,25 @@ test('Tinder resumes when a profile appears after an empty-queue wait without re
  for(let i=0;i<22&&x.api.snapshot().session.phase!=='waiting for profiles';i++){x.waits.shift()();await tick()}
  assert.equal(x.api.snapshot().session.phase,'waiting for profiles');assert.equal(x.api.snapshot().session.count,0);d.body.append(card);x.waits.shift()();await tick();x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.count,1);assert.equal(x.api.snapshot().session.endsAt,deadline);await x.api.request('stop');
 });
+
+test('hosted Tinder refreshes a persistently empty Discover and retains the cooldown across reloads',async t=>{
+ const x=await swipeSetup(t,{browsePhotos:false,maxSwipes:5}),d=x.dom.window.document;
+ let now=Date.now();x.dom.window.Date.now=()=>now;
+ const refreshes=[];x.dom.window.SSClient.refreshEmpty=runId=>refreshes.push(runId);
+ d.querySelector('article').remove();await x.api.request('start');
+ async function untilWaiting(fixture){
+  for(let i=0;i<30;i++){fixture.waits.shift()();await tick();if(fixture.api.snapshot().session.phase==='waiting for profiles')return;}
+  assert.fail('empty feed did not schedule its next check');
+ }
+ await untilWaiting(x);assert.deepEqual(refreshes,[]);
+ now+=300001;await untilWaiting(x);assert.equal(refreshes.length,1);
+ const checkpoint=x.api.prepareEmptyRefresh(refreshes[0]);assert.equal(checkpoint.session.count,0);
+ assert.equal(checkpoint.session.status,'running');assert.equal(x.api.prepareEmptyRefresh('stale-run'),null);
+ const replacement=await swipeSetup(t,{browsePhotos:false});replacement.dom.window.Date.now=()=>now;
+ replacement.dom.window.SSClient.refreshEmpty=runId=>refreshes.push(runId);
+ const card=replacement.dom.window.document.querySelector('article');card.remove();
+ replacement.api.restoreLocationReload(checkpoint);await untilWaiting(replacement);assert.equal(refreshes.length,1);
+ replacement.dom.window.document.body.append(card);assert.equal(replacement.api.prepareEmptyRefresh(refreshes[0]),null);
+ replacement.waits.shift()();await tick();replacement.waits.shift()();await tick();
+ assert.equal(replacement.api.snapshot().session.count,1);await replacement.api.request('stop');await x.api.request('stop');
+});

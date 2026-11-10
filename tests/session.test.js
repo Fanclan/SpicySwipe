@@ -1,6 +1,105 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');
 const Session=fs.existsSync('shared/session.js')?require('../shared/session'):null;
 const tick=()=>new Promise(r=>setImmediate(r));
+test('profile-only sessions wait for new profiles beyond twelve hours and finish at their count', async () => {
+ let now=0, observations=0;
+ const session=new Session({
+   now:()=>now, wait:async ms=>{now+=ms},
+   act:async()=>{if(++observations<=3)return {retryAfter:6*60*60*1000,phase:'waiting for profiles'}}
+ });
+ session.start({sessionMinutes:null,maxSwipes:2,delaySeconds:3});
+ await tick();
+ assert.equal(session.endsAt,null);
+ assert.equal(observations,5);
+ assert.ok(now>18*60*60*1000);
+ assert.equal(session.count,2);
+ assert.equal(session.completionReason,'limit');
+});
+test('time-only sessions can exceed the default profile count and stop at the deadline', async () => {
+ let now=0, issued=0;
+ const session=new Session({now:()=>now,wait:async ms=>{now+=ms},act:async()=>{issued++}});
+ session.start({sessionMinutes:2,maxSwipes:null,delaySeconds:3});
+ await tick();
+ assert.equal(session.snapshot().limit,null);
+ assert.equal(session.endsAt,120000);
+ assert.equal(issued,39);
+ assert.equal(session.count,39);
+ assert.equal(session.completionReason,'time');
+});
+test('a profile-only run keeps its own identity and count across pause, persistence, and resume', async () => {
+ const create=()=>new Session({wait:()=>new Promise(()=>{}),act:async()=>{}});
+ const source=create();
+ source.start({sessionMinutes:null,maxSwipes:1000});
+ source.count=27;
+ source.pause();
+ const saved=structuredClone(source.checkpoint());
+ assert.equal(typeof saved.runId,'string');
+ assert.ok(saved.runId.length>0);
+ const restored=create();
+ restored.restore(saved);
+ restored.start({maxSwipes:1, sessionMinutes:1});
+ assert.equal(restored.snapshot().runId,saved.runId);
+ assert.deepEqual([restored.status,restored.count,restored.endsAt,restored.config.maxSwipes],['running',27,null,1000]);
+ restored.stop();
+ restored.start({sessionMinutes:null,maxSwipes:1000});
+ assert.notEqual(restored.runId,saved.runId);
+ assert.equal(restored.count,0);
+ restored.stop();
+});
+test('legacy timed checkpoints retain a stable identity and their original deadline', () => {
+ let now=5000;
+ const create=()=>new Session({now:()=>now,wait:()=>new Promise(()=>{}),act:async()=>{}});
+ const source=create();
+ source.start({sessionMinutes:1,maxSwipes:4});
+ const saved=source.checkpoint();
+ delete saved.runId;
+ source.stop();
+ const restored=create();
+ restored.restore(saved);
+ assert.equal(restored.runId,'legacy:65000');
+ assert.equal(restored.endsAt,65000);
+ restored.start();
+ assert.equal(restored.runId,'legacy:65000');
+ now=65000;
+ const reloaded=create();
+ reloaded.restore(restored.checkpoint());
+ assert.equal(reloaded.completionReason,'time');
+ restored.stop();
+});
+test('invalid optional budgets and missing active run identities cannot erase a saved session', () => {
+ const session=new Session({wait:()=>new Promise(()=>{}),act:async()=>{}});
+ session.start({maxSwipes:3,sessionMinutes:null});
+ session.count=2;
+ session.stop();
+ const before=session.checkpoint();
+ assert.throws(()=>session.start({maxSwipes:null,sessionMinutes:null}),/limit/i);
+ for(const changes of [
+   {config:{...before.config,maxSwipes:null}},
+   {endsAt:100},
+   {runId:null},
+   {runId:undefined},
+   {config:{...before.config,sessionMinutes:1},endsAt:null}
+ ]) {
+   assert.throws(()=>session.restore({...before,status:'running',...changes}));
+ }
+ assert.deepEqual(session.checkpoint(),before);
+});
+test('late completion from a stopped run cannot consume a profile in the next run', async () => {
+ const waits=[];
+ let reserved;
+ const session=new Session({wait:()=>new Promise(resolve=>waits.push(resolve)),act:async(_c,_valid,commit)=>{
+   reserved=commit;await new Promise(()=>{});
+ }});
+ session.start({maxSwipes:3,sessionMinutes:null});
+ waits.shift()();await tick();
+ assert.equal(typeof reserved,'function');
+ session.stop();
+ session.start({maxSwipes:1,sessionMinutes:null});
+ reserved();
+ assert.equal(session.count,0);
+ assert.equal(session.status,'running');
+ session.stop();
+});
 test('stop during delay prevents any delayed swipe',async()=>{
  assert.equal(typeof Session,'function');let release,clicks=0;
  const s=new Session({wait:()=>new Promise(r=>release=r),act:async()=>{clicks++},changed:()=>{}});

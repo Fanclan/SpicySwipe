@@ -15,7 +15,12 @@ function normalize(patch={},base={}){
  if(!C.tones.includes(out.tone)||!Object.hasOwn(C.languages,out.language)||!['short','medium'].includes(out.length))throw Error('Invalid mobile draft options.');
  if(typeof out.instruction!=='string'||out.instruction.length>1200)throw Error('Invalid mobile instruction.');
  if(patch.swipe!==undefined&&!object(patch.swipe))throw Error('Invalid session settings.');
- const schema=C.swipeSettings();for(const [k,v]of Object.entries(out.swipe)){if(!Object.hasOwn(schema,k)||typeof v!==typeof schema[k]||(typeof v==='number'&&!Number.isFinite(v)))throw Error('Invalid session setting.');}
+ const schema=C.swipeSettings();
+ for(const [k,v]of Object.entries(out.swipe)){
+  if(v===null&&(k==='maxSwipes'||k==='sessionMinutes'))continue;
+  if(!Object.hasOwn(schema,k)||typeof v!==typeof schema[k]||(typeof v==='number'&&!Number.isFinite(v)))throw Error('Invalid session setting.');
+ }
+ C.requireSessionLimit(out.swipe);
  for(const [a,b]of [['minDelaySeconds','maxDelaySeconds'],['minPhotoSeconds','maxPhotoSeconds'],['breakMinSeconds','breakMaxSeconds']])if(out.swipe[a]>out.swipe[b])throw Error('Minimum session timing exceeds maximum.');
  out.swipe=C.swipeSettings(out.swipe);return out;
 }
