@@ -29,7 +29,12 @@ if [ "$SCENARIO" != failed ] && [ ! -e "$HOME/restarted" ]; then echo 1; fi
 if [ "$1" = -accel-check ]; then exit 0; fi
 if [ "$1" = '@${bumble}' ] || [ "$SCENARIO" = shutdown ] || [ "$SCENARIO" = city-shutdown ]; then exec /bin/sleep 60; fi
 if [ -e "$HOME/started" ]; then
-  if [ -d "$HOME/watcher-active" ]; then echo 'old watcher still active'; fi
+  if [ "$SCENARIO" = city ]; then
+    # Inspect the first helper at launch, even when this guest's own helper is also running.
+    if kill -0 "$(cat "$HOME/first-watcher-pid")" 2>/dev/null; then echo 'old watcher still active'; fi
+    while [ ! -f "$HOME/watcher-ready-$$" ]; do /bin/sleep .01; done
+    echo 'replacement watcher ready'
+  fi
   echo 'replacement launched'
   touch "$HOME/restarted"
   exit 1
@@ -37,7 +42,7 @@ fi
 touch "$HOME/started"
 # A fake Android boot can complete (or fail) before the process exits.
 for i in $(seq 1 100); do
-  if [ "$SCENARIO" = city ]; then [ -f "$HOME/watcher-ready" ] && break
+  if [ "$SCENARIO" = city ]; then [ -f "$HOME/watcher-ready-$$" ] && break
   elif [ -e "$HOME/clock-read" ] || { [ "$SCENARIO" = failed ] && [ -e "$HOME/probed" ]; }; then break; fi
   /bin/sleep .01
 done
@@ -52,10 +57,10 @@ function /opt/electron/electron() {
     touch "$HOME/first-city-attempt"; echo 'city helper transient failure'; return 1
   fi
   # Model a city helper sleeping between its 15-second boot-ID checks.
-  trap 'trap "" TERM; rmdir "$HOME/watcher-active"; echo "city helper stopped"; exit 0' TERM
-  mkdir "$HOME/watcher-active" || return 1
+  trap 'trap "" TERM; echo "city helper stopped"; exit 0' TERM
+  if [[ ! -e "$HOME/first-watcher-pid" ]]; then echo "$BASHPID" > "$HOME/first-watcher-pid"; fi
   echo 'city helper watching'
-  touch "$HOME/watcher-ready"
+  touch "$HOME/watcher-ready-$4"
   while true; do /bin/sleep .02; done
 }
 date() {
@@ -121,7 +126,7 @@ test('a slow city watcher is stopped and reaped before a replacement phone launc
   const f = fixture(t, 'city');
   await f.until('backoff ' + hinge + ' 30');
   assert.match(f.output(), /city helper transient failure[\s\S]*city helper watching[\s\S]*status=134 signal=6/);
-  assert.match(f.output(), /city helper stopped[\s\S]*replacement launched/);
+  assert.match(f.output(), /city helper stopped[\s\S]*replacement watcher ready[\s\S]*replacement launched/);
   assert.match(f.output(), /backoff SpicySwipe_Phone_API_36 2/);
   assert.doesNotMatch(f.output(), /old watcher still active/);
 });
