@@ -15,6 +15,14 @@ const nameDigest=name=>createHash('sha256').update(name).digest('hex');
 const photoFingerprint=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value);
 const matchesFingerprint=(p,visual,tolerance=6)=>photoFingerprint(visual)&&[p.visual,p.visualSquare].some(v=>photoFingerprint(v)&&hashDistance(v,visual)<=tolerance);
 const visibleFingerprint=(s,visual)=>s.photos?.some(p=>matchesFingerprint(p,visual));
+function uniqueNativePrompt(card){
+ if(card.kind!=='profile'||!card.identity||!card.name||card.controls?.skip?.label!=='Skip '+card.name)return null;
+ const prompts=card.prompts||[];
+ const actionable=prompts.filter(p=>p.key&&p.text&&p.like?.key&&p.like.label==='Like prompt');
+ if(actionable.length!==1)return null;
+ const target=actionable[0];
+ return prompts.filter(p=>p.text===target.text).length===1?target:null;
+}
 function exactRejectedSource(card,hint){
  const photo=card.photos?.[0];
  return card.identity===hint.sourceIdentity&&card.controls?.skip?.label==='Skip '+card.name&&
@@ -661,8 +669,20 @@ class MobileController{
    return hint.heldIdentity===null&&exactRejectedSource(card,hint);
   };
   const eligible=card=>official(card)&&(legacy?legacyRoute(card):Boolean(route(card)||nativePrompt(card)));
-  if(!owned()||!eligible(s)||!this.checkpointStore||!this.android.deviceIdentity)throw alternativeUnavailable();
+  const unreachableEndpoint=card=>!hint.promptScan&&hint.attempted&&this.config.swipe.likeRatio===1&&
+   card.screenKey===hint.heldRevision&&(card.identity||null)===hint.heldIdentity&&this.heldInventoryScreen(card,hint)&&
+   !route(card)&&!nativePrompt(card);
+  if(!owned()||!this.checkpointStore||!this.android.deviceIdentity)throw alternativeUnavailable();
+  const unreachable=unreachableEndpoint(s);
+  if(!unreachable&&!eligible(s))throw alternativeUnavailable();
   await this.consent(t);await this.verifyBinding(t);s=await this.fresh(s,t,owned);
+  this.assert(t,owned);
+  if(unreachable){
+   if(unreachableEndpoint(s)){
+    hint.promptScan='spent';hint.promptMovesRemaining=0;this.persist();
+   }
+   throw alternativeUnavailable();
+  }
   if(!eligible(s))throw alternativeUnavailable();
   let remaining=promptMoveLimit;
   const hold=card=>{hint.heldIdentity=card.identity||null;hint.heldRevision=card.screenKey;hint.promptScan='spent';hint.promptMovesRemaining=remaining;this.persist()};
@@ -755,6 +775,7 @@ class MobileController{
   const n=this.config.swipe.scrollProfile?this.config.scrollMin+Math.floor(this.random()*(this.config.scrollMax-this.config.scrollMin+1)):0;
   for(let i=0;i<n;i++)await move(this.config.fractionMin+this.random()*(this.config.fractionMax-this.config.fractionMin));
   // Random depth selects a different part of the profile; small bounded adjustments expose a full photo.
+  let preferredPrompt=null;
   const targets=()=>{
    // Discover paints its floating Skip button over the photo, but the Like preview omits it.
    const skip=s.controls.skip;
@@ -766,6 +787,10 @@ class MobileController{
     // Non-overlapping six-bit match ranges distinguish this candidate from the rejected source.
     return prompts.length?prompts:photos.filter(p=>!followingRejected&&photoFingerprint(p.visual)&&!matchesFingerprint(p,alternate.visual,12)&&
      !photos.some(other=>other!==p&&matchesFingerprint(other,p.visual,12)));
+   }
+   if(photos.length&&automaticPlainLike&&this.session.status==='running'&&this.session.config.likeRatio===1&&this.config.swipe.likeRatio===1){
+    preferredPrompt=uniqueNativePrompt(s);
+    if(preferredPrompt)return [{...preferredPrompt,type:'prompt'}];
    }
    return photos.length?photos:prompts;
   };
@@ -786,7 +811,8 @@ class MobileController{
   if(alternate&&!candidates.length)throw alternativeUnavailable();
   if(!candidates.length)throw transientError("No fully visible photo found within the review limit. Scroll manually and read again.");
   const selected=candidates[Math.min(candidates.length-1,Math.floor(this.random()*candidates.length))];this.selectedPhoto=selected.type==='prompt'?null:selected;this.selectedPrompt=selected.type==='prompt'?selected:null;
-  this.reviewContext={identity:s.identity,screenKey:s.screenKey,entry,alternate,expectedTarget:alternate?selected:null,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
+  this.reviewContext={identity:s.identity,screenKey:s.screenKey,entry,alternate,expectedTarget:alternate?selected:null,
+   preferredPrompt,promptEpoch:preferredPrompt?this.session.epoch:null,context:{name,bio:[...contexts].filter(Boolean).join('\n').slice(0,12000),history:[]}};this.notify();return s;
  } async record(kind){await this.service.request('record',{kind,detail:this.platform==='hinge'?'Hinge desktop':'Bumble desktop'})}
  async transition(before,t,valid=()=>true,allowOffer=false){
   let offerHandled=false,evidenceChecked=false,last,candidate=null,candidateReads=0;
@@ -849,6 +875,12 @@ class MobileController{
     const source=expected.type==='prompt'?s.prompts:s.photos;
     photo=source?.find(p=>p.key===expected.key&&p.like&&(expected.type==='prompt'?p.text===expected.text:p.visual===expected.visual));
     if(!photo)throw alternativeUnavailable();
+   }else if(selection?.preferredPrompt){
+    s=await this.fresh(s,t,valid);
+    photo=uniqueNativePrompt(s);
+    const expected=selection.preferredPrompt;
+    if(!photo||photo.key!==expected.key||photo.text!==expected.text||photo.like.key!==expected.like.key)
+     throw transientError('The reviewed prompt changed. Read the profile again.');
    }else if(prepared&&this.selectedPrompt){
     photo=s.prompts?.find(p=>p.key===this.selectedPrompt.key&&p.like);
     if(!photo)throw transientError('The reviewed prompt is no longer available. Read the profile again.');
@@ -870,13 +902,19 @@ class MobileController{
    if(s.kind==='blocked'&&s.reason==='An unfamiliar Like control requires user attention.'){await this.pauseFor(750,t);this.assert(t,valid);s=await this.read(t);}
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
-   if(selection?.promptScan){
+   if(selection?.promptScan||selection?.preferredPrompt){
+    const owned=()=>selection.promptScan?this.scopedPhotoRejection(t)===selection.alternate:
+     this.session.status==='running'&&this.session.epoch===selection.promptEpoch&&this.config.mode==='like'&&
+     this.config.swipe.likeRatio===1&&this.session.config.likeRatio===1;
     verifyForm=form=>form.kind==='like'&&form.identity&&form.name===original.name&&form.prompts?.length===1&&
      form.prompts[0].text===photo.text&&!form.photos?.length&&['Send like','Send priority like'].includes(form.controls?.sendLike?.label)&&
      form.composerTextVerified===true&&form.composerText===''&&!this.draft&&!this.lastAction&&
-     this.scopedPhotoRejection(t)===selection.alternate&&this.reservedCount===this.session.count&&
+     owned()&&this.reservedCount===this.session.count&&
      !this.session.reachedProfileLimit()&&!this.session.timeExpired();
-    if(!verifyForm(s))throw alternativeUnavailable();
+    if(!verifyForm(s)){
+     if(selection.promptScan)throw alternativeUnavailable();
+     throw transientError('Could not verify the reviewed prompt and its blank ordinary Like form.');
+    }
    }
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
    let samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);

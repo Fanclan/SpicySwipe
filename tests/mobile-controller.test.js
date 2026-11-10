@@ -486,6 +486,81 @@ test('a vanished reviewed prompt never falls back to the Skip-obscured photo',as
  assert.equal(x.calls.includes('tap'),false);assert.equal(x.c.lastAction,null);
 });
 
+function mixedHingeCard(){
+ const native=(type,label,bounds,attributes='',children='')=>
+  '<node package="co.hinge.app" class="android.'+type+'" content-desc="'+label+'" bounds="'+bounds+'" enabled="true" '+attributes+'>'+children+'</node>';
+ const view=(label,bounds,children='',attributes='')=>native('view.View',label,bounds,'clickable="false" '+attributes,children);
+ const button=(label,bounds)=>native('widget.Button',label,bounds,'clickable="true"');
+ const photo='[40,150][680,790]',prompt='[40,810][680,1080]';
+ const feed=view('','[0,100][720,1200]',
+  view('',photo,native('widget.ImageView',"Example's photo",photo,'clickable="false"')+button('Like photo','[500,650][580,730]'))+
+  view('',prompt,view('Prompt: A perfect weekend. Answer: Hiking',prompt)+button('Like prompt','[500,960][580,1040]')),'scrollable="true"');
+ const xml='<hierarchy>'+view('','[0,0][720,1280]',feed+button('Skip Example','[10,1100][90,1180]')+
+  view('Discover','[0,1200][144,1280]','','selected="true"'))+'</hierarchy>';
+ return require('../desktop/mobile-screen.cjs').readScreen(xml,{platform:'hinge',foreground:'co.hinge.app'});
+}
+
+async function mixedHingeRun(card,settings={}){
+ const x=setup(card);
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{likeRatio:1},...settings});
+ x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('start');
+ return x;
+}
+
+test('first automatic 100% Hinge Like selects the exact static prompt when both native targets are available',async()=>{
+ for(const label of ['Send like','Send priority like']){
+  const card=mixedHingeCard(),prompt=card.prompts[0],x=await mixedHingeRun(card);
+  const taps=[];let commits=0;
+  x.android.tapControl=async(bounds,valid,issued)=>{
+   assert.equal(valid(),true);taps.push(bounds);issued?.();
+   x.set(taps.length===1?screen({kind:'like',screenKey:'form',identity:'prompt-form',photos:[],prompts:[{...prompt,like:null}],
+    composerTextVerified:true,controls:{sendLike:control(label)}}):screen({name:'Next',identity:'next',screenKey:'next'}));
+  };
+  await x.c.sessionStep(x.c.session.config,()=>true,()=>commits++,async()=>true,x.c.token());
+  assert.deepEqual(taps,[prompt.like.bounds,box]);assert.equal(commits,1);assert.equal(x.c.lastAction,null);
+  await x.c.request('stop');
+ }
+});
+
+test('first-review prompt priority requires plain 100% automation and one uniquely bindable prompt',async()=>{
+ for(const variant of ['manual','mixed-rate','comment','duplicate-text','two-targets','unscoped-control','wrong-owner']){
+  const card=mixedHingeCard(),prompt=card.prompts[0];
+  if(variant==='duplicate-text')card.prompts.push({...prompt,key:'other',like:null});
+  if(variant==='two-targets')card.prompts.push({...prompt,key:'other',text:'Prompt: Dream trip. Answer: Italy'});
+  if(variant==='unscoped-control')prompt.like=control('Like');
+  if(variant==='wrong-owner')card.controls.skip=control('Skip Someone else');
+  const settings=variant==='mixed-rate'?{swipe:{likeRatio:.8}}:variant==='comment'?{mode:'comment'}:{};
+  const x=await mixedHingeRun(card,settings);
+  if(variant==='manual'){await x.c.request('pause');await x.c.request('review')}
+  else await x.c.review(x.c.token(),async()=>true,card,'like');
+  assert.equal(x.c.selectedPhoto?.key,card.photos[0].key,variant);assert.equal(x.c.selectedPrompt,null);
+  await x.c.request('stop');
+ }
+});
+
+test('a changed first-review prompt or an unverified ordinary blank Like form cannot submit',async()=>{
+ for(const variant of ['changed-source','changed-form','duplicate-form','photo-in-form','rose','unverified-blank','changed-final']){
+  const card=mixedHingeCard(),prompt=card.prompts[0],x=await mixedHingeRun(card);
+  const token=x.c.token(),prepared=await x.c.review(token,async()=>true,card,'like');
+  assert.equal(x.c.selectedPrompt?.key,prompt.key);
+  if(variant==='changed-source')x.set({...card,screenKey:'changed',prompts:[]});
+  const form=screen({kind:'like',identity:'form',screenKey:'form',photos:variant==='photo-in-form'?card.photos:[],
+   prompts:variant==='changed-form'?[{...prompt,text:'Prompt: Different. Answer: Different'}]:variant==='duplicate-form'?[prompt,prompt]:[prompt],
+   composerTextVerified:variant!=='unverified-blank',controls:{sendLike:control(variant==='rose'?'Send a Rose':'Send like')}});
+  let taps=0,formReads=0;
+  x.android.tapControl=async()=>{taps++;x.set(form)};
+  const hierarchy=x.android.hierarchy;
+  x.android.hierarchy=async()=>{
+   const raw=await hierarchy();
+   return raw.xml===form&&variant==='changed-final'&&++formReads===2?{...raw,xml:{...form,screenKey:'changed',prompts:[]}}:raw;
+  };
+  await assert.rejects(x.c.act('like',token,()=>true,()=>assert.fail('No Like issued'),prepared));
+  assert.equal(taps,variant==='changed-source'?0:1,variant);assert.equal(x.c.lastAction,null);
+  await x.c.request('stop');
+ }
+});
+
 test('Hinge finishes aligning a clipped photo reached on the last search step',async()=>{
  const x=setup(screen({photos:[],screenKey:'text-0'}),{scroll:()=>{
   const count=x.calls.filter(v=>v?.fraction).length;
@@ -1655,6 +1730,51 @@ test('a changed card during the stability wait cannot trigger generic device rec
  const result=await x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail(),async()=>{x.set(unrelated);return true},x.c.token());
  assert.equal(launches,0);assert.equal(result.phase,'checking next profile');assert.deepEqual(x.c.rejectedPhoto,x.hint);assert.equal(x.c.nextFeedRefreshAt,0);
 });
+test('an initially unreachable held Hinge endpoint survives restart and refreshes inventory after its cooldown',async()=>{
+ const x=await legacyPromptScan();let now=Date.now(),refreshes=0;
+ x.c.session.now=()=>now;
+ const endpoint={...x.held,reviewScrollSurface:null,reviewWheelPoint:null,prompts:[]};
+ x.set(endpoint);x.c.nextFeedRefreshAt=now+300000;
+ x.android.scrollProfile=x.android.wheelDiscover=x.android.tapControl=async()=>assert.fail('No authorized gesture or vote');
+ x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{
+  assert.equal(valid(),true);await beforeStop();refreshes++;x.set(screen({kind:'empty',identity:null,photos:[],controls:{}}));
+ };
+ const initial=structuredClone(x.c.rejectedPhoto);
+ assert.equal((await x.step()).phase,'waiting for another profile');
+ const saved=x.saved();assert.deepEqual(saved.rejectedPhoto,{...initial,promptScan:'spent',promptMovesRemaining:0});
+ assert.equal(refreshes,0);x.c.restoreCheckpoint(saved);x.c.session.status='running';
+ await x.step();assert.equal(refreshes,0);
+ now+=300001;assert.equal((await x.step()).phase,'waiting for profiles');
+ assert.equal(refreshes,1);assert.equal(x.commits(),0);assert.equal(x.c.session.count,4);
+ assert.deepEqual(x.saved().rejectedPhoto,saved.rejectedPhoto);
+});
+
+test('a superseded or changed initial endpoint cannot acquire an exhausted Hinge review',async()=>{
+ for(const mode of ['new-run','pending','changed-screen','new-prompt','new-route','after-read']){
+  const x=await legacyPromptScan(),initial=structuredClone(x.c.rejectedPhoto);
+  const endpoint={...x.held,reviewScrollSurface:null,reviewWheelPoint:null,prompts:[]};x.set(endpoint);
+  const hint=x.c.rejectedPhoto,token=x.c.token();let rereads=0;
+  const hierarchy=x.android.hierarchy;
+  if(mode==='after-read'){
+   const fresh=x.c.fresh.bind(x.c);
+   x.c.fresh=async(...args)=>{const card=await fresh(...args);x.c.session.epoch++;return card};
+  }
+  x.android.hierarchy=async()=>{
+   rereads++;
+   if(mode==='new-run')x.c.session.epoch++;
+   if(mode==='pending')x.c.lastAction={identity:'pending'};
+   if(mode==='changed-screen')x.set({...endpoint,screenKey:'different'});
+   if(mode==='new-prompt')x.set({...endpoint,prompts:[x.prompt]});
+   if(mode==='new-route')x.set({...endpoint,reviewScrollSurface:x.held.reviewScrollSurface});
+   return hierarchy();
+  };
+  x.android.scrollProfile=x.android.wheelDiscover=x.android.tapControl=x.android.refreshFeed=async()=>assert.fail('No authorized input');
+  await assert.rejects(x.c.reviewHeldPrompt(endpoint,hint,token,()=>true,async()=>true));
+  assert.equal(rereads,1,mode);assert.deepEqual(x.c.rejectedPhoto,initial,mode);
+  assert.deepEqual(x.saved().rejectedPhoto,initial,mode);assert.equal(x.commits(),0,mode);
+ }
+});
+
 test('a newly explored Hinge prompt pass records exhaustion when its verified route ends early',async()=>{
  const x=await legacyPromptScan();let moves=0;
  x.android.scrollProfile=async()=>{moves++;x.set({...x.held,identity:null,photos:[],prompts:[],screenKey:'ended',reviewScrollSurface:null,reviewWheelPoint:null})};
