@@ -71,6 +71,78 @@ function setup(initial=screen(),extra={}){
  const c=new Controller({android,service,platform:'hinge',readScreen:xml=>xml,changed:s=>changes.push(s),random:()=>0.5,wait:async()=>{},...extra});
  return {c,android,calls,changes,set:s=>current=s,settings:s=>settings=s};
 }
+function savedMobileRun(allowBackground=true){
+ const saved=setup().c.checkpoint();
+ Object.assign(saved.session,{status:'paused',phase:'paused',runId:'saved-run',count:12,endsAt:Date.now()+3600000});
+ saved.config.swipe.allowBackground=allowBackground;saved.session.config.allowBackground=allowBackground;
+ saved.pendingAction={kind:'like',identity:'original',name:'Example'};
+ return saved;
+}
+
+test('a passive first mobile status preserves the original file, while each explicit Pause replaces it',async t=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mobile-restore-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'hinge.json'),store=new (require('../desktop/mobile-checkpoint.cjs'))(file);
+ const saved=savedMobileRun();store.write(Object.fromEntries(Object.entries(saved).reverse()));
+ const x=setup(screen(),{checkpointStore:store}),inode=()=>fs.statSync(file).ino,original=inode();
+ const [a,b]=await Promise.all([x.c.request('status'),x.c.request('status')]);
+ assert.equal(a.session.count,12);assert.deepEqual(a,b);assert.equal(inode(),original);
+ await x.c.request('pause');const paused=inode();assert.notEqual(paused,original);
+ await x.c.request('pause');assert.notEqual(inode(),paused);assert.deepEqual(store.read().pendingAction,saved.pendingAction);
+});
+
+test('first mobile load durably initializes or normalizes incomplete and transitioned runs',async()=>{
+ for(const kind of ['absent','legacy','running','error','expired']){
+  let saved=kind==='absent'?null:savedMobileRun(),writes=0;
+  if(kind==='legacy')delete saved.nextFeedRetryAt;
+  if(kind==='running'||kind==='error')saved.session.status=saved.session.phase=kind;
+  if(kind==='expired')saved.session.endsAt=Date.now()-1000;
+  const store={read:()=>saved,write:value=>{writes++;saved=structuredClone(value)}};
+  const x=setup(screen(),{checkpointStore:store});await x.c.request('status');
+  assert.equal(writes,1,kind);assert.deepEqual(saved,x.c.checkpoint(),kind);
+  assert.equal(saved.session.status,kind==='absent'?'idle':kind==='expired'?'complete':'paused',kind);
+  const reopened=setup(screen(),{checkpointStore:store});await reopened.c.request('status');assert.equal(writes,1,kind);
+ }
+});
+
+test('cold Pause and Stop cancel immediately and survive an overlapping first status and restart',async()=>{
+ for(const actions of [['pause'],['stop'],['pause','stop'],['stop','pause']])for(const statusFirst of [true,false]){
+  let saved=savedMobileRun(),writes=0;const gate=deferred();
+  const store={read:()=>saved,write:value=>{writes++;saved=structuredClone(value)}};
+  const x=setup(screen(),{checkpointStore:store,service:{request:()=>gate.promise}});
+  const token=x.c.token(),status=statusFirst?x.c.request('status'):null;
+  const controls=actions.map(action=>x.c.request(action));assert.ok(token.signal.aborted);
+  gate.resolve({});await Promise.all([status||x.c.request('status'),...controls]);
+  assert.ok(writes>0);assert.equal(saved.session.status,actions.includes('stop')?'idle':'paused');
+  const reopened=setup(screen(),{checkpointStore:store});assert.equal((await reopened.c.request('status')).session.status,saved.session.status);
+  assert.equal(saved.session.count,12);assert.equal(saved.pendingAction.identity,'original');
+ }
+});
+
+test('cold visibility uses restored background settings and the latest visible state',async()=>{
+ for(const [background,shown,shouldPause] of [[true,false,false],[false,true,false],[false,false,true]]){
+  let saved=savedMobileRun(background),writes=0;const gate=deferred();
+  const x=setup(screen(),{checkpointStore:{read:()=>saved,write:v=>{writes++;saved=structuredClone(v)}},service:{request:()=>gate.promise}});
+  const status=x.c.request('status'),hidden=x.c.request('visibility',{visible:false});
+  if(shown)await x.c.request('visibility',{visible:true});
+  gate.resolve({});await Promise.all([status,hidden]);
+  assert.equal(x.c.visible,shown);assert.equal(x.c.resumeRevision,shouldPause?1:0);assert.equal(writes,shouldPause?1:0);
+ }
+});
+
+test('failed cold controls cannot affect a subsequently repaired checkpoint on a passive read',async()=>{
+ for(const action of ['pause','stop'])for(const failure of ['load','read','write']){
+  let saved=savedMobileRun(),fail=true,writes=0;
+  const store={read(){if(fail&&failure==='read')throw Error('unavailable');return saved},
+   write(value){if(fail&&failure==='write')throw Error('unavailable');writes++;saved=structuredClone(value)}};
+  const service={async request(){if(fail&&failure==='load')throw Error('unavailable');return {}}};
+  const x=setup(screen(),{checkpointStore:store,service}),token=x.c.token();
+  await assert.rejects(x.c.request(action),/unavailable/);assert.ok(token.signal.aborted);
+  fail=false;saved=savedMobileRun();saved.session.runId='repaired-run';
+  const result=await x.c.request('status');assert.equal(result.session.runId,'repaired-run');
+  assert.equal(result.session.status,'paused');assert.equal(writes,0,action+' after failed '+failure);
+ }
+});
 test('mobile configuration defaults to plain likes and bounded randomized browsing',()=>{
  const c=Config.normalize();assert.equal(c.mode,'like');assert.equal(c.autoOpeners,false);assert.equal(c.autoSend,false);assert.ok(c.scrollMax>=c.scrollMin);assert.equal(c.swipe.randomizeTiming,true);
  assert.throws(()=>Config.normalize({mode:'rose'}),/mode/i);assert.throws(()=>Config.normalize({scrollMin:5,scrollMax:2}),/scroll/i);assert.throws(()=>Config.normalize({swipe:{likeRatio:NaN}}),/invalid/i);
