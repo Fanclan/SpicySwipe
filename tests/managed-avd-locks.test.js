@@ -10,7 +10,7 @@ const { quarantineStaleLocks } = require('../web/managed-avd-locks.cjs');
 const phone = 'SpicySwipe_Bumble_API_36';
 const markers = ['snapshot.lock.lock', 'hardware-qemu.ini.lock'];
 function fixture(t) {
- const base = fs.mkdtempSync(path.join(os.tmpdir(),'avd-lock-test-'));
+ const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'avd-lock-test-'));
  t.after(() => fs.rmSync(base,{recursive:true,force:true}));
  const avd = path.join(base,phone+'.avd'), proc = path.join(base,'proc');
  fs.mkdirSync(avd);fs.mkdirSync(proc);
@@ -29,7 +29,10 @@ function fixture(t) {
  fs.writeFileSync(path.join(avd,'multiinstance.lock'),'');
  fs.writeFileSync(path.join(avd,'userdata-qemu.img'),'session data');
  const share = () => true;
- return {avd,base,proc,stamp,processEntry,run:(name=phone,lock=share)=>quarantineStaleLocks(base,name,{proc,ticks:100,lockShare:lock})};
+ // The simulated Linux process owns the fixture files, including on hosts without getuid().
+ const ownerUid = fs.statSync(avd).uid;
+ return {avd,base,proc,stamp,processEntry,ownerUid,
+  run:(name=phone,lock=share)=>quarantineStaleLocks(base,name,{proc,ticks:100,lockShare:lock,ownerUid})};
 }
 test('older managed PID markers are archived intact before boot, including PID reuse',t=>{
  const f=fixture(t);const original=fs.statSync(path.join(f.avd,markers[0]));
@@ -50,6 +53,19 @@ test('a missing PID must have a marker older than the container, and a lone stal
  fs.writeFileSync(path.join(f.avd,markers[0]),'4321\0');
  f.stamp(markers[0],83);assert.equal(f.run(),0);
  f.stamp(markers[0],76);assert.equal(f.run(),1);
+});
+test('an unknown or different owner leaves the managed PID markers in place',t=>{
+ const f=fixture(t);
+ for (const ownerUid of [null,f.ownerUid+1]) {
+  assert.equal(quarantineStaleLocks(f.base,phone,{proc:f.proc,ticks:100,lockShare:()=>true,ownerUid}),0);
+  assert.ok(markers.every(name=>fs.existsSync(path.join(f.avd,name))));
+ }
+});
+test('a symlinked managed AVD is never followed during recovery',t=>{
+ const f=fixture(t),other='SpicySwipe_Phone_API_36';
+ fs.symlinkSync(f.avd,path.join(f.base,other+'.avd'),'junction');
+ assert.equal(f.run(other),0);
+ assert.ok(markers.every(name=>fs.existsSync(path.join(f.avd,name))));
 });
 test('the production lock probe honors both kernel lock families',t=>{
  if (!spawnSync('flock',['--help'],{encoding:'utf8'}).stdout?.includes('--fcntl')) return t.skip('requires the production util-linux OFD locking API');
