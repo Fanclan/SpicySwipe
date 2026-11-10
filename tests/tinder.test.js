@@ -48,7 +48,7 @@ test('a location reload continues the original session without repeating the pre
  assert.equal(restored.status,'running');assert.equal(restored.count,1);assert.equal(restored.limit,3);
  assert.equal(restored.endsAt,old.api.snapshot().session.endsAt);
  replacement.waits.shift()();await tick();
- assert.equal(clicks,0);assert.equal(replacement.api.snapshot().session.status,'error');
+ assert.equal(clicks,0);assert.equal(replacement.api.snapshot().session.phase,'waiting for next profile');
 });
 test('a location reload preserves a break and completes with exactly the original budget',async t=>{
  const old=await swipeSetup(t,{allowBackground:true,browsePhotos:false,maxSwipes:2,breaksEnabled:true,breakEvery:1});
@@ -76,7 +76,7 @@ test('photo review uses only controls in the current card and rejects an unchang
  const x=await swipeSetup(t);let photo=0,outside=0,likes=0;const d=x.dom.window.document;
  d.querySelector('#outside').onclick=()=>outside++;d.querySelector('#photo').onclick=()=>{photo++;d.querySelector('img').src='https://example.test/2.jpg'};d.querySelector('#like').onclick=()=>likes++;
  await x.api.request('start');x.waits.shift()();await tick();assert.equal(photo,1);assert.equal(likes,0);assert.equal(outside,0);
- x.waits.shift()();await tick();assert.equal(likes,1);x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.status,'error');
+ x.waits.shift()();await tick();assert.equal(likes,1);x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.phase,'waiting for next profile');
 });
 test('stop during photo dwell prevents the later swipe',async t=>{
  const x=await swipeSetup(t);let likes=0;x.dom.window.document.querySelector('#like').onclick=()=>likes++;
@@ -99,7 +99,7 @@ test('hidden tabs run only when background operation is explicitly enabled',asyn
 test('changing gallery images after an ignored swipe cannot bypass the duplicate-profile guard',async t=>{
  const x=await swipeSetup(t,{browsePhotos:false});let likes=0;x.dom.window.document.querySelector('#like').onclick=()=>likes++;
  await x.api.request('start');x.waits.shift()();await tick();assert.equal(likes,1);
- x.dom.window.document.querySelector('img').src='https://example.test/another-photo.jpg';x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.status,'error');
+ x.dom.window.document.querySelector('img').src='https://example.test/another-photo.jpg';x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.phase,'waiting for next profile');
 });
 test('profile scrolling stays inside the card and returns before swiping',async t=>{
  const x=await swipeSetup(t,{browsePhotos:false,scrollProfile:true,maxSwipes:1});const card=x.dom.window.document.querySelector('article');Object.defineProperties(card,{scrollHeight:{value:1000},clientHeight:{value:200}});let clicks=0;x.dom.window.document.querySelector('#like').onclick=()=>{assert.equal(card.scrollTop,0);clicks++};
@@ -124,7 +124,7 @@ test('current Tinder stack reviews only the active card and ignores changing det
  d.querySelector('[inert] [itemprop="name"]').textContent='Someone else';
  x.waits.shift()();await tick();assert.equal(likes,1);
  d.querySelector('[aria-hidden="false"] .bio').textContent='Another photo caption';
- x.waits.shift()();await tick();assert.equal(likes,1);assert.match(x.api.snapshot().session.error,/has not changed/);
+ x.waits.shift()();await tick();assert.equal(likes,1);assert.equal(x.api.snapshot().session.phase,'waiting for next profile');
 });
 test('a redraw of the same identified card continues review using its new controls',async t=>{
  const x=await swipeSetup(t,{maxPhotos:2,maxSwipes:1});const d=x.dom.window.document;let photos=0,likes=0;
@@ -362,4 +362,107 @@ test('hosted Tinder refreshes a persistently empty Discover and retains the cool
  replacement.dom.window.document.body.append(card);assert.equal(replacement.api.prepareEmptyRefresh(refreshes[0]),null);
  replacement.waits.shift()();await tick();replacement.waits.shift()();await tick();
  assert.equal(replacement.api.snapshot().session.count,1);await replacement.api.request('stop');await x.api.request('stop');
+});
+
+async function step(fixture,times=1){
+ for(let i=0;i<times;i++){assert.ok(fixture.waits.length);fixture.waits.shift()();await tick()}
+}
+
+async function unchangedFixture(t){
+ const x=await swipeSetup(t,{browsePhotos:false,maxSwipes:2,sessionMinutes:null});
+ const {document:d}=x.dom.window;
+ let now=Date.now(),likes=0;
+ const requests=[];
+ x.dom.window.Date.now=()=>now;
+ x.dom.window.SSClient.refreshEmpty=runId=>requests.push(runId);
+ d.querySelector('#like').onclick=()=>likes++;
+ await x.api.request('start');
+ const run=x.api.snapshot().session;
+ await step(x,2);
+ assert.equal(x.api.snapshot().session.phase,'waiting for next profile');
+ return {...x,d,run,requests,likes:()=>likes,advance:ms=>{now+=ms}};
+}
+
+test('a repeated card waits, then the next identified profile completes the original budget',async t=>{
+ const x=await unchangedFixture(t);
+ assert.equal(x.api.snapshot().session.count,1);
+ await step(x,2);assert.equal(x.likes(),1);assert.deepEqual(x.requests,[]);
+ x.d.querySelector('article').dataset.userId='person-b';
+ await step(x,2);
+ const session=x.api.snapshot().session;
+ assert.equal(x.likes(),2);assert.equal(session.count,2);assert.equal(session.status,'complete');
+ assert.equal(session.completionReason,'limit');assert.equal(session.runId,x.run.runId);assert.equal(session.endsAt,null);
+});
+
+test('a guarded repeated-card refresh retains the previous Like, cooldown and run in the new document',async t=>{
+ const x=await unchangedFixture(t);
+ x.advance(300001);await step(x,2);
+ assert.deepEqual(x.requests,[x.run.runId]);assert.equal(x.likes(),1);
+ assert.equal(x.api.prepareEmptyRefresh('wrong-run'),null);
+ const saved=x.api.prepareEmptyRefresh(x.run.runId);
+ assert.ok(saved);assert.equal(saved.session.count,1);assert.equal(saved.session.runId,x.run.runId);
+ assert.equal(x.api.prepareEmptyRefresh(x.run.runId),null);
+ const next=await swipeSetup(t);
+ next.dom.window.Date.now=()=>saved.nextFeedRefreshAt-300000;
+ next.dom.window.SSClient.refreshEmpty=id=>x.requests.push(id);
+ let clicks=0;next.dom.window.document.querySelector('#like').onclick=()=>clicks++;
+ next.api.restoreLocationReload(saved);await step(next);
+ assert.equal(next.api.snapshot().session.phase,'waiting for next profile');assert.equal(clicks,0);
+ assert.deepEqual(x.requests,[x.run.runId]);
+ next.dom.window.document.querySelector('article').dataset.userId='person-b';
+ await step(next,2);
+ assert.equal(clicks,1);assert.equal(next.api.snapshot().session.count,2);
+ assert.equal(next.api.snapshot().session.runId,x.run.runId);assert.equal(next.api.snapshot().session.status,'complete');
+});
+
+test('a delayed repeated-card refresh cannot act on a different screen, card, or run state',async t=>{
+ for(const change of ['new card','redraw','no card','dialog','draft','navigation','pause/resume','next review due']){
+  const x=await unchangedFixture(t),card=x.d.querySelector('article');
+  x.advance(300001);await step(x,2);
+  assert.deepEqual(x.requests,[x.run.runId]);
+  if(change==='new card')card.dataset.userId='person-b';
+  if(change==='redraw')card.replaceWith(card.cloneNode(true));
+  if(change==='no card')card.remove();
+  if(change==='dialog')x.d.body.insertAdjacentHTML('beforeend','<div role="dialog">Attention</div>');
+  if(change==='draft')x.d.body.insertAdjacentHTML('beforeend','<textarea>Unsent</textarea>');
+  if(change==='navigation')x.dom.window.history.pushState({},'', '/app/messages');
+  if(change==='pause/resume'){await x.api.request('pause');await x.api.request('start')}
+  if(change==='next review due')await step(x);
+  assert.equal(x.api.prepareEmptyRefresh(x.run.runId),null,change);
+  assert.equal(x.likes(),1,change);
+ }
+});
+
+test('a name-only duplicate can wait for a different profile without reloading a weak identity',async t=>{
+ const x=await swipeSetup(t,{browsePhotos:false}),d=x.dom.window.document;
+ d.querySelector('article').removeAttribute('data-user-id');
+ let now=Date.now(),likes=0;const requests=[];
+ x.dom.window.Date.now=()=>now;x.dom.window.SSClient.refreshEmpty=id=>requests.push(id);
+ d.querySelector('#like').onclick=()=>likes++;
+ await x.api.request('start');await step(x,2);now+=300001;await step(x,2);
+ assert.equal(x.api.snapshot().session.phase,'waiting for next profile');
+ assert.deepEqual(requests,[]);assert.equal(likes,1);
+});
+
+test('partially loaded identity fields cannot turn a previously seen card into a distinct profile',async t=>{
+ for(const variant of ['missing id','missing age','missing name and age']){
+  const x=await swipeSetup(t,{browsePhotos:false}),d=x.dom.window.document,card=d.querySelector('article');
+  if(variant!=='missing id'){
+   card.removeAttribute('data-user-id');
+   card.insertAdjacentHTML('beforeend','<span itemprop="age">25</span>');
+  }
+  let clicks=0;d.querySelector('#like').onclick=()=>clicks++;
+  await x.api.request('start');await step(x,2);
+  if(variant==='missing id')card.removeAttribute('data-user-id');
+  else{
+   card.querySelector('[itemprop="age"]').remove();
+   if(variant==='missing name and age')card.querySelector('h2').remove();
+  }
+  await step(x,2);
+  assert.equal(x.api.snapshot().session.phase,'waiting for next profile',variant);assert.equal(clicks,1,variant);
+  if(variant==='missing id')card.dataset.userId='person-b';
+  else card.innerHTML='<h2>Jamie</h2><span itemprop="age">26</span>';
+  await step(x,2);
+  assert.equal(x.api.snapshot().session.status,'complete',variant);assert.equal(clicks,2,variant);
+ }
 });

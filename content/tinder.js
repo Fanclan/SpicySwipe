@@ -6,7 +6,8 @@
   const input=()=>first(['#chat-text-area','textarea[placeholder*="message" i]','textarea[placeholder*="Type" i]','textarea[aria-label*="message" i]']);
   const conversationId=()=>location.pathname.match(/^\/app\/messages\/([^/]+)/)?.[1]||null;
   const feedCheckInterval=300000;
-  let settings,automaticDraft=null,lastCard=null,nextFeedRefreshAt=0;
+  const cardRecheckInterval=15000;
+  let settings,automaticDraft=null,lastCard=null,nextFeedRefreshAt=0,pendingFeedRefresh=null;
   const subscribers=new Set();
   const notify=()=>subscribers.forEach(fn=>fn({type:'page',data:snapshot()}));
   const rpc=SSClient.rpc;
@@ -60,6 +61,13 @@
     const age=text('[itemprop="age"],[data-testid="profile-age"]');
     // Bios, badges, photo URLs and captions change during review and cannot identify a person.
     return name?{key:JSON.stringify(['profile',name,age]),canRebind:Boolean(age)}:null;
+  }
+  function differsFromLastCard(key){
+    if(key===lastCard)return false;
+    const [previousKind,previousValue,previousAge]=JSON.parse(lastCard);
+    const [kind,value,age]=JSON.parse(key);
+    // A redraw can temporarily remove the account ID or the age from the same card.
+    return kind===previousKind&&(value!==previousValue||Boolean(age&&previousAge&&age!==previousAge));
   }
   const matchMarker='[data-testid="match-overlay"],[class*="its-a-match-gradient"]';
   const messageFields='textarea,input[type="text"],input:not([type]),[contenteditable="true"]';
@@ -130,7 +138,27 @@
     }
     return valid();
   }
+  function refreshableFeed(){
+    if(currentDialog()||automaticDraft||sending||autoBusy)return false;
+    // A reload would discard a draft, including one in a collapsed composer.
+    return ![...document.querySelectorAll(messageFields)].some(el=>visible(el)||(el.value??el.textContent??'').trim());
+  }
+  function waitForFeed(card,identity){
+    const now=Date.now();
+    const phase=card?'waiting for next profile':'waiting for profiles';
+    if(!nextFeedRefreshAt)nextFeedRefreshAt=now+feedCheckInterval;
+    else if(now>=nextFeedRefreshAt){
+      nextFeedRefreshAt=now+feedCheckInterval;
+      if(SSClient.refreshEmpty&&(!card||(identity?.canRebind&&identity.key===lastCard))&&refreshableFeed()){
+        pendingFeedRefresh={card,epoch:session.epoch,url:location.href,phase};
+        SSClient.refreshEmpty(session.runId);
+      }
+    }
+    const remaining=Math.max(1000,nextFeedRefreshAt-now);
+    return {retryAfter:card?Math.min(cardRecheckInterval,remaining):remaining,phase};
+  }
   const session=new SSSession({act:async(config,valid,commit,sleep)=>{
+    pendingFeedRefresh=null;
     if(!await guardPage(config,valid,sleep))return;
     let card=currentCard();
     // A transition/loading gap may temporarily remove the initial card. No action has been issued yet.
@@ -140,19 +168,11 @@
     }
     // No card is available after the loading grace period. Observe again later; never
     // count a queue check as an action or change filters to manufacture more profiles.
-    if(!card){
-      const now=Date.now();
-      if(!nextFeedRefreshAt)nextFeedRefreshAt=now+feedCheckInterval;
-      else if(now>=nextFeedRefreshAt){
-        nextFeedRefreshAt=now+feedCheckInterval;
-        SSClient.refreshEmpty?.(session.runId);
-      }
-      return {retryAfter:Math.max(1000,nextFeedRefreshAt-now),phase:'waiting for profiles'};
-    }
-    nextFeedRefreshAt=0;
+    if(!card)return waitForFeed(null,null);
     const identity=cardIdentity(card);
-    if(!identity)throw new Error('Could not identify the visible profile. Check Tinder before continuing.');
-    if(identity.key===lastCard)throw new Error('The profile has not changed. Check Tinder before continuing.');
+    if(!identity&&!lastCard)throw new Error('Could not identify the visible profile. Check Tinder before continuing.');
+    if(lastCard&&(!identity||!differsFromLastCard(identity.key)))return waitForFeed(card,identity);
+    nextFeedRefreshAt=0;
     const check=async()=>{
       if(!await guardPage(config,valid,sleep))return false;
       const active=currentCard();
@@ -190,8 +210,12 @@
   },changed:s=>{notify();if(s.status==='error')rpc('record',{kind:'error',detail:s.error}).catch(()=>{})}});
   function reloadCheckpoint(){return {session:session.checkpoint(),lastCard,nextFeedRefreshAt}}
   function prepareEmptyRefresh(runId){
-    if(!runId||session.runId!==runId||session.status!=='running'||!nextFeedRefreshAt||session.timeExpired()||
-        currentCard()||currentDialog())return null;
+    if(!runId||session.runId!==runId||!pendingFeedRefresh)return null;
+    const request=pendingFeedRefresh;
+    pendingFeedRefresh=null;
+    if(session.epoch!==request.epoch||session.status!=='running'||session.phase!==request.phase||session.timeExpired()||
+        session.nextActionAt-session.now()<1000||location.href!==request.url||
+        currentCard()!==request.card||(request.card&&cardIdentity(request.card)?.key!==lastCard)||!refreshableFeed())return null;
     guardLocation(session.config);
     // The worker is waiting on its next feed check. Capturing here cannot interrupt
     // it if the host drops a stale request or a navigation is canceled.
