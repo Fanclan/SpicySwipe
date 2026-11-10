@@ -419,6 +419,41 @@ test('prompt confirmation rejects mismatched, detached or overlapping sibling co
 
 // The native app can leave just its Discover header and five tabs on screen.
 const blankDiscover = feedError.replace(/ <node class="android.widget.ScrollView"[\s\S]*?\n <\/node>/, '');
+const badgedDiscover=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-blank-matches-badge.xml'),'utf8');
+test('blank Discover with a message count in the ordinary fourth native tab remains read-only',()=>{
+ assert.equal(read(badgedDiscover.replace('Matches, 1 new message','Matches')).kind,'feedLoading');
+ for(const count of ['1 new message','2 new messages','123 new messages']){
+  for(const xml of [badgedDiscover.replace('1 new message',count),blankDiscover.replace('content-desc="Matches"','content-desc="Matches, '+count+'"')]){
+   const s=read(xml);
+   assert.equal(s.kind,'feedLoading');assert.equal(s.identity,null);assert.equal(s.name,'');
+   assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
+  }
+ }
+ assert.notEqual(read(badgedDiscover).screenKey,read(badgedDiscover.replace('1 new message','2 new messages')).screenKey);
+ assert.equal(read(feedError.replace('content-desc="Matches"','content-desc="Matches, 1 new message"')).kind,'blocked');
+});
+test('badged blank Discover requires the original tab owner, passive label, ordinary navigation and unobstructed screen',()=>{
+ const badge=badgedDiscover.split('\n').find(line=>line.includes('content-desc="Matches, 1 new message"'));
+ const mutate=(before,after)=>badgedDiscover.replace(badge,badge.replace(before,after));
+ const overlay=extra=>badgedDiscover.replace('</hierarchy>',extra+'</hierarchy>');
+ for(const sample of [
+  badgedDiscover.replace('1 new message','1 new messages'),badgedDiscover.replace('1 new message','0 new messages'),
+  badgedDiscover.replace('1 new message','1 new message. Verify account'),
+  badgedDiscover.replace('content-desc="Matches, 1 new message"','content-desc="other"').replace('content-desc="Standouts"','content-desc="Matches, 1 new message"'),
+  badgedDiscover.replace(badge,badge+'\n'+badge),mutate('clickable="false"','clickable="true"'),
+  mutate('clickable="false"','clickable="false" focusable="true"'),mutate('clickable="false"','clickable="false" long-clickable="true"'),
+  mutate('class="android.view.View"','class="android.widget.TextView"'),mutate('[432,1112][576,1232]','[476,1112][532,1232]'),
+  mutate('content-desc="Matches, 1 new message"','text="Matches, 1 new message"'),
+  mutate('/>','><node class="android.view.View" bounds="[432,1112][576,1232]"/></node>'),
+  badgedDiscover.replace('selected="true"','selected="false"'),badgedDiscover.replace('text="Discover"','text="Matches"'),
+  overlay('<node class="android.widget.Button" bounds="[65,100][200,145]"/>'),
+  overlay('<node class="android.view.View" clickable="true" bounds="[100,300][300,400]"/>'),
+  overlay('<node class="android.widget.EditText"/>'),overlay('<node class="android.webkit.WebView"/>')
+ ]){
+  const s=read(sample);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(v=>v===null));
+ }
+ assert.equal(read(badgedDiscover,{foreground:'other.app'}).kind,'blocked');
+});
 test('blank Discover shell has no profile identity, queue-exhaustion signal, or actionable controls', () => {
  const result = read(blankDiscover);
  assert.equal(result.kind, 'feedLoading');

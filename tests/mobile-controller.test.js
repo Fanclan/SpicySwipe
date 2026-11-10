@@ -1101,6 +1101,19 @@ test('blank Discover shell skips relaunch on a changed screen, unowned device or
   assert.ok(result.retryAfter>0); assert.equal(x.c.session.count,4); assert.ok(x.c.lastAction); assert.deepEqual(x.calls,[]);
  }
 });
+test('a Matches message badge on blank Discover preserves the original pending Like and never repeats its vote',async()=>{
+ const xml=require('node:fs').readFileSync(require('node:path').join(__dirname,'fixtures/mobile/hinge-blank-matches-badge.xml'),'utf8');
+ const x=await loadingHinge();x.c.readScreen=require('../desktop/mobile-screen.cjs').readScreen;x.set(xml);
+ const runId='a'.repeat(32),guard={kind:'like',runId,sessionEndsAt:null,name:'Sample',identity:'b'.repeat(64),refreshAttempted:true};
+ Object.assign(x.c.session,{runId,endsAt:null,count:12});x.c.lastAction=guard;x.c.reservedCount=12;
+ let refreshes=0;x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{await beforeStop();assert.ok(valid());refreshes++};
+ await x.run();
+ assert.equal(x.c.screen.kind,'feedLoading');assert.equal(refreshes,1);
+ x.c.nextFeedRefreshAt=0;const outcome=await x.run();
+ assert.equal(outcome.phase,'waiting for Discover');assert.equal(refreshes,1);
+ assert.deepEqual(x.c.checkpoint().pendingAction,guard);assert.equal(x.c.session.count,12);assert.equal(x.c.session.runId,runId);
+ assert.deepEqual(x.calls,[]);
+});
 test('paused managed Hinge can resume on a verified blank Discover shell with the existing deadline', async () => {
  const x=await loadingHinge();x.c.wait=()=>new Promise(()=>{});x.c.session.wait=x.c.wait;
  x.c.session.status='paused';const deadline=x.c.session.endsAt;
