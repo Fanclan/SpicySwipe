@@ -42,9 +42,11 @@ function patchSettings(current,patch){
       object(value,'swipe settings');const patch={};
       for(const [field,v]of Object.entries(value)){
         if(!Object.hasOwn(swipeDefaults,field))throw Error('Unknown swipe setting.');
-        if(typeof v!==typeof swipeDefaults[field]||(typeof v==='number'&&!Number.isFinite(v)))throw Error('Invalid swipe setting.');
+        const disabled=v===null&&(field==='maxSwipes'||field==='sessionMinutes');
+        if(!disabled&&(typeof v!==typeof swipeDefaults[field]||(typeof v==='number'&&!Number.isFinite(v))))throw Error('Invalid swipe setting.');
         patch[field]=v;
       }next[key]=C.swipeSettings({...current[key],...patch});
+      C.requireSessionLimit(next[key]);
     }else if(key==='ollamaUrl')next[key]=C.localURL(string(value,'Ollama URL',2048));
     else if(key==='theme'){if(!['light','dark'].includes(value))throw Error('Invalid theme.');next[key]=value}
     else if(key==='userLanguage'){if(typeof value!=='string'||!Object.hasOwn(C.languages,value))throw Error('Invalid language.');next[key]=value}

@@ -30,10 +30,12 @@ let window, tinder, service, activePlatform = 'tinder', viewVisible = false;
 const webMode = process.env.SPICYSWIPE_WEB === '1';
 const managedAndroid = webMode && process.env.SPICYSWIPE_MANAGED_ANDROID === '1';
 let webServer, loginPopup, webVisible = false, tinderDocumentId = null;
-const locationReload = webMode ? new (require('./tinder-location-reload.cjs'))({
+const locationReload = new (require('./tinder-location-reload.cjs'))({
   capture:()=>tinderDocumentId?sendTinderCommand('prepareLocationReload',{documentId:tinderDocumentId}):Promise.resolve(null),
-  restore:checkpoint=>sendTinderCommand('restoreLocationReload',{documentId:tinderDocumentId,checkpoint}).catch(()=>{})
-}) : null;
+  restore:(checkpoint,documentId)=>documentId && documentId===tinderDocumentId
+    ? sendTinderCommand('restoreLocationReload',{documentId,checkpoint}) : null,
+  notify:message=>send('notice',{message,error:true})
+});
 const webLocation = webMode ? new (require('../web/location.cjs'))({getContents:()=>tinder?.webContents,reload:wc=>locationReload.reload(wc)}) : null;
 const pending = new Map();
 let androidPreferences={},androidPreferenceWrites=Promise.resolve();
@@ -108,7 +110,9 @@ function ensureTinder() {
   tinder.webContents.on('did-navigate', (_event,url,status)=>locationReload?.committed(tinder.webContents,url,status));
   tinder.webContents.on('will-redirect', details=>{if(details.isMainFrame)locationReload?.userAction('stop');});
   tinder.webContents.on('render-process-gone', () => {locationReload?.discard();cancelPending();send('page',{connected:false,error:'Tinder closed unexpectedly. Reload it to reconnect.'});});
-  tinder.webContents.on('did-fail-load', (_event,code,description,_url,isMainFrame) => {if(isMainFrame && code!==-3)send('notice',{message:'Tinder could not load: '+description,error:true});});
+  tinder.webContents.on('did-fail-load', (_event,code,description,url,isMainFrame) => {
+    if(isMainFrame && code!==-3){locationReload.failed(tinder.webContents,url);send('notice',{message:'Tinder could not load: '+description,error:true});}
+  });
   tinder.webContents.loadURL('https://tinder.com/app/recs').catch(error=>send('notice',{message:error.message,error:true}));
 }
 function closeAndroidWindow(){if(androidWindow&&!androidWindow.isDestroyed())androidWindow.close();}
@@ -176,7 +180,7 @@ async function dispatch(action,data={}) {
     if(tinder){tinder.setBounds(bounds);tinder.setVisible(viewVisible && bounds.width>0 && bounds.height>0);}return {ok:true};
   }
   if(action==='page') {
-    if(data.action==='context'&&(activePlatform!=='tinder'||!tinder||tinder.webContents.isDestroyed()))return {connected:false,context:{},session:{status:'idle'}};
+    if(data.action==='context'&&((activePlatform!=='tinder'&&data.platform!=='tinder')||!tinder||tinder.webContents.isDestroyed()))return {connected:false,context:{},session:{status:'idle'}};
     return page(data.action,data.data);
   }
   if(action==='android:status') {
@@ -281,10 +285,15 @@ ipcMain.handle('desktop:request',async(event,action,data)=>{if(!trusted(event)||
 ipcMain.handle('tinder:service',async(event,action,data)=>{if(!trustedTinder(event)||!P.allowedTinderAction(action))throw Error('Untrusted Tinder request.');const result=await service.request(action,data);return action==='load'?tinderSettings(result):result;});
 ipcMain.on('tinder:result',(event,data)=>{if(!trustedTinder(event))return;const p=pending.get(data?.id);if(!p)return;pending.delete(data.id);clearTimeout(p.timer);data.error?p.reject(Error(data.error)):p.resolve(data.result);});
 ipcMain.on('tinder:state',(event,data)=>{if(trustedTinder(event))send('page',data);});
+ipcMain.on('tinder:refresh-empty',(event,data)=>{
+  if(!trustedTinder(event)||!tinderDocumentId||data?.documentId!==tinderDocumentId||
+     typeof data.runId!=='string'||!data.runId||data.runId.length>100)return;
+  locationReload.reload(event.sender,()=>sendTinderCommand('prepareEmptyRefresh',{documentId:data.documentId,runId:data.runId}),data.documentId);
+});
 ipcMain.on('tinder:ready',(event,data)=>{
   if(!trustedTinder(event)||typeof data?.documentId!=='string'||data.documentId.length!==36)return;
   tinderDocumentId=data.documentId;
-  if(data.reloaded===true)locationReload?.ready(event.sender);
+  if(data.reloaded===true)locationReload?.ready(event.sender,data.documentId);
 });
 function scheduleMobileWatch(){
  if(quitting)return;

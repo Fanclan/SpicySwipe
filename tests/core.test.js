@@ -2,6 +2,17 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const core = fs.existsSync('shared/core.js') ? require('../shared/core.js') : {};
+test('swipe limits preserve disabled values through settings storage and keep legacy defaults', () => {
+  for (const [config, expected] of [
+    [{}, [30, 60]],
+    [{maxSwipes: 1000, sessionMinutes: null}, [1000, null]],
+    [{maxSwipes: null, sessionMinutes: 720}, [null, 720]]
+  ]) {
+    const stored = core.migrate({swipeConfig:config});
+    const visible = core.publicSettings(JSON.parse(JSON.stringify(stored))).swipeConfig;
+    assert.deepEqual([visible.maxSwipes, visible.sessionMinutes], expected);
+  }
+});
 test('migration preserves keys, consent, selected provider and historical counts', () => {
   assert.equal(typeof core.migrate, 'function');
   const result = core.migrate({activeAI:'claude', anthropicApiKey:'secret', sidebarConsentGiven:true, allTimeAnalytics:{swipes:42}, swipeConfig:{maxSwipes:12}});

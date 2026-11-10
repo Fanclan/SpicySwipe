@@ -58,6 +58,58 @@ test('Start saves edited settings and starts only after an explicit click', asyn
   assert.equal(f.calls.at(-2).data.swipe.maxSwipes, 12);
   assert.equal(f.calls.at(-2).data.mode, 'comment');
 });
+test('each phone can save and start with just one session limit, or with both', async t => {
+  const f = await fixture(t, {web:true});
+  for (const platform of ['hinge','bumble']) {
+    f.respond(() => snapshot({platform}));
+    f.ui.setPlatform(platform); await tick();
+    for (const [profiles, minutes] of [[1000,null],[null,45],[50,25]]) {
+      f.input('maxSwipes', profiles ?? ''); f.input('sessionMinutes', minutes ?? '');
+      await f.click('start');
+      assert.deepEqual(f.calls.slice(-2).map(c => c.action), ['config','start']);
+      const config = f.calls.at(-2).data;
+      assert.equal(config.swipe.maxSwipes, profiles);
+      assert.equal(config.swipe.sessionMinutes, minutes);
+    }
+  }
+});
+test('mobile rejects two empty limits and preserves an optional limit when switching tabs', async t => {
+  const f = await fixture(t);
+  f.input('maxSwipes',''); f.input('sessionMinutes','');
+  for (const action of ['save','start']) {
+    await f.click(action);
+    assert.deepEqual(f.calls.map(c=>c.action), ['status']);
+    assert.match(f.el('reason').textContent,/profile limit.*time limit/i);
+  }
+  f.input('maxSwipes',1000);
+  f.ui.setPlatform('bumble'); await tick(); f.ui.setPlatform('hinge'); await tick();
+  assert.equal(f.field('sessionMinutes').value,'');
+  assert.equal(f.field('maxSwipes').value,'1000');
+  await f.click('quick');
+  assert.equal(f.field('sessionMinutes').value,'15');
+  await f.click('save');
+  assert.equal(f.calls.at(-1).data.swipe.sessionMinutes,15);
+});
+test('mobile status respects the active session limits while waiting for profiles', async t => {
+  const f=await fixture(t);
+  const base={status:'running',phase:'waiting for profiles',count:12,nextActionAt:Date.now()+300000};
+  const screen={kind:'empty',controls:{},context:{}};
+  f.ui.handleState(snapshot({screen,session:{...base,limit:null,endsAt:Date.now()+60000}}));
+  assert.match(f.el('session').textContent,/12 issued profile actions/);
+  assert.match(f.el('session').textContent,/deadline/);
+  f.ui.handleState(snapshot({screen,session:{...base,limit:1000,endsAt:null}}));
+  assert.match(f.el('session').textContent,/12 \/ 1000/);
+  assert.doesNotMatch(f.el('session').textContent+' '+f.el('reason').textContent,/deadline/i);
+});
+test('an invalid mobile start leaves both its device and saved settings alone',async t=>{
+  let preparations=0;
+  const f=await fixture(t,{prepareStart:async()=>{preparations++;}});
+  f.input('maxSwipes','');f.input('sessionMinutes','');
+  await f.click('start');
+  assert.equal(preparations,0);
+  assert.deepEqual(f.calls.map(c=>c.action),['status']);
+  assert.match(f.el('reason').textContent,/profile limit.*time limit/i);
+});
 test('session events preserve unsaved timing and edited drafts', async t => {
   const f = await fixture(t);
   f.input('minDelaySeconds', '31');

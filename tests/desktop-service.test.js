@@ -28,3 +28,15 @@ test('mobile settings persist separately and reject unknown platforms or unsafe 
  for(const value of [{other:{mode:'like'}},{hinge:{mode:'rose'}},{hinge:{scrollMin:'1'}},{hinge:{swipe:{allowBackground:'yes'}}}])await assert.rejects(service.request('save',{mobileConfig:value}));
  await service.request('save',{mobileConfig:{bumble:{mode:'like'}}});assert.equal((await service.request('load')).mobileConfig.hinge.mode,'comment');
 });
+test('Tinder saves either limit independently and preserves a valid configuration after a rejected update',async t=>{
+ const {service}=await setup(t,{webMode:true});
+ for(const [maxSwipes,sessionMinutes] of [[1000,null],[null,60],[1000,60]]){
+  await service.request('save',{swipeConfig:{maxSwipes,sessionMinutes}});
+  const saved=(await service.request('load')).swipeConfig;
+  assert.equal(saved.maxSwipes,maxSwipes);assert.equal(saved.sessionMinutes,sessionMinutes);
+ }
+ await service.request('save',{swipeConfig:{sessionMinutes:null}});
+ await assert.rejects(service.request('save',{swipeConfig:{maxSwipes:null}}),/limit/i);
+ await assert.rejects(service.request('save',{swipeConfig:{likeRatio:null}}),/invalid/i);
+ assert.equal((await service.request('load')).swipeConfig.maxSwipes,1000);
+});

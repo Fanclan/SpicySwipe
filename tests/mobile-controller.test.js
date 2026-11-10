@@ -1660,3 +1660,142 @@ test('a newly explored Hinge prompt pass records exhaustion when its verified ro
  x.android.scrollProfile=async()=>{moves++;x.set({...x.held,identity:null,photos:[],prompts:[],screenKey:'ended',reviewScrollSurface:null,reviewWheelPoint:null})};
  await x.step();assert.equal(moves,1);assert.equal(x.saved().rejectedPhoto.promptMovesRemaining,0);assert.equal(x.commits(),0);
 });
+
+test('mobile profile-only sessions keep refreshing empty feeds beyond twelve hours and resume the same run',async()=>{
+ for(const platform of ['hinge','bumble']){
+  const empty=screen({platform,kind:'empty',identity:null,photos:[],controls:{}});
+  const x=setup(empty,{platform});let now=Date.now(),refreshes=0;
+  x.c.session.now=()=>now;x.c.session.wait=()=>new Promise(()=>{});
+  x.android.refreshFeed=async()=>{refreshes++};
+  await x.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null}});
+  const started=await x.c.request('start');assert.equal(started.session.endsAt,null);assert.ok(started.session.runId);
+  const step=()=>x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(x.c.session.epoch),
+   ()=>assert.fail('An empty feed must not count'),async()=>true,x.c.token());
+  assert.equal((await step()).phase,'waiting for profiles');
+  now+=13*3600000;
+  assert.equal((await step()).phase,'waiting for profiles');assert.equal(refreshes,2);
+  x.c.session.count=x.c.reservedCount=7;
+  await x.c.request('pause');const cp=x.c.checkpoint();
+  const y=setup(empty,{platform,checkpointStore:{read:()=>cp,write:()=>{}}});y.c.session.wait=()=>new Promise(()=>{});
+  const resumed=await y.c.request('start');
+  assert.equal(resumed.session.status,'running');assert.equal(resumed.session.runId,started.session.runId);
+  assert.equal(resumed.session.endsAt,null);assert.equal(resumed.session.count,7);
+  await y.c.request('pause');
+ }
+});
+
+test('time-only mobile budgets preserve uncertain reservations without ending at a count of zero',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('config',{swipe:{maxSwipes:null,sessionMinutes:60}});
+ const started=await x.c.request('start');const s=x.c.session;
+ assert.equal(started.session.limit,null);assert.ok(started.session.endsAt>s.now());
+ x.c.reserveAction({kind:'pass',name:'Prior',identity:'earlier'});x.c.pendingWait();
+ assert.equal(s.count,1);assert.equal(s.status,'running');
+ s.status='error';const resumed=await x.c.request('start');
+ assert.equal(resumed.session.status,'running');assert.equal(resumed.session.count,1);
+ assert.equal(resumed.session.endsAt,started.session.endsAt);assert.equal(resumed.session.runId,started.session.runId);
+ await x.c.request('pause');
+});
+
+test('mobile settings reject removing both limits together or by a partial patch',async()=>{
+ const x=setup();
+ await assert.rejects(x.c.request('config',{swipe:{sessionMinutes:null,maxSwipes:null}}),/limit/i);
+ await x.c.request('config',{swipe:{sessionMinutes:null,maxSwipes:23}});
+ await assert.rejects(x.c.request('config',{swipe:{maxSwipes:null}}),/limit/i);
+ assert.equal(x.c.config.swipe.maxSwipes,23);
+});
+
+test('Hinge offers a fresh one-card confirmation only for its restored no-deadline Like guard',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();
+ const cp=x.saved();
+ cp.session.runId='6da0e53c-0648-48f9-a176-a906b12b116a';cp.session.endsAt=null;
+ cp.session.config.sessionMinutes=cp.config.swipe.sessionMinutes=null;
+ cp.pendingAction.sessionEndsAt=null;cp.pendingAction.runId=cp.session.runId;
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';await x.step();
+ assert.ok(x.offer()?.expiresAt>x.c.session.now());assert.ok(x.offer().expiresAt<=x.c.session.now()+120000);
+ const token=x.offer().token;
+ x.c.session.runId='2176f391-fdd3-4ded-b504-c98827dadaa5';
+ await assert.rejects(x.confirm(token),/expired/);await x.step();assert.equal(x.offer(),null);
+ x.c.lastAction={...x.c.lastAction};delete x.c.lastAction.runId;await x.step();
+ assert.equal(x.offer(),null);assert.equal(x.c.session.count,74);
+});
+
+test('Hinge rejects an unverified photo only within the same count-only run across restarts',async()=>{
+ const x=repeatedPhotoFixture();await x.c.request('config',{scrollMin:0,scrollMax:0,
+  swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1,scrollProfile:false,browsePhotos:false}});
+ x.c.session.wait=()=>new Promise(()=>{});const started=await x.c.request('start');
+ x.android.tapControl=async()=>x.set(x.form);
+ const step=()=>x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail('Unverified photo'),async()=>true,x.c.token());
+ await step();const cp=x.saved();assert.equal(cp.rejectedPhoto.runId,started.session.runId);assert.equal(cp.rejectedPhoto.endsAt,null);
+ const y=setup(x.root,{checkpointStore:{read:()=>cp,write:()=>{}}});y.c.session.wait=()=>new Promise(()=>{});
+ const resumed=await y.c.request('start');assert.equal(resumed.session.count,0);
+ assert.ok(y.c.scopedPhotoRejection(y.c.token()));
+ await y.c.request('stop');const fresh=await y.c.request('start');assert.notEqual(fresh.session.runId,started.session.runId);
+ assert.equal(y.c.scopedPhotoRejection(y.c.token()),null);
+ await y.c.request('stop');await x.c.request('stop');
+});
+
+test('both restored mobile workers reconcile an old reservation, poll an empty feed, then stop on the thousandth profile',async()=>{
+ for(const platform of ['bumble','hinge']){
+  const empty=screen({platform,kind:'empty',identity:null,photos:[],controls:{}});
+  const original=setup(empty,{platform});
+  original.c.session.wait=()=>new Promise(()=>{});
+  await original.c.request('config',{scrollMin:0,scrollMax:0,swipe:{
+   maxSwipes:1000,sessionMinutes:null,likeRatio:1,breaksEnabled:false,browsePhotos:false,scrollProfile:false}});
+  const started=await original.c.request('start');
+  original.c.session.count=original.c.reservedCount=998;
+  original.c.reserveAction({identity:'previous-card',name:'Previous'});
+  const saved=structuredClone(original.c.checkpoint());assert.equal(saved.session.count,999);
+  await original.c.request('pause');
+
+  const x=setup(empty,{platform,checkpointStore:{read:()=>saved,write:()=>{}}});
+  let now=Date.now()+14*3600000,ticks=0,refreshes=0,votes=0;
+  x.c.session.now=()=>now;
+  x.c.session.wait=async ms=>{if(++ticks>40)throw Error('The feed poll failed to advance');now+=ms};
+  x.android.refreshFeed=async()=>{
+   assert.equal(x.c.lastAction,null);assert.equal(x.c.session.count,999);
+   if(++refreshes===2)x.set(platform==='bumble'?bumble():screen());
+  };
+  if(platform==='bumble')x.android.swipeProfile=async(direction,_bounds,valid,issued)=>{
+   assert.equal(direction,'right');assert.equal(valid(),true);votes++;issued();x.set(empty);
+  };
+  else x.android.tapControl=async(_bounds,valid,issued)=>{
+   assert.equal(valid(),true);
+   if(issued){votes++;issued();x.set(empty)}
+   else x.set(screen({kind:'like',composerTextVerified:true,controls:{sendLike:control('Send like')}}));
+  };
+  await x.c.request('start');await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+  assert.equal(x.c.session.status,'complete',x.c.session.error);assert.equal(x.c.session.completionReason,'limit');
+  assert.equal(x.c.session.count,1000);assert.equal(x.c.session.endsAt,null);
+  assert.equal(x.c.session.runId,started.session.runId);assert.equal(x.c.lastAction,null);
+  assert.equal(refreshes,2);assert.equal(votes,1);
+ }
+});
+
+test('a timed v1 Like guard belongs to its restored run even if a later run has the same deadline',async()=>{
+ const x=confirmedSkipFixture();await x.prepare();
+ const saved=x.saved();delete saved.session.runId;delete saved.pendingAction.runId;
+ x.c.restoreCheckpoint(saved);x.c.session.status='running';
+ await x.step();assert.ok(x.offer());
+ x.c.session.runId='c607c37e7e00422587f2bab165abba56';await x.step();
+ assert.equal(x.offer(),null);assert.equal(x.c.lastAction.identity,saved.pendingAction.identity);
+});
+
+test('a profile arriving during empty-feed launcher lookup stays visible for ordinary review',async()=>{
+ for(const platform of ['hinge','bumble']){
+  const empty=screen({platform,kind:'empty',identity:null,photos:[],controls:{}});
+  const next=platform==='bumble'?bumble():screen();
+  const x=setup(empty,{platform});await x.c.request('status');
+  x.c.readFailures=3;x.c.session.status='running';x.c.session.count=x.c.reservedCount=8;
+  let launches=0,stops=0;
+  x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{
+   launches++;x.set(next);assert.equal(valid(),true);
+   if(beforeStop)await beforeStop();
+   stops++;
+  };
+  const outcome=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('no vote'),async()=>true,x.c.token());
+  assert.equal(launches,1);assert.equal(stops,0);assert.equal(outcome.phase,'checking next profile');
+  assert.equal(x.c.screen.identity,next.identity);assert.equal(x.c.session.count,8);
+  assert.equal(x.c.lastAction,null);assert.ok(x.c.nextFeedRefreshAt>x.c.session.now());
+ }
+});

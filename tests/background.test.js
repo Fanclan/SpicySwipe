@@ -20,3 +20,10 @@ test('ungranted Ollama hosts cannot be queried or used for drafts',async()=>{
  const x=setup({activeAI:'ollama',ollamaUrl:'http://192.168.1.50:8080',sidebarConsentGiven:true},false);
  for(const action of ['models','generate'])assert.match((await x.request(action,{})).error||'',/server access/i);
 });
+
+test('extension save preserves an explicit disabled limit and refuses to remove the last limit',async()=>{
+ const x=setup();const result=await x.request('save',{swipeConfig:{maxSwipes:1000,sessionMinutes:null}});
+ assert.equal(result.data.swipeConfig.sessionMinutes,null);
+ assert.match((await x.request('save',{swipeConfig:{maxSwipes:null}})).error||'',/limit/i);
+ assert.equal(x.read().swipeConfig.maxSwipes,1000);
+});

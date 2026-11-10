@@ -5,7 +5,8 @@
   const first=selectors=>{for(const s of selectors){const found=[...document.querySelectorAll(s)].find(visible);if(found)return found}return null};
   const input=()=>first(['#chat-text-area','textarea[placeholder*="message" i]','textarea[placeholder*="Type" i]','textarea[aria-label*="message" i]']);
   const conversationId=()=>location.pathname.match(/^\/app\/messages\/([^/]+)/)?.[1]||null;
-  let settings,automaticDraft=null,lastCard=null;
+  const feedCheckInterval=300000;
+  let settings,automaticDraft=null,lastCard=null,nextFeedRefreshAt=0;
   const subscribers=new Set();
   const notify=()=>subscribers.forEach(fn=>fn({type:'page',data:snapshot()}));
   const rpc=SSClient.rpc;
@@ -139,7 +140,16 @@
     }
     // No card is available after the loading grace period. Observe again later; never
     // count a queue check as an action or change filters to manufacture more profiles.
-    if(!card)return {retryAfter:300000,phase:'waiting for profiles'};
+    if(!card){
+      const now=Date.now();
+      if(!nextFeedRefreshAt)nextFeedRefreshAt=now+feedCheckInterval;
+      else if(now>=nextFeedRefreshAt){
+        nextFeedRefreshAt=now+feedCheckInterval;
+        SSClient.refreshEmpty?.(session.runId);
+      }
+      return {retryAfter:Math.max(1000,nextFeedRefreshAt-now),phase:'waiting for profiles'};
+    }
+    nextFeedRefreshAt=0;
     const identity=cardIdentity(card);
     if(!identity)throw new Error('Could not identify the visible profile. Check Tinder before continuing.');
     if(identity.key===lastCard)throw new Error('The profile has not changed. Check Tinder before continuing.');
@@ -178,16 +188,25 @@
     button.click();lastCard=identity.key;commit();
     await rpc('record',{kind:decision,detail:decision==='like'?'Like submitted to Tinder':'Pass submitted to Tinder'});
   },changed:s=>{notify();if(s.status==='error')rpc('record',{kind:'error',detail:s.error}).catch(()=>{})}});
+  function reloadCheckpoint(){return {session:session.checkpoint(),lastCard,nextFeedRefreshAt}}
+  function prepareEmptyRefresh(runId){
+    if(!runId||session.runId!==runId||session.status!=='running'||!nextFeedRefreshAt||session.timeExpired()||
+        currentCard()||currentDialog())return null;
+    guardLocation(session.config);
+    // The worker is waiting on its next feed check. Capturing here cannot interrupt
+    // it if the host drops a stale request or a navigation is canceled.
+    return reloadCheckpoint();
+  }
   function prepareLocationReload(){
     if(!['running','paused'].includes(session.status))return null;
-    const saved={session:session.checkpoint(),lastCard};
+    const saved=reloadCheckpoint();
     session.pause();
     return saved;
   }
   function restoreLocationReload(saved){
     if(session.status!=='idle'||!['running','paused'].includes(saved?.session?.status)||!settings?.sidebarConsentGiven||
        !/^\/app\/(recs|explore)(\/|$)/.test(location.pathname))return;
-    session.restore(saved.session);lastCard=saved.lastCard;
+    session.restore(saved.session);lastCard=saved.lastCard;nextFeedRefreshAt=saved.nextFeedRefreshAt||0;
     const hidden=settings.desktopHost?settings.desktopVisible===false:document.hidden;
     const dialog=currentDialog();
     if(saved.session.status==='running'&&session.status==='paused'&&settings.desktopActive!==false&&
@@ -200,7 +219,7 @@
     if(action==='send')return sendDraft(data.text,data.conversationId);
     if(action==='start'){
       requireConsent();if(!/^\/app\/(recs|explore)(\/|$)/.test(location.pathname))throw new Error('Open Tinder Discover before starting a session.');
-      if(session.status!=='paused')lastCard=null;
+      if(!['paused','running'].includes(session.status)){lastCard=null;nextFeedRefreshAt=0;}
       session.start(settings.swipeConfig);await rpc('record',{kind:'session',detail:'Swipe session started'});return snapshot();
     }
     if(action==='pause'){session.pause();await rpc('record',{kind:'pause',detail:'Swipe session paused'});return snapshot()}
@@ -237,5 +256,5 @@
     observe();
   }
   let lastPath=location.pathname;
-  root.SSTinder={init,context,request,snapshot,prepareLocationReload,restoreLocationReload,subscribe:fn=>{subscribers.add(fn);return()=>subscribers.delete(fn)}};
+  root.SSTinder={init,context,request,snapshot,prepareLocationReload,prepareEmptyRefresh,restoreLocationReload,subscribe:fn=>{subscribers.add(fn);return()=>subscribers.delete(fn)}};
 })(globalThis);

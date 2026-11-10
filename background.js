@@ -26,6 +26,7 @@ async function saveSettings(patch){
       if(['models','swipeConfig','messagingConfig'].includes(key)){
         if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid settings.');
         next[key]={...data[key],...value};
+        if(key==='swipeConfig')SSCore.requireSessionLimit(next[key]);
       }else next[key]=value;
     }
     if(!SSCore.providers[next.activeAI])throw new Error('Unknown provider.');
