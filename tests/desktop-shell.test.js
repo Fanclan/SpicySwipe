@@ -93,6 +93,23 @@ test('reconnecting after process restart preserves the restored mobile budget an
  const x=await setup(undefined,checkpoints);await x.call('platform',{platform:'hinge'});const restored=await x.call('mobile:request',{platform:'hinge',action:'status'});assert.equal(restored.session.status,'paused');await x.call('android:select',{platform:'hinge',serial:'emulator-5554'});const connected=await x.call('mobile:request',{platform:'hinge',action:'status'});assert.equal(connected.session.status,'paused');assert.equal(connected.session.count,8);assert.equal(connected.session.endsAt,endsAt);x.app.emit('before-quit');assert.equal(checkpoints.hinge.session.status,'paused');assert.equal(checkpoints.hinge.session.count,8);
 });
 
+test('raw device input invalidates paused resume observations made before and during the command',async()=>{
+ const config=require('../desktop/mobile-config.cjs').normalize(),endsAt=Date.now()+600000;
+ const x=await setup(undefined,{hinge:{version:1,platform:'hinge',config,binding:{serial:'emulator-5554'},pendingAction:null,recoveryAttempts:0,
+  session:{status:'running',count:8,endsAt,config:config.swipe,nextBreakAt:20,breakUntil:null,completionReason:''}}});
+ const mobile=(action,data)=>x.call('mobile:request',{platform:'hinge',action,data});
+ await x.call('android:select',{platform:'hinge',serial:'emulator-5554'});
+ const before=await mobile('status');assert.equal(before.session.status,'paused');assert.equal(before.screen,null);
+ let finish;x.setGate(new Promise(resolve=>{finish=resolve}));
+ const typing=x.call('android:type',{platform:'hinge',text:'input'});await new Promise(resolve=>setImmediate(resolve));
+ const during=await mobile('status');finish();await typing;
+ const after=await mobile('status');assert.equal(after.session.runId,before.session.runId);assert.equal(after.session.count,8);
+ for(const observation of [before,during]){
+  assert.ok(after.resumeEpoch>observation.resumeEpoch);
+  await assert.rejects(mobile('start',{resumeRunId:observation.session.runId,expectedResumeEpoch:observation.resumeEpoch}),/no longer paused/);
+ }
+});
+
 
 test('explicit location approval survives relaunch and Privacy can revoke it',async()=>{
  const x=await setup();await x.call('openTinder');x.allow();const wc=x.views[0].webContents;

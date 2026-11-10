@@ -1959,3 +1959,45 @@ test('a repeated or mismatched guarded start cannot write checkpoints for a diff
  assert.equal(writes,before);assert.equal(x.c.session.status,'running');
  await x.c.request('stop');
 });
+
+test('a changed paused mobile config invalidates the old resume observation, including legacy timed checkpoints',async()=>{
+ const base=setup();base.c.session.wait=()=>new Promise(()=>{});
+ await base.c.request('start');await base.c.request('pause');
+ const cp=base.c.checkpoint();delete cp.session.runId;
+ const x=setup(screen(),{checkpointStore:{read:()=>cp,write:()=>{}}});x.c.session.wait=()=>new Promise(()=>{});
+ const before=await x.c.request('status'),sid=before.session.runId;
+ const after=await x.c.request('config',{swipe:{randomizeTiming:false,delaySeconds:21}});
+ assert.ok(after.resumeEpoch>before.resumeEpoch);assert.equal(x.c.session.config.delaySeconds,21);
+ await assert.rejects(x.c.request('start',{resumeRunId:sid,expectedResumeEpoch:before.resumeEpoch}));
+ assert.equal(x.c.session.status,'paused');
+ assert.equal((await x.c.request('start',{resumeRunId:sid,expectedResumeEpoch:after.resumeEpoch})).session.runId,sid);
+ await x.c.request('stop');
+});
+
+test('a status read during an in-flight mobile settings write cannot resume its outdated checkpoint',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('start');const paused=await x.c.request('pause');
+ const entered=deferred(),release=deferred(),request=x.c.service.request;
+ x.c.service.request=async(action,...args)=>{if(action==='save'){entered.resolve();await release.promise}return request(action,...args)};
+ const edit=x.c.request('config',{swipe:{delaySeconds:23}});await entered.promise;
+ const during=await x.c.request('status');assert.notEqual(during.config.swipe.delaySeconds,23);
+ const resume=snap=>x.c.request('start',{resumeRunId:snap.session.runId,expectedResumeEpoch:snap.resumeEpoch});
+ const first=assert.rejects(resume(paused)),second=assert.rejects(resume(during));
+ release.resolve();const saved=await edit;await Promise.all([first,second]);
+ assert.equal(x.c.session.status,'paused');assert.equal(saved.config.swipe.delaySeconds,23);
+ assert.equal((await resume(saved)).session.runId,paused.session.runId);await x.c.request('stop');
+});
+
+test('a manual action queued during guarded native start preflight supersedes the resume without canceling the manual action',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('start');const paused=await x.c.request('pause'),entered=deferred(),release=deferred();
+ const read=x.android.hierarchy;let first=true;x.android.hierarchy=async()=>{if(first){first=false;entered.resolve();await release.promise}return read()};
+ const starting=x.c.request('start',{resumeRunId:paused.session.runId});
+ await entered.promise;
+ const operationEpoch=x.c.epoch,inputEpoch=x.android.inputEpoch;
+ x.android.tapControl=async(_bounds,valid,issued)=>{assert.equal(valid(),true);issued();x.set(screen({name:'Next',identity:'next'}))};
+ const manual=x.c.request('act',{kind:'pass'});const stale=assert.rejects(starting);
+ release.resolve();await Promise.all([stale,manual]);assert.equal(x.c.session.status,'paused');
+ assert.equal(x.calls.filter(c=>c.kind==='pass').length,1);assert.equal(x.c.epoch,operationEpoch);assert.equal(x.android.inputEpoch,inputEpoch);
+ await assert.rejects(x.c.request('start',{resumeRunId:paused.session.runId,expectedResumeEpoch:paused.resumeEpoch}));
+});
