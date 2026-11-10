@@ -3,9 +3,9 @@ async function setup(t,html,options={}){
  const dom=new JSDOM(html,{url:options.url||'https://tinder.com/app/messages/A',runScripts:'outside-only',pretendToBeVisual:true});t.after(()=>dom.window.close());
  dom.window.HTMLElement.prototype.getClientRects=function(){return [{width:10,height:10}]};
  let state=C.publicSettings(C.migrate({sidebarConsentGiven:true,hasCompletedOnboarding:true,swipeConfig:options.config||{},messagingConfig:options.messaging||{}}));const calls=[];let subscriber;
- dom.window.SSClient={rpc:async(action,data)=>{calls.push({action,data});return state},subscribe:fn=>{subscriber=fn}};
+ dom.window.SSClient={rpc:async(action,data)=>{calls.push({action,data});if(options.onRpc)await options.onRpc(action,data);return state},subscribe:fn=>{subscriber=fn}};
  for(const file of ['shared/core.js','shared/session.js'])dom.window.eval(fs.readFileSync(file,'utf8'));
- if(options.wait){const Original=dom.window.SSSession;dom.window.SSSession=class extends Original {constructor(args){super({...args,wait:options.wait})}}}
+ if(options.wait){const Original=dom.window.SSSession;dom.window.SSSession=class extends Original {constructor(args){super({...args,wait:options.wait});options.onSession?.(this)}}}
  dom.window.eval(fs.readFileSync('content/tinder.js','utf8'));
  await dom.window.SSTinder.init();return {dom,api:dom.window.SSTinder,calls,update:patch=>{state={...state,...patch};subscriber({type:"settings",data:state})}};
 }
@@ -33,8 +33,8 @@ test('simultaneous send requests cannot duplicate a message',async t=>{
 
 const tick=()=>new Promise(r=>setImmediate(r));
 const profile='<button aria-label="Next photo" id="outside">Unrelated</button><article data-testid="recs-card" data-user-id="person-a"><h2>Alex</h2><img src="https://example.test/1.jpg"><button aria-label="Next photo" id="photo">Next</button></article><button data-testid="gamepad-like" id="like">Like</button>';
-async function swipeSetup(t,config={}){
- const waits=[];const x=await setup(t,profile,{url:'https://tinder.com/app/recs',config:{maxSwipes:2,delaySeconds:3,browsePhotos:true,maxPhotos:1,minPhotoSeconds:1,maxPhotoSeconds:1,likeRatio:1,...config},wait:()=>new Promise(r=>waits.push(r))});return {...x,waits};
+async function swipeSetup(t,config={},options={}){
+ const waits=[];const x=await setup(t,profile,{...options,url:'https://tinder.com/app/recs',config:{maxSwipes:2,delaySeconds:3,browsePhotos:true,maxPhotos:1,minPhotoSeconds:1,maxPhotoSeconds:1,likeRatio:1,...config},wait:()=>new Promise(r=>waits.push(r))});return {...x,waits};
 }
 test('a location reload continues the original session without repeating the previous Like',async t=>{
  const old=await swipeSetup(t,{allowBackground:true,browsePhotos:false,maxSwipes:3});
@@ -465,4 +465,121 @@ test('partially loaded identity fields cannot turn a previously seen card into a
   await step(x,2);
   assert.equal(x.api.snapshot().session.status,'complete',variant);assert.equal(clicks,2,variant);
  }
+});
+
+const recoveryConfig={maxSwipes:750,allowBackground:true,sessionMinutes:null,likeRatio:1,browsePhotos:false};
+const idleGuard={previousStatus:'idle',previousRunId:null,previousCount:0,maxSwipes:750};
+const guardedStart=(fixture,guard)=>fixture.api.request('start',{budgetGuard:guard});
+
+test('a stale saved cap cannot open an oversized Tinder successor',async t=>{
+ const x=await swipeSetup(t,{...recoveryConfig,maxSwipes:1000});
+ const before=x.api.snapshot().session;
+ await assert.rejects(guardedStart(x,idleGuard),/settings/i);
+ assert.deepEqual(x.api.snapshot().session,before);
+ assert.equal(x.calls.filter(c=>c.data?.kind==='session').length,0);
+});
+
+test('malformed and partial Tinder budget guards preserve the idle session',async t=>{
+ const x=await swipeSetup(t,recoveryConfig),before=x.api.snapshot().session;
+ const malformed=[null,{},[],false,'750',
+  {...idleGuard,previousRunId:undefined},{...idleGuard,previousRunId:''},{...idleGuard,previousStatus:'paused'},
+  {...idleGuard,previousCount:'0'},{...idleGuard,previousCount:1},{...idleGuard,previousRunId:'a'.repeat(32)},
+  {...idleGuard,maxSwipes:'750'},{...idleGuard,maxSwipes:0},{...idleGuard,maxSwipes:2.4},{...idleGuard,maxSwipes:10001},
+  {...idleGuard,allowPossibleRepeat:1},{...idleGuard,wrongField:true},
+  {previousStatus:'idle',previousCount:0,maxSwipes:750}];
+ for(const guard of malformed)await assert.rejects(guardedStart(x,guard),/guard|predecessor/i);
+ for(const malformedData of [null,[],idleGuard,{budgetGuard:idleGuard,maxSwipes:1000}])
+  await assert.rejects(x.api.request('start',malformedData),/guard/i);
+ assert.deepEqual(x.api.snapshot().session,before);
+});
+
+test('a guarded Tinder successor needs the full saved swipe and messaging scope',async t=>{
+ for(const patch of [{sessionMinutes:60},{likeRatio:.8},{allowBackground:false},{autoSend:true},{autoMessageOnMatch:true}]){
+  const x=await swipeSetup(t,{...recoveryConfig,...patch},{messaging:patch}),before=x.api.snapshot().session;
+  await assert.rejects(guardedStart(x,idleGuard),/settings/i);assert.deepEqual(x.api.snapshot().session,before);
+ }
+});
+
+test('guarded Tinder Start requires an identified, ordinary Discover card with a working Like and no open composer',async t=>{
+ for(const mode of ['unknown card','name only','no Like','disabled Like','hidden Like','second Like','second card','native dialog','dialog','draft','textbox','explore']){
+  const x=await swipeSetup(t,recoveryConfig),d=x.dom.window.document;
+  if(mode==='unknown card')d.querySelector('article').remove();
+  if(mode==='name only')d.querySelector('article').removeAttribute('data-user-id');
+  if(mode==='no Like')d.querySelector('#like').remove();
+  if(mode==='disabled Like')d.querySelector('#like').setAttribute('aria-disabled','true');
+  if(mode==='hidden Like')d.querySelector('#like').style.visibility='hidden';
+  if(mode==='second Like')d.body.append(d.querySelector('#like').cloneNode(true));
+  if(mode==='second card')d.body.append(d.querySelector('article').cloneNode(true));
+  if(mode==='native dialog')d.body.insertAdjacentHTML('beforeend','<dialog open>Attention required</dialog>');
+  if(mode==='dialog')upgradePrompt(d);
+  if(mode==='draft')d.body.insertAdjacentHTML('beforeend','<textarea hidden>unsent</textarea>');
+  if(mode==='textbox')d.body.insertAdjacentHTML('beforeend','<div role="textbox" contenteditable="plaintext-only"></div>');
+  if(mode==='explore')x.dom.window.history.pushState({},'', '/app/explore');
+  const before=x.api.snapshot().session;
+  await assert.rejects(guardedStart(x,idleGuard),/Discover/i,mode);assert.deepEqual(x.api.snapshot().session,before);
+ }
+});
+
+test('concurrent guarded requests create exactly one run with the requested cap and no deadline',async t=>{
+ const x=await swipeSetup(t,recoveryConfig);
+ const ctx=await x.api.request('context');assert.equal(ctx.capabilities?.budgetGuard,1);
+ const results=await Promise.allSettled([guardedStart(x,idleGuard),guardedStart(x,idleGuard)]);
+ assert.equal(results[0].status,'fulfilled');assert.equal(results[1].status,'rejected');
+ const accepted=results[0].value.session;
+ assert.equal(accepted.status,'running');assert.match(accepted.runId,/^[a-f0-9]{32}$/);
+ assert.equal(accepted.count,0);assert.equal(accepted.limit,750);assert.equal(accepted.endsAt,null);
+ assert.deepEqual(x.api.snapshot().session,accepted);
+ assert.deepEqual(x.calls.filter(c=>c.action==='record').map(c=>c.data.kind),['session']);
+ await x.api.request('stop');
+ await assert.rejects(guardedStart(x,idleGuard),/predecessor/i);
+});
+
+test('only an exact duplicate-card error with explicit repeat consent permits a capped direct successor',async t=>{
+ const duplicate='The profile has not changed. Check Tinder before continuing.';
+ for(const detail of [duplicate,'No available swipe control']){
+  let engine;const x=await swipeSetup(t,{...recoveryConfig,maxSwipes:3},{onSession:s=>{engine=s}});
+  await x.api.request('start');await step(x);
+  const normal=engine.act;engine.act=async()=>{throw Error(detail)};await step(x);engine.act=normal;
+  const before=x.api.snapshot().session;assert.equal(before.count,1);assert.equal(before.status,'error');
+  x.update({swipeConfig:{...recoveryConfig,maxSwipes:2}});
+  const guard={previousStatus:'error',previousRunId:before.runId,previousCount:1,maxSwipes:2,allowPossibleRepeat:true};
+  for(const invalid of [{...guard,previousCount:0},{...guard,previousRunId:'b'.repeat(32)},
+    {...guard,allowPossibleRepeat:false},{...guard,allowPossibleRepeat:undefined}]){
+   await assert.rejects(guardedStart(x,invalid),/predecessor|guard/i);assert.deepEqual(x.api.snapshot().session,before);
+  }
+  x.update({swipeConfig:{...recoveryConfig,maxSwipes:3}});
+  await assert.rejects(guardedStart(x,{...guard,maxSwipes:3}),/predecessor|budget/i);
+  x.update({swipeConfig:{...recoveryConfig,maxSwipes:2}});
+  if(detail!==duplicate){await assert.rejects(guardedStart(x,guard),/predecessor/i);assert.deepEqual(x.api.snapshot().session,before);continue}
+  const next=(await guardedStart(x,guard)).session;
+  assert.equal(next.status,'running');assert.equal(next.limit,2);assert.equal(next.endsAt,null);assert.notEqual(next.runId,before.runId);
+  await assert.rejects(guardedStart(x,guard),/predecessor/i);
+ }
+});
+
+test('budget readiness reads the actual Discover and settings without spending the single guarded Start',async t=>{
+ const x=await swipeSetup(t,recoveryConfig),d=x.dom.window.document,before=x.api.snapshot().session;
+ const ready=()=>x.api.request('context',{budgetGuard:idleGuard});
+ assert.equal((await ready()).guardedStartReady,true);
+ const dialog=upgradePrompt(d);assert.equal((await ready()).guardedStartReady,false);
+ assert.ok(dialog.isConnected);dialog.remove();assert.equal((await ready()).guardedStartReady,true);
+ x.update({swipeConfig:{...recoveryConfig,maxSwipes:1000}});
+ assert.equal((await ready()).guardedStartReady,false);
+ await assert.rejects(guardedStart(x,idleGuard),/settings/i);
+ assert.deepEqual(x.api.snapshot().session,before);
+ assert.equal(x.calls.filter(c=>c.action==='record').length,0);
+ x.update({swipeConfig:recoveryConfig,sidebarConsentGiven:false});
+ assert.equal((await ready()).guardedStartReady,false);
+});
+
+test('a guarded Tinder acknowledgement cannot bind a replacement run created while recording activity',async t=>{
+ let release;const wait=new Promise(resolve=>{release=resolve});let count=0;
+ const x=await swipeSetup(t,recoveryConfig,{onRpc:async(action,data)=>{
+  if(action==='record'&&data.kind==='session'&&++count===1)await wait;
+ }});
+ const pending=guardedStart(x,idleGuard),original=x.api.snapshot().session.runId;
+ await x.api.request('stop');const other=(await x.api.request('start')).session;
+ assert.notEqual(other.runId,original);release();
+ await assert.rejects(pending,/successor changed/i);
+ assert.equal(x.api.snapshot().session.runId,other.runId);
 });
