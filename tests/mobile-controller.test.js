@@ -1799,3 +1799,91 @@ test('a profile arriving during empty-feed launcher lookup stays visible for ord
   assert.equal(x.c.lastAction,null);assert.ok(x.c.nextFeedRefreshAt>x.c.session.now());
  }
 });
+
+test('clean managed Hinge polls a persistently blank Discover shell through lost refresh acknowledgement until a real profile is counted',async()=>{
+ const phone={serial:'emulator-1',avd:'assigned'},blank=loadingDiscover();let saved,now=Date.now(),ticks=0;
+ const x=setup(blank,{checkpointStore:{read:()=>null,write:cp=>{saved=structuredClone(cp)}},isManagedPhone:b=>b?.avd===phone.avd});
+ x.android.deviceIdentity=async()=>({...phone});
+ x.c.session.now=()=>now;
+ x.c.session.wait=async ms=>{if(++ticks>180)throw Error('Clean Discover stopped refreshing');now+=ms};
+ const launches=[];
+ x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{
+  await beforeStop();assert.equal(valid(),true);assert.ok(saved.nextFeedRefreshAt>=now+300000);
+  assert.equal(saved.session.count,0);assert.equal(saved.pendingAction,null);launches.push(now);
+  if(launches.length===2)throw Object.assign(Error('Lost native launcher acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  if(launches.length===3)x.set(screen());
+ };
+ let votes=0;
+ x.android.tapControl=async(_bounds,valid,issued)=>{
+  assert.equal(valid(),true);
+  if(issued){votes++;issued();x.set(screen({name:'Next',identity:'next'}))}
+  else x.set(screen({kind:'like',composerTextVerified:true,controls:{sendLike:control('Send like')}}));
+ };
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{maxSwipes:1,sessionMinutes:null,likeRatio:1,
+  allowBackground:true,breaksEnabled:false,browsePhotos:false,scrollProfile:false}});
+ await x.c.request('start');await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+ assert.equal(x.c.session.status,'complete',x.c.session.error);assert.equal(x.c.session.completionReason,'limit');
+ assert.equal(x.c.session.count,1);assert.equal(votes,1);assert.equal(launches.length,3);
+ assert.ok(launches[1]-launches[0]>=300000);assert.ok(launches[2]-launches[1]>=300000);
+ assert.equal(saved.pendingAction,null);assert.equal(saved.loadingFeedRelaunched,false);
+});
+
+test('clean Hinge loading refresh hands a changed native screen back to normal review before force-stop',async()=>{
+ for(const next of [screen(),feedError(),screen({kind:'blocked',reason:'Subscription gate'})]){
+  const x=await loadingHinge();x.c.checkpointStore={write(){}};
+  x.c.lastAction=null;x.c.loadingFeedRelaunched=true;x.c.nextFeedRefreshAt=0;x.c.readFailures=3;
+  let lookups=0,stops=0;
+  x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{lookups++;x.set(next);await beforeStop();stops++};
+  const result=await x.run();
+  assert.equal(lookups,1);assert.equal(stops,0);assert.equal(result.phase,'checking next profile');
+  assert.equal(x.c.screen.kind,next.kind);assert.equal(x.c.session.count,4);
+  assert.ok(x.c.nextFeedRefreshAt>x.c.session.now());
+ }
+});
+
+test('repeat Hinge loading refresh rechecks the occupied run, budget and managed binding',async()=>{
+ for(const scenario of ['pending','draft','cap','deadline','unsettled-count','unmanaged','no-store','missing-key','changed-phone','expired-during-grace']){
+  const x=await loadingHinge(scenario!=='unmanaged');
+  x.c.checkpointStore=scenario==='no-store'?null:{write(){}};x.c.loadingFeedRelaunched=true;x.c.nextFeedRefreshAt=0;
+  if(scenario!=='pending')x.c.lastAction=null;
+  if(scenario==='draft')x.c.draft={text:'draft'};
+  if(scenario==='cap')x.c.session.config.maxSwipes=x.c.session.count;
+  if(scenario==='unsettled-count')x.c.reservedCount++;
+  if(scenario==='deadline')x.c.session.endsAt=Date.now()-1;
+  if(scenario==='missing-key')x.set({...loadingDiscover(),screenKey:null});
+  let stops=0;
+  x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{
+   if(scenario==='changed-phone')x.android.deviceIdentity=async()=>({...x.c.binding,avd:'different-phone'});
+   await beforeStop();stops++;
+  };
+  try{await x.run(async()=>{if(scenario==='expired-during-grace')x.c.session.endsAt=Date.now()-1;return true})}
+  catch(e){if(scenario!=='changed-phone'||e.code!=='MOBILE_DEVICE_CHANGED')throw e}
+  assert.equal(stops,0,scenario);assert.equal(x.c.session.count,4,scenario);
+ }
+});
+
+test('restoring a clean Hinge loading checkpoint honors its original cooldown and does not hide storage failures',async()=>{
+ const x=await loadingHinge();x.c.lastAction=null;x.c.loadingFeedRelaunched=true;
+ let now=Date.now();x.c.nextFeedRefreshAt=now+300000;
+ const saved=x.c.checkpoint(),y=await loadingHinge();
+ y.c.restoreCheckpoint(saved);y.c.session.status='running';y.c.session.now=()=>now;
+ let failed=false,stops=0;
+ y.c.checkpointStore={write:cp=>{if(failed&&cp.nextFeedRefreshAt>now)throw Error('No space')}};
+ y.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{await beforeStop();stops++};
+ await y.run();assert.equal(stops,0);now+=300001;
+ await y.run();assert.equal(stops,1);assert.equal(y.c.session.count,4);
+ now+=300001;failed=true;
+ await assert.rejects(y.run(),e=>e.code==='MOBILE_STORAGE_FAILURE');assert.equal(stops,1);
+});
+
+test('an unresolved Hinge Like retains its one-shot blank guard across a visible Retry or the same profile',async()=>{
+ const x=await loadingHinge();let launches=0;
+ x.android.refreshFeed=async(_platform,_valid,_wait,beforeStop)=>{await beforeStop();launches++};
+ await x.run();const guard=x.c.lastAction;assert.equal(launches,1);
+ for(const current of [feedError(),screen({identity:guard.identity,name:guard.name})]){
+  x.set(current);await x.c.read(x.c.token());x.set(loadingDiscover());x.c.nextFeedRefreshAt=0;
+  await x.run();assert.equal(launches,1);assert.equal(x.c.lastAction,guard);
+ }
+ x.set(screen({identity:'new-card',name:'Next'}));await x.run();assert.equal(x.c.lastAction,null);
+ x.set(loadingDiscover());await x.run();assert.equal(launches,2);
+});

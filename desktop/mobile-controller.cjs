@@ -113,6 +113,7 @@ class MobileController{
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
   const revalidate=async()=>{
    const current=await this.fresh(s,t,valid);this.assert(t,valid);
+   if(loading&&this.observedForeground!=='co.hinge.app')throw transientError('Discover left the foreground before refresh.','MOBILE_SCREEN_CHANGED');
    if(held&&!heldScreen(current))throw transientError('The held Discover profile changed before refresh.','MOBILE_SCREEN_CHANGED');
   };
   await this.verifyBinding(t);await revalidate();
@@ -121,9 +122,9 @@ class MobileController{
   this.reviewContext=null;this.selectedPhoto=null;this.draft=null;this.screen=null;
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
   // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
-  // even a lost acknowledgement must not re-arm recovery on the same blank feed.
+  // a lost acknowledgement must not re-arm a blank-feed refresh with a pending action.
   const beforeStop=loading||held||s.kind==='empty'?async()=>{
-   if(held)await this.verifyBinding(t);
+   if(held||loading)await this.verifyBinding(t);
    await revalidate();
    if(loading){this.loadingFeedRelaunched=true;this.persist()}
   }:undefined;
@@ -167,15 +168,34 @@ class MobileController{
   return this.heldInventoryScreen(after,hint)?waiting:{retryAfter:1000,phase:'checking next profile'};
  }
  async waitForDiscover(s,t,valid,sleep){
+  const session=this.session,epoch=session.epoch,runId=session.runId,pending=this.lastAction,avd=this.binding?.avd;
   const waiting={retryAfter:30000,phase:'waiting for Discover'};
-  const owned=()=>this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft&&valid();
-  if(!owned()||this.loadingFeedRelaunched||this.session.now()<this.nextFeedRefreshAt)return waiting;
+  const repeat=this.loadingFeedRelaunched;
+  // A pending Like gets one relaunch during a continuous blank episode. A clean,
+  // managed, persistent session may check again after the shared five-minute cooldown.
+  if(repeat&&(pending||!this.checkpointStore||!this.android.deviceIdentity))return waiting;
+  const owned=()=>valid()&&session.status==='running'&&session.epoch===epoch&&session.runId===runId&&
+   !session.timeExpired()&&!session.reachedProfileLimit(Math.max(session.count,this.reservedCount))&&
+   (!repeat||session.count===this.reservedCount)&&
+   this.isManagedPhone(this.binding)&&this.binding?.serial===t.serial&&this.binding.avd===avd&&
+   this.lastAction===pending&&!this.draft&&!this.storageError;
+  if(!s.screenKey||this.observedForeground!=='co.hinge.app'||!owned()||session.now()<this.nextFeedRefreshAt)return waiting;
   if(!await sleep(30000,waiting.phase))return waiting;
-  this.assert(t,owned);
-  const observed=await this.read(t);this.assert(t,owned);
-  // The blank shell proves neither that the queue is empty nor that a Like succeeded.
-  // A normal loading transition needs no relaunch. Leave any pending action for reconciliation.
-  if(observed.kind===s.kind&&observed.screenKey===s.screenKey)await this.refreshKnownFeed(s,t,owned);
+  this.assert(t,valid);if(!owned())return waiting;
+  try{
+   const observed=await this.read(t);this.assert(t,valid);if(!owned())return waiting;
+   if(this.observedForeground==='co.hinge.app'&&observed.kind===s.kind&&observed.screenKey===s.screenKey)
+    await this.refreshKnownFeed(s,t,owned);
+  }catch(error){
+   this.assert(t,valid);
+   // A profile, Retry prompt or gate appeared during launcher lookup. Hand it
+   // back to the ordinary worker without stopping the app or voting.
+   if(error.code!=='MOBILE_SCREEN_CHANGED'){
+    if(error.code==='MOBILE_STORAGE_FAILURE'||error.code==='MOBILE_DEVICE_CHANGED'||this.storageError)throw error;
+    if(!owned()||transientRead.has(error.code))return waiting;
+    throw error;
+   }
+  }
   return {retryAfter:1000,phase:this.lastAction?'verifying previous action':'checking next profile'};
  }
  async retryFeed(s,t,valid){
@@ -387,7 +407,7 @@ class MobileController{
    });
    s.screenKey=require('node:crypto').createHash('sha256').update(JSON.stringify([s.screenKey,revisions,ev.commentText])).digest('hex');
   }  if(this.reviewContext&&(this.reviewContext.identity!==s.identity||this.reviewContext.screenKey!==s.screenKey))this.reviewContext=null;
-  if(this.loadingFeedRelaunched&&['profile','empty','feedError','like','likeOffer','conversation'].includes(s.kind))this.loadingFeedRelaunched=false;
+  if(this.loadingFeedRelaunched&&!this.lastAction&&['profile','empty','feedError','like','likeOffer','conversation'].includes(s.kind))this.loadingFeedRelaunched=false;
   this.observedForeground=raw.foreground;this.screen=s;this.reason='';this.notify();return s;
  }
  supported(s,kinds){if(!kinds.includes(s.kind))throw transientError(s.reason||'This screen is not recognized for this action.','MOBILE_SCREEN_UNAVAILABLE');if(!s.identity)throw transientError('Profile identity is incomplete. Read more profile details before acting.');}
@@ -467,7 +487,8 @@ class MobileController{
    if(current.footerScrollSurface)return false;
   }
   const late=changeKey(current);
-  if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;this.lastAction=null;this.persist();return true;}
+  const resolved=()=>{this.lastAction=null;this.loadingFeedRelaunched=false;this.persist();return true};
+  if(late){await this.pauseFor(1000,t);this.assert(t,valid);const confirmed=await this.read(t);this.assert(t,valid);if(changeKey(confirmed)!==late)return false;return resolved();}
   if(!this.android.refreshFeed||this.session.now()<(this.nextFeedRefreshAt||0))return false;
   // A changed photo cannot prove a new person, but it must not prevent a read-only refresh.
   const stalledProfile=current.kind==='profile'&&Boolean(current.identity)&&current.name===original.name;
@@ -482,7 +503,7 @@ class MobileController{
    await this.pauseFor(1000,t);this.assert(t,valid);let observed=await this.read(t);this.assert(t,valid);
    if(this.platform==='bumble')observed=await this.dismissBumbleReminder(observed,t,valid);this.assert(t,valid);
    const key=changeKey(observed);
-   if(key&&key===candidate){this.lastAction=null;this.persist();return true}
+   if(key&&key===candidate)return resolved();
    candidate=key;
    if(observed.kind!=='blocked'&&!key)return false;
   }
