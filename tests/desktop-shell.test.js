@@ -154,6 +154,7 @@ test('Tinder status can be explicitly observed while an Android phone is visible
 function heldWebFixture(t,options={}) {
  const folder=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'spicy-web-held-'));
  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+ if(process.platform==='win32')require('./fixtures/web-receipt-directory.cjs')(t,path.join(folder,'sessions'));
  const source={version:1,runId:'a'.repeat(32),count:7,limit:10,endsAt:null};
  const raw={connected:true,context:{page:'/app/recs'},capabilities:{budgetGuard:1},session:{status:'idle',phase:'idle',count:0,runId:null,endsAt:null,limit:10,nextActionAt:null,completionReason:'',error:''},automaticDraft:null};
  return {folder,source,raw,seed:JSON.stringify(source),events:[],renderer:()=>raw,
