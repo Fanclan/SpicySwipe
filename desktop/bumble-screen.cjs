@@ -1,4 +1,68 @@
 'use strict';
+function matchNoticeDismiss(visible,sheet,{bounds,fullyVisible,label,control}){
+ const app='com.bumble.app:id/',children=parent=>visible.filter(n=>n.parent===parent);
+ const required=[
+  ['match_tint','android.widget.FrameLayout','mutualAttraction_topContainer'],
+  ['match_close','android.widget.ImageView','mutualAttraction_topContainer'],
+  ['match_overflow_menu','android.widget.FrameLayout','mutualAttraction_topContainer'],
+  ['match_scroll_view','android.widget.ScrollView','mutualAttraction_topContainer'],
+  ['match_single_best_shot','android.widget.FrameLayout','mutualAttraction_topContainer'],
+  ['match_composer','android.widget.FrameLayout','mutualAttraction_topContainer'],
+  ['match_scrollable_content','android.view.ViewGroup','match_scroll_view'],
+  ['match_matchPhoto','android.view.ViewGroup','match_scrollable_content'],
+  ['match_explanationTitle','android.widget.TextView','match_scrollable_content'],
+  ['match_explanationDescription','android.widget.TextView','match_scrollable_content'],
+  ['brickPair_leftBrick','android.widget.ImageView','match_matchPhoto'],['brickPair_leftBorder','android.view.View','match_matchPhoto'],
+  ['brickPair_badge','android.widget.ImageView','match_matchPhoto'],['brickPair_rightBrick','android.widget.ImageView','match_matchPhoto'],
+  ['brickPair_rightBorder','android.view.View','match_matchPhoto'],
+  ['composerMini_text','android.widget.EditText','match_composer'],['composerMini_icon','android.widget.ImageView','match_composer']
+ ];
+ if(!sheet||sheet.a.class!=='android.view.ViewGroup')return null;
+ const roles={mutualAttraction_topContainer:sheet},known=new Set([sheet]);
+ for(const [id,type,parent] of required){
+  const matches=visible.filter(n=>n.a['resource-id']===app+id);
+  if(matches.length!==1||matches[0].a.class!==type||matches[0].parent!==roles[parent])return null;
+  roles[id]=matches[0];known.add(matches[0]);
+ }
+ // The match activity occupies its own window. Other roots or sibling overlays must stay untouched.
+ let ancestor=sheet;
+ for(const [type,id] of [['FrameLayout','android:id/content'],['FrameLayout',app+'action_bar_root'],['FrameLayout',''],['LinearLayout',''],['FrameLayout','']]){
+  ancestor=ancestor.parent;
+  if(!ancestor||ancestor.a.class!=='android.widget.'+type||(ancestor.a['resource-id']||'')!==id||children(ancestor).length!==1)return null;
+  known.add(ancestor);
+ }
+ if(ancestor.parent?.tag!=='hierarchy')return null;
+ const dismiss=roles.match_close,editor=roles.composerMini_text,send=roles.composerMini_icon;
+ if(dismiss.a['content-desc']!=='Close'||dismiss.a.text||visible.filter(n=>label(n)==='Close').length!==1||
+    editor.a.hint!=='Send a message...'||editor.a.text!==editor.a.hint||editor.a['content-desc']||editor.a.focusable!=='true'||
+    editor.a.focused!=='false'||send.enabled||send.a['content-desc']!=='Send'||send.a.text)return null;
+ const within=(n,container)=>{for(let p=n.parent;p;p=p.parent)if(p===container)return true;return false};
+ const menu=visible.filter(n=>within(n,roles.match_overflow_menu));
+ const option=menu.filter(n=>n.a['content-desc']==='Options'&&!n.a.text&&n.a.class==='android.view.View');
+ if(option.length!==1||!menu.includes(option[0].parent)||option[0].parent.a.class!=='android.view.View')return null;
+ const allowedClicks=new Set([dismiss,option[0].parent,roles.brickPair_rightBrick,editor,send]);
+ const labels=new Set([dismiss,option[0],roles.match_explanationTitle,roles.match_explanationDescription,editor,send]);
+ if(!roles.match_explanationTitle.a.text||!roles.match_explanationDescription.a.text)return null;
+ const passiveSuggestion=visible.filter(n=>within(n,roles.match_single_best_shot));
+ if(!passiveSuggestion.some(n=>n.a.class==='android.widget.TextView'&&n.a.text))return null;
+ for(const n of menu){
+  if(n.a['resource-id']||!['b.gjf','android.view.View','android.widget.Button'].includes(n.a.class))return null;
+  known.add(n);
+ }
+ for(const n of passiveSuggestion){
+  if(n.a['resource-id']||!['b.gjf','android.view.View','android.widget.TextView'].includes(n.a.class))return null;
+  if(n.a.class==='android.widget.TextView'&&n.a.text&&!n.a['content-desc'])labels.add(n);
+  known.add(n);
+ }
+ if(visible.some(n=>!known.has(n)||n.a.package!=='com.bumble.app'||!fullyVisible(n)||!n.enabled&&n!==send||
+    (label(n)&&!labels.has(n))||(n.a.clickable==='true')!==allowedClicks.has(n)||(n.a.scrollable==='true')!==(n===roles.match_scroll_view)||
+    n.a.focused==='true'||n.a.password==='true'||n.a.checkable==='true'||n.a.selected==='true'||n.a['long-clickable']==='true'&&n!==editor))return null;
+ const close=bounds(dismiss),tint=bounds(roles.match_tint),menuBox=bounds(roles.match_overflow_menu),scroll=bounds(roles.match_scroll_view);
+ const suggestion=bounds(roles.match_single_best_shot),composer=bounds(roles.match_composer);
+ if(close.x!==tint.x||close.y!==tint.y||close.width!==close.height||close.width>tint.width/4||close.x+close.width>menuBox.x||
+    close.y+close.height>scroll.y||scroll.y+scroll.height>suggestion.y||suggestion.y+suggestion.height>composer.y)return null;
+ return control(dismiss,true);
+}
 // Only the ordinary People card stack is eligible for a swipe. Native IDs and
 // drawing order distinguish the foreground card from the preloaded next card.
 module.exports=function readBumble(xml,options,h){
@@ -9,6 +73,12 @@ module.exports=function readBumble(xml,options,h){
  result.screenKey=hash(nodes.map(n=>n.a));
  if(!nodes.length||nodes.some(n=>n.a.package&&n.a.package!=='com.bumble.app'))return block('Another app or system overlay is visible. Return to Bumble.');
  const visible=nodes.filter(n=>n.visible),id=name=>visible.filter(n=>n.a['resource-id']==='com.bumble.app:id/'+name),find=text=>visible.filter(n=>label(n)===text);
+ const matchRoots=id('mutualAttraction_topContainer');
+ if(matchRoots.length||id('match_close').length||id('match_composer').length){
+  const dismiss=matchRoots.length===1&&matchNoticeDismiss(visible,matchRoots[0],h);
+  if(!dismiss)return block('The Bumble match screen or its empty message field could not be verified.');
+  result.kind='matchNotice';result.controls.dismiss=dismiss;return result;
+ }
  // Exact native matched-person reminder: Close is the only authorized action.
  const reminderTitle=visible.filter(n=>n.a.class==='android.widget.TextView'&&/^Why not message .+\?$/.test(label(n)));
  const reminderBody=find('You’ve already matched with them, and you two could be cute together.'),chat=find('Start chat'),close=find('Close');

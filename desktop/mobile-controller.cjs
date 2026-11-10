@@ -6,7 +6,7 @@ const {sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch}=require('./mobile-vi
 // Keep comparison samples out of renderer snapshots, event streams and saved sessions.
 const photoPatches = new WeakMap();
 const scrollPhotos = new WeakMap();
-const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt']);
+const dismissibleBumbleScreens=new Set(['chatReminder','promoOffer','feedbackPrompt','matchNotice']);
 const transientRead=new Set(['ANDROID_COMMAND_FAILED','ANDROID_COMMAND_TIMEOUT','ANDROID_DEVICE_UNAVAILABLE','ANDROID_FOREGROUND_UNAVAILABLE','COMMENT_FIELD_UNREADABLE','OCR_TIMEOUT','MOBILE_SCREEN_UNAVAILABLE','MOBILE_SCREEN_CHANGED','MOBILE_REVIEW_INTERRUPTED']);
 const transientError=(message,code='MOBILE_REVIEW_INTERRUPTED')=>Object.assign(Error(message),{code});
 const delay=(ms,signal)=>new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve()};const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done()});
