@@ -980,6 +980,60 @@ test('a changed or canceled automatic Bumble card cannot reach the first footer 
  }
 });
 
+async function oneBumbleFooter({managed=true,scrollProfile=true,scrollMax=0,browsePhotos=false,manual=false,interrupt}={}){
+ const main=bumble({actionStrategy:'footer',screenKey:'main'});
+ const footer=bumble({actionStrategy:'footer',screenKey:'footer',name:'',identity:null,photos:[],controls:{profileLike:control('Like')}});
+ const next=bumble({screenKey:'next',name:'Next',identity:'next'});
+ const events=[];
+ const x=setup(main,{platform:'bumble',random:()=>0,isManagedPhone:binding=>managed&&binding?.avd==='assigned',
+  wait:async ms=>{events.push(ms)},tap:()=>{events.push('tap');x.set(next)},
+  scroll:async()=>{
+   events.push('scroll');
+   if(interrupt==='pause')await x.c.request('pause');
+   if(interrupt==='device')x.android.serial='different-device';
+   x.set(interrupt==='card'?{...footer,name:'Different'}:footer);
+  }});
+ x.android.deviceIdentity=async()=>({serial:x.android.serial,avd:'assigned'});
+ const hierarchy=x.android.hierarchy;
+ x.android.hierarchy=async()=>{const sample=await hierarchy();events.push(sample.xml.screenKey);return sample};
+ await x.c.request('config',{scrollMin:0,scrollMax,swipe:{scrollProfile,browsePhotos,likeRatio:1,maxSwipes:1}});
+ if(manual)await x.c.request('act',{kind:'like'});
+ else{
+  const first=deferred(),retry=deferred();let started=false;
+  x.c.session.wait=()=>{if(started)return retry.promise;started=true;return first.promise};
+  await x.c.request('start');first.resolve();
+  await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+  if(x.c.session.status==='running')await x.c.request('pause');
+  retry.resolve();
+ }
+ return {events,moves:x.calls.filter(call=>call?.direction),count:x.c.session.count,pending:x.c.lastAction};
+}
+
+test('an unpaced managed Bumble session reads the footer immediately after the shorter vertical gesture',async()=>{
+ for(const settings of [{scrollMax:0},{scrollProfile:false,scrollMax:2}]){
+  const {events,moves,count}=await oneBumbleFooter(settings);
+  assert.deepEqual(moves,[{fraction:.65,direction:'up',duration:250}]);
+  assert.deepEqual(events.slice(events.indexOf('scroll'),events.indexOf('tap')+1),['scroll','footer','footer','tap']);
+  assert.equal(count,1);
+ }
+});
+
+test('custom, user-paced and manual Bumble footer navigation retain the normal gesture and settle wait',async()=>{
+ for(const settings of [{managed:false},{browsePhotos:true},{scrollMax:1},{manual:true}]){
+  const {events,moves}=await oneBumbleFooter(settings);
+  assert.deepEqual(moves,[{fraction:.65,direction:'up',duration:400}]);
+  assert.deepEqual(events.slice(events.indexOf('scroll'),events.indexOf('tap')+1),['scroll',450,'footer','footer','tap']);
+ }
+});
+
+test('a pause, different device or different profile during the managed Bumble footer gesture prevents a vote',async()=>{
+ for(const interrupt of ['pause','device','card']){
+  const {events,moves,count,pending}=await oneBumbleFooter({interrupt});
+  assert.deepEqual(moves,[{fraction:.65,direction:'up',duration:250}]);
+  assert.ok(!events.includes('tap'));assert.equal(count,0);assert.equal(pending,null);
+ }
+});
+
 test('Bumble independently observes the screen before any optional or positioning review scroll',async()=>{
  const main=bumble({actionStrategy:'footer'}),deep=bumble({actionStrategy:'footer',identity:null,name:'',photos:[],controls:{}});
  for(const [initial,scrolls] of [[main,1],[deep,0]]){
