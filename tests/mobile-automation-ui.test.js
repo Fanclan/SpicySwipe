@@ -101,6 +101,23 @@ test('mobile status respects the active session limits while waiting for profile
   assert.match(f.el('session').textContent,/12 \/ 1000/);
   assert.doesNotMatch(f.el('session').textContent+' '+f.el('reason').textContent,/deadline/i);
 });
+test('Bumble shows an unconfirmed last action alongside the terminal counter', async t => {
+  const f = await fixture(t);
+  f.ui.setPlatform('bumble');
+  await tick();
+  const session = { status: 'complete', phase: 'complete', completionReason: 'limit', count: 1000, limit: 1000 };
+  const state = snapshot({ platform: 'bumble', session, hasPendingAction: true });
+  f.ui.handleState(state);
+  assert.match(f.el('session').textContent, /1000 \/ 1000 recorded profile actions/);
+  assert.match(f.el('session').textContent, /last action unconfirmed/i);
+
+  f.ui.handleState({ ...state, session: { ...session, status: 'error', phase: 'error', completionReason: '', error: 'Device disconnected' } });
+  assert.match(f.el('session').textContent, /last action unconfirmed/i);
+  assert.match(f.el('reason').textContent, /Device disconnected/);
+
+  f.ui.handleState({ ...state, hasPendingAction: false });
+  assert.doesNotMatch(f.el('session').textContent, /unconfirmed/i);
+});
 test('Hinge distinguishes a held profile, a Discover reopen check, and a verified empty feed',async t=>{
   const f=await fixture(t),session={status:'running',count:26,limit:1000,nextActionAt:Date.now()+30000};
   const empty={kind:'empty',context:{},controls:{}};

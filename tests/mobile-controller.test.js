@@ -857,12 +857,87 @@ test('transient unsupported layout retries observation without acting on an unkn
 test('whole session survives transient failures and completes only two real committed actions',async()=>{
  const x=setup();await x.c.request('status');let now=100000,attempts=0,commits=0;x.c.session.now=()=>now;x.c.session.wait=async ms=>{now+=ms};x.c.review=async()=>screen();x.c.act=async(k,t,v,commit)=>{if(++attempts<=2)throw Object.assign(Error('read failed'),{code:'ANDROID_COMMAND_FAILED'});commits++;commit()};x.c.session.start({...x.c.config.swipe,maxSwipes:2,sessionMinutes:1,randomizeTiming:false,delaySeconds:1,breaksEnabled:false});const end=x.c.session.endsAt;for(let i=0;i<30&&x.c.session.status==='running';i++)await new Promise(r=>setImmediate(r));assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.completionReason,'limit');assert.equal(x.c.session.count,2);assert.equal(commits,2);assert.equal(attempts,4);assert.equal(x.c.session.endsAt,end);
 });
-test('unresolved pending action waits through multiple recovery cycles and stops at the original deadline',async()=>{
- const original=bumble(),x=setup(original,{platform:'bumble'});await x.c.request('status');let now=100000,refreshes=0;x.c.session.now=()=>now;x.c.session.wait=async ms=>{now+=ms};x.android.refreshFeed=async()=>refreshes++;x.c.lastAction={identity:original.identity,name:original.name};x.c.session.start({...x.c.config.swipe,maxSwipes:1000,sessionMinutes:1,randomizeTiming:false,delaySeconds:1,breaksEnabled:false});const end=x.c.session.endsAt;for(let i=0;i<30&&x.c.session.status==='running';i++)await new Promise(r=>setImmediate(r));assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.completionReason,'time');assert.equal(x.c.session.count,0);assert.equal(x.c.session.endsAt,end);assert.equal(refreshes,1);assert.ok(x.c.lastAction);assert.equal(x.calls.includes('tap'),false);
+for(const maxSwipes of [null,1000])test('pending verification reports a finished deadline during its retry wait with profile limit '+maxSwipes,async()=>{
+ const original=bumble(),x=setup(original,{platform:'bumble'});await x.c.request('status');
+ let now=100000,refreshes=0;x.c.session.now=()=>now;x.c.session.wait=async ms=>{now+=ms};
+ x.android.refreshFeed=async()=>refreshes++;x.c.lastAction={identity:original.identity,name:original.name};
+ x.c.session.start({...x.c.config.swipe,maxSwipes,sessionMinutes:1,randomizeTiming:false,delaySeconds:1,breaksEnabled:false});
+ const end=x.c.session.endsAt;await new Promise(r=>setImmediate(r));await x.c.drain();
+ const waiting=x.changes.filter(s=>s.session.phase==='verifying previous action');
+ assert.ok(waiting.length>=2);assert.equal(waiting.at(-1).session.nextActionAt,end);
+ assert.match(waiting.at(-1).reason,/being verified/i);
+ const status=await x.c.request('status');
+ for(const done of [status,...x.changes.filter(s=>s.session.status==='complete')]){
+  assert.equal(done.session.status,'complete');assert.equal(done.session.completionReason,'time');
+  assert.equal(done.session.count,0);assert.equal(done.session.endsAt,end);assert.equal(done.session.nextActionAt,null);
+  assert.equal(done.hasPendingAction,true);assert.match(done.reason,/unconfirmed|uncertain/i);
+  assert.doesNotMatch(done.reason,/being verified|retrying|recovering/i);
+ }
+ assert.equal(refreshes,1);assert.equal(x.calls.includes('tap'),false);
+});
+for(const failure of ['deadline','device error','checkpoint error at deadline'])test('public terminal count includes the last reservation before native dispatch on '+failure,async()=>{
+ let saved,now=100000,dispatches=0;
+ const store={read:()=>saved,write:value=>{
+  if(failure==='checkpoint error at deadline'&&value.session.status==='complete')throw Error('Checkpoint write failed');
+  saved=structuredClone(value);
+ }};
+ const x=setup(bumble(),{platform:'bumble',checkpointStore:store});
+ x.c.session.now=()=>now;x.c.session.wait=async ms=>{now+=ms};
+ x.android.swipeProfile=async(_direction,_bounds,valid,issued)=>{
+  assert.equal(saved.session.count,1);assert.ok(saved.pendingAction);
+  if(failure==='device error')throw Object.assign(Error('Device binding changed'),{code:'MOBILE_DEVICE_CHANGED'});
+  now=x.c.session.endsAt;
+  if(!valid())throw Error('Canceled before native dispatch');
+  dispatches++;issued();
+ };
+ await x.c.request('config',{scrollMin:0,scrollMax:0,swipe:{maxSwipes:1000,sessionMinutes:1,likeRatio:1,
+  randomizeTiming:false,delaySeconds:1,breaksEnabled:false,browsePhotos:false,scrollProfile:false}});
+ await x.c.request('start');await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+ const status=await x.c.request('status');
+ assert.equal(dispatches,0);assert.equal(x.calls.filter(v=>v?.kind==='like').length,0);
+ assert.equal(x.c.session.count,0);assert.equal(saved.session.count,1);assert.ok(saved.pendingAction);
+ const expectedStatus=failure==='device error'?'error':'complete';
+ assert.equal(status.session.status,expectedStatus);
+ for(const terminal of [status,...x.changes.filter(s=>s.session.status===expectedStatus)]){
+  assert.equal(terminal.session.count,saved.session.count);assert.equal(terminal.hasPendingAction,true);
+  if(failure==='device error')assert.match(terminal.session.error,/Device binding changed/);
+  else assert.equal(terminal.session.completionReason,'time');
+  if(failure==='checkpoint error at deadline')assert.match(terminal.reason,/Checkpoint write failed/);
+ }
 });
 
 test('conservative final reservation completes the limit while retaining its uncertain action',async()=>{
- const x=setup();await x.c.request('status');x.c.session.status='running';x.c.session.config.maxSwipes=1;x.c.session.endsAt=Date.now()+60000;x.c.reservedCount=1;x.c.lastAction={identity:'old',name:'Old'};x.c.pendingWait();assert.equal(x.c.session.status,'complete');assert.equal(x.c.session.completionReason,'limit');assert.equal(x.c.session.count,1);assert.ok(x.c.lastAction);
+ const x=setup();await x.c.request('status');
+ x.c.session.status='running';x.c.session.config.maxSwipes=1;x.c.session.endsAt=Date.now()+60000;
+ x.c.reserveAction({identity:'old',name:'Old'});
+ const outcome=x.c.pendingWait(),status=await x.c.request('status');
+ assert.equal(status.session.status,'complete');assert.equal(status.session.completionReason,'limit');
+ assert.equal(status.session.count,1);assert.equal(status.session.nextActionAt,null);
+ assert.equal(outcome?.retryAfter,undefined);assert.match(status.reason,/unconfirmed|uncertain/i);
+ assert.equal(status.hasPendingAction,true);
+});
+test('Bumble reports only the pending flag after restoring the final reserved slot and rereading People',async t=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bumble-final-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const store=new (require('../desktop/mobile-checkpoint.cjs'))(path.join(dir,'bumble.json'));
+ const original=setup(bumble(),{platform:'bumble',checkpointStore:store});
+ original.c.session.wait=()=>new Promise(()=>{});
+ await original.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1,allowBackground:true}});
+ const started=await original.c.request('start');
+ original.c.session.count=999;
+ const receipt={identity:'private-pending-id',name:'Private pending name',profileDiscriminator:'private-pending-discriminator'};
+ original.c.reserveAction(receipt);
+ const restored=setup(bumble(),{platform:'bumble',checkpointStore:store});
+ const status=await restored.c.request('status'),context=await restored.c.request('context');
+ assert.equal(context.screen.kind,'profile');
+ for(const value of [status,context,...restored.changes]){
+  assert.equal(value.session.runId,started.session.runId);assert.equal(value.session.count,1000);
+  assert.equal(value.session.status,'complete');assert.equal(value.session.completionReason,'limit');
+  assert.equal(value.session.nextActionAt,null);assert.equal(value.hasPendingAction,true);
+  assert.equal(Object.hasOwn(value,'pendingAction'),false);
+  for(const privateValue of Object.values(receipt))assert.ok(!JSON.stringify(value).includes(privateValue));
+ }
+ assert.deepEqual(store.read().pendingAction,receipt);
 });
 test('transport recovery never relaunches using a cached profile after an editor appears',async()=>{
  const x=setup();await x.c.request('status');x.c.screen=screen();x.c.readFailures=2;let reads=0,refreshes=0;x.c.read=async()=>{if(++reads===1)throw Object.assign(Error('read failed'),{code:'ANDROID_COMMAND_FAILED'});return screen({kind:'like',composerTextVerified:true,composerText:'Unsent draft'})};x.android.refreshFeed=async()=>refreshes++;const result=await x.c.sessionStep(x.c.config.swipe,()=>true,()=>assert.fail('no count'),async()=>true,x.c.token());assert.ok(result.retryAfter);assert.equal(refreshes,0);assert.ok(reads>=2);
@@ -2185,6 +2260,7 @@ test('both restored mobile workers reconcile an old reservation, poll an empty f
   assert.equal(x.c.session.status,'complete',x.c.session.error);assert.equal(x.c.session.completionReason,'limit');
   assert.equal(x.c.session.count,1000);assert.equal(x.c.session.endsAt,null);
   assert.equal(x.c.session.runId,started.session.runId);assert.equal(x.c.lastAction,null);
+  assert.equal((await x.c.request('status')).hasPendingAction,false);
   assert.equal(refreshes,2);assert.equal(votes,1);
  }
 });
