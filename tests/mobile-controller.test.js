@@ -901,6 +901,31 @@ test('Bumble pending footer Like closes verified feedback prompt and confirms a 
  assert.equal(await x.c.reconcilePending(x.c.lastAction,x.c.token(),()=>true),true);
  assert.equal(x.calls.filter(v=>v==='tap').length,1);assert.equal(x.c.session.count,1);assert.equal(x.c.lastAction,null);
 });
+test('resuming a pending Bumble match dismisses only Close and reconciles the previous Like against the underlying card',async()=>{
+ const previous=bumble({profileDiscriminator:'original-profile'}),base=setup(previous,{platform:'bumble'});base.c.session.wait=()=>new Promise(()=>{});
+ await base.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null}});
+ const {session}=await base.c.request('start');base.c.session.count=81;
+ // The native footer records these three fields. The run ID belongs to the session.
+ const pending=base.c.lastAction={identity:previous.identity,name:previous.name,profileDiscriminator:previous.profileDiscriminator};
+ base.c.nextFeedRefreshAt=Date.now()+300000;
+ await base.c.request('pause');const saved=base.c.checkpoint();
+ for(const distinct of [false,true]){
+  const notice={...reminder(),kind:'matchNotice'},next=distinct?bumble({name:'Next',identity:'new-card',screenKey:'next'}):previous;
+  const x=setup(notice,{platform:'bumble',checkpointStore:{read:()=>structuredClone(saved),write:()=>{}}});x.c.session.wait=()=>new Promise(()=>{});
+  const taps=[];let observations=0;
+  x.android.tapControl=async(bounds,valid)=>{
+   assert.ok(valid());assert.deepEqual(x.c.lastAction,pending);taps.push(bounds);x.set(next);
+  };
+  const hierarchy=x.android.hierarchy;
+  x.android.hierarchy=async()=>{const raw=await hierarchy();if(raw.xml===next){observations++;assert.deepEqual(x.c.lastAction,pending)}return raw};
+  const resumed=await x.c.request('start',{resumeRunId:session.runId});
+  assert.equal(resumed.session.count,81);assert.equal(resumed.session.runId,session.runId);assert.deepEqual(x.c.lastAction,pending);
+  await x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail('No repeated Like'),async()=>true,x.c.token());
+  assert.deepEqual(taps,[notice.controls.dismiss.bounds]);assert.ok(observations>=2);
+  assert.deepEqual(x.c.lastAction,distinct?null:pending);assert.equal(x.c.session.count,81);
+  assert.deepEqual(x.calls.map(call=>call.kind),['session']);await x.c.request('stop');
+ }
+});
 test('Bumble dismisses verified feedback after the ordinary footer Like before checking transition',async()=>{
  const initial=bumble({actionStrategy:'footer'}),footer=bumble({actionStrategy:'footer',name:'',identity:null,controls:{profileLike:control('Like')}}),feedback=bumble({...reminder(),kind:'feedbackPrompt'}),next=bumble({name:'Next',identity:'next',screenKey:'next'});
  let taps=0,commits=0;const x=setup(initial,{platform:'bumble',scroll:()=>x.set(footer),tap:()=>x.set(++taps===1?feedback:next)});

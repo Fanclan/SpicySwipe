@@ -3,6 +3,57 @@ const node=(attrs='',children='')=>'<node package="com.bumble.app" enabled="true
 const card=(name='Sample',order=2)=>node('drawing-order="'+order+'"',node('resource-id="com.bumble.app:id/profile_root_container"',node('resource-id="com.bumble.app:id/encountersGridProfile_list"',node('content-desc="'+name+'’s main photo"')+node('text="'+name+', 28"'))));
 const feed=(cards=card())=>'<hierarchy>'+node('resource-id="com.bumble.app:id/mainApp_root"',node('resource-id="com.bumble.app:id/encountersStackContainer"',cards)+node('selected="true"',node('content-desc="People"')))+'</hierarchy>';
 const read=(xml,extra={})=>readScreen(xml,{platform:'bumble',foreground:'com.bumble.app',photoIdentity:'0123456789abcdef',...extra});
+function nativeMatchNotice(){
+ const full='[0,0][720,1280]',opts='[628,68][700,140]',suggestions='[32,838][688,1072]',editor='[32,1104][688,1200]';
+ const widget=(type,id,box,attributes='',children='')=>{
+  const role=id?(id.startsWith('android:')?id:'com.bumble.app:id/'+id):'';
+  return '<node package="com.bumble.app" class="'+type+'" resource-id="'+role+'" bounds="'+box+'" '+attributes+'>'+children+'</node>';
+ };
+ const frame=(id,box,children='')=>widget('android.widget.FrameLayout',id,box,'',children);
+ const view=(id,box,attributes='',children='')=>widget('android.view.View',id,box,attributes,children);
+ const group=(id,box,children)=>widget('android.view.ViewGroup',id,box,'',children);
+ const text=(id,box,value)=>widget('android.widget.TextView',id,box,'text="'+value+'"');
+ const image=(id,box,attributes)=>widget('android.widget.ImageView',id,box,attributes);
+ const close=image('match_close','[0,48][112,160]','content-desc="Close" clickable="true" focusable="true"');
+ const options=frame('match_overflow_menu',opts,widget('b.gjf','',opts,'',view('',opts,'',view('',opts,'clickable="true" focusable="true"',
+  view('',opts,'content-desc="Options"')+view('','[644,84][684,124]')+widget('android.widget.Button','',opts)))));
+ const left='[32,236][408,690]',right='[312,236][688,690]';
+ const pair=group('match_matchPhoto','[0,192][720,700]',image('brickPair_leftBrick',left,'')+view('brickPair_leftBorder',left)+
+  image('brickPair_badge','[300,572][420,692]','')+image('brickPair_rightBrick',right,'clickable="true" focusable="true"')+view('brickPair_rightBorder',right));
+ const scrollBox='[0,160][720,822]',scroll=widget('android.widget.ScrollView','match_scroll_view',scrollBox,'scrollable="true"',
+  group('match_scrollable_content',scrollBox,pair+text('match_explanationTitle','[48,716][672,789]','Example match')+
+   text('match_explanationDescription','[64,805][656,822]','Example description')));
+ const suggestion=frame('match_single_best_shot',suggestions,widget('b.gjf','',suggestions,'',view('',suggestions,'',
+  text('','[136,870][639,908]','Example suggestion'))));
+ const composer=frame('match_composer',editor,widget('android.widget.EditText','composerMini_text',editor,
+  'text="Send a message..." hint="Send a message..." clickable="true" long-clickable="true" focusable="true" focused="false"')+
+  image('composerMini_icon','[600,1120][664,1184]','content-desc="Send" clickable="true" enabled="false"'));
+ const sheet=group('mutualAttraction_topContainer',full,frame('match_tint','[0,48][720,1232]')+close+options+scroll+suggestion+composer);
+ return '<hierarchy>'+frame('',full,widget('android.widget.LinearLayout','',full,'',frame('',full,frame('action_bar_root',full,frame('android:id/content',full,sheet)))))+'</hierarchy>';
+}
+
+test('Bumble native match notice exposes only the verified Close while its native message field is untouched',()=>{
+ const s=read(nativeMatchNotice());assert.equal(s.kind,'matchNotice');
+ assert.deepEqual(s.controls.dismiss.bounds,{x:0,y:48,width:112,height:112});
+ assert.deepEqual(Object.keys(s.controls).filter(k=>s.controls[k]),['dismiss']);
+ assert.equal(s.identity,null);assert.equal(s.context.name,'');assert.deepEqual(s.photos,[]);
+});
+test('Bumble match notice rejects drafts, open editors, changed or ambiguous controls and overlays',()=>{
+ const xml=nativeMatchNotice();
+ for(const changed of [
+  xml.replace('text="Send a message..."','text="Example draft"'),xml.replace('hint="Send a message..."','hint=""'),
+  xml.replace('focused="false"','focused="true"'),xml.replace('enabled="false"','enabled="true"'),
+  xml.replace('content-desc="Close" clickable="true"','content-desc="Close" clickable="false"'),
+  xml.replace('content-desc="Options"','content-desc="Close"'),xml.replace('id/match_matchPhoto','id/unrecognized_photo'),
+  xml.replace('content-desc="Send"','content-desc="Upgrade"'),xml.replace('[0,48][112,160]','[32,1104][128,1200]'),
+  xml.replace('</hierarchy>',node('clickable="true" text="Overlay"')+'</hierarchy>'),
+  xml.replace('resource-id="com.bumble.app:id/match_composer"','resource-id="com.bumble.app:id/unrecognized_composer"'),
+  xml.replace('id/composerMini_text','id/other_edit'),
+  xml.replace('text="Example suggestion"','text="Example suggestion" clickable="true"'),
+  xml.replace('</hierarchy>','<node package="com.android.systemui" class="android.view.View"/></hierarchy>')
+ ]){const s=read(changed);assert.equal(s.kind,'blocked');assert.ok(!s.controls.dismiss)}
+ assert.equal(read(xml,{foreground:'co.hinge.app'}).kind,'blocked');
+});
 test('Bumble selects front card by drawing order, not hidden next profile',()=>{for(const cards of [card('Sample',2)+card('Next',1),card('Next',1)+card('Sample',2)]){const s=read(feed(cards));assert.equal(s.kind,'profile');assert.equal(s.name,'Sample');assert.ok(s.identity);assert.equal(s.controls.like.direction,'right');assert.equal(s.controls.skip.direction,'left');assert.equal(s.controls.comment,null);assert.equal(s.photos.length,1);}});
 test('Bumble requires photo evidence and unique front card before authorizing swipes',()=>{assert.equal(read(feed(),{photoIdentity:undefined}).controls.like,null);assert.equal(read(feed(card('Sample',2)+card('Other',2))).kind,'blocked');assert.equal(read(feed(),{foreground:'co.hinge.app'}).kind,'blocked');assert.equal(read(feed().replace('People','Liked You')).kind,'blocked');});
 test('Bumble blocks system overlays, dialogs and unfamiliar outside controls',()=>{for(const n of ['<node package="android"/>',node('resource-id="com.bumble.app:id/alertTitle" text="Buy now"'),node('clickable="true" text="Subscribe"')])assert.equal(read(feed().replace('</hierarchy>',n+'</hierarchy>')).kind,'blocked');});
