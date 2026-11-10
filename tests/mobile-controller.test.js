@@ -1887,3 +1887,75 @@ test('an unresolved Hinge Like retains its one-shot blank guard across a visible
  x.set(screen({identity:'new-card',name:'Next'}));await x.run();assert.equal(x.c.lastAction,null);
  x.set(loadingDiscover());await x.run();assert.equal(launches,2);
 });
+
+test('compare-and-resume keeps one exact mobile run and acknowledges duplicate starts without another session record',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('config',{swipe:{sessionMinutes:null,maxSwipes:1000}});
+ const started=await x.c.request('start');x.c.session.count=x.c.reservedCount=9;
+ const paused=await x.c.request('pause');
+ assert.ok(Number.isSafeInteger(paused.resumeEpoch));
+ const pair={resumeRunId:started.session.runId,expectedResumeEpoch:paused.resumeEpoch};
+ const [a,b]=await Promise.all([x.c.request('start',pair),x.c.request('start',pair)]);
+ for(const s of [a.session,b.session]){
+  assert.equal(s.status,'running');assert.equal(s.runId,pair.resumeRunId);
+  assert.equal(s.count,9);assert.equal(s.limit,1000);assert.equal(s.endsAt,null);
+ }
+ assert.equal(x.calls.filter(c=>c.kind==='session').length,2);
+ await assert.rejects(x.c.request('start'),/already running/i);
+ assert.equal((await x.c.request('start',{...pair,expectedResumeEpoch:0})).session.count,9);
+ await x.c.request('stop');
+});
+
+test('guarded mobile start rejects old epochs, wrong IDs, inactive or expired runs, and a missing run ID',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ const started=await x.c.request('start'),sid=started.session.runId;
+ await x.c.request('pause');const old=(await x.c.request('status')).resumeEpoch;
+ const paused=await x.c.request('pause');assert.ok(paused.resumeEpoch>old);
+ for(const data of [{resumeRunId:sid,expectedResumeEpoch:old},{resumeRunId:'different'},
+                    {resumeRunId:null},{expectedResumeEpoch:paused.resumeEpoch},{resumeRunId:sid,expectedResumeEpoch:-1}]){
+  await assert.rejects(x.c.request('start',data));assert.equal(x.c.session.status,'paused');assert.equal(x.c.session.runId,sid);
+ }
+ x.c.session.endsAt=Date.now()-1;await assert.rejects(x.c.request('start',{resumeRunId:sid}));
+ assert.equal(x.c.session.status,'complete');await assert.rejects(x.c.request('start',{resumeRunId:sid}));
+ await x.c.request('stop');await assert.rejects(x.c.request('start',{resumeRunId:sid}));
+ const fresh=await x.c.request('start');assert.notEqual(fresh.session.runId,sid);
+ await assert.rejects(x.c.request('start',{resumeRunId:sid}));assert.equal(x.c.session.runId,fresh.session.runId);
+ await x.c.request('stop');
+});
+
+test('Stop or Pause during final native screen validation cancels guarded and ordinary mobile starts',async()=>{
+ for(const guarded of [false,true])for(const action of ['pause','stop']){
+  const x=setup(screen({kind:'empty',identity:null}));x.c.session.wait=()=>new Promise(()=>{});
+  const started=await x.c.request('start');x.c.session.count=x.c.reservedCount=11;
+  const paused=await x.c.request('pause');
+  let reading=false,canceled;
+  const hierarchy=x.android.hierarchy;x.android.hierarchy=async()=>{reading=true;return hierarchy()};
+  x.c.changed=()=>{if(reading){reading=false;canceled=x.c.request(action)}};
+  const guard={resumeRunId:started.session.runId,expectedResumeEpoch:paused.resumeEpoch};
+  await assert.rejects(x.c.request('start',guarded?guard:{}));
+  await canceled;assert.equal(x.c.session.status,action==='pause'?'paused':'idle');
+  assert.equal(x.c.session.runId,started.session.runId);assert.equal(x.c.session.count,11);
+  assert.equal(x.calls.filter(c=>c.kind==='session').length,1);
+ }
+});
+
+test('a stop during guarded mobile start acknowledgement cannot rearm an opener or claim a successful resume',async()=>{
+ const x=setup();x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('config',{autoOpeners:true});
+ const started=await x.c.request('start'),paused=await x.c.request('pause');
+ const entered=deferred(),release=deferred();const request=x.c.service.request;
+ x.c.service.request=async(action,...rest)=>{if(action==='record'){entered.resolve();await release.promise}return request(action,...rest)};
+ const job=x.c.request('start',{resumeRunId:started.session.runId,expectedResumeEpoch:paused.resumeEpoch});
+ await entered.promise;await x.c.request('stop');release.resolve();await assert.rejects(job);
+ assert.equal(x.c.session.status,'idle');assert.equal(x.c.openerArmed,false);
+});
+
+test('a repeated or mismatched guarded start cannot write checkpoints for a different or already running worker',async()=>{
+ let writes=0;
+ const x=setup(screen(),{checkpointStore:{read:()=>null,write:()=>{writes++}}});x.c.session.wait=()=>new Promise(()=>{});
+ const started=await x.c.request('start');const before=writes;
+ await x.c.request('start',{resumeRunId:started.session.runId});
+ await assert.rejects(x.c.request('start',{resumeRunId:'other'}));
+ assert.equal(writes,before);assert.equal(x.c.session.status,'running');
+ await x.c.request('stop');
+});

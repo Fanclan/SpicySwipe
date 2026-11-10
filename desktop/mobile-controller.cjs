@@ -58,7 +58,7 @@ class MobileController{
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),true),changed:()=>this.notify()});
  }
- snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
+ snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.epoch,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,...(this.rejectedPhoto?{rejectedPhoto:this.rejectedPhoto}:{}),recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
@@ -98,7 +98,18 @@ class MobileController{
  assert(t,valid=()=>true){if(t.epoch!==this.epoch||t.serial!==this.android.serial||t.inputEpoch!==this.android.inputEpoch||!t.serial||t.signal.aborted||!valid())throw Error('Mobile action canceled: device, screen ownership, or session changed.');}
  invalidate(reason='Mobile context changed',{stop=false}={}){this.openerArmed=false;this.epoch++;this.abort.abort();this.abort=new AbortController();this.android.cancelInput();stop?this.session.stop():this.session.pause();this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.reviewContext=null;this.screen=null;this.reason=reason;this.notify()}
  drain(){return this.queue.catch(()=>{})}
- enqueue(fn,session=false){const t=this.token();const job=this.queue.then(async()=>{this.assert(t);this.busy=true;this.notify();let result;try{result=await fn(t)}finally{this.busy=false;this.notify()}return session?result:this.snapshot()});this.queue=job.catch(()=>{});return job}
+ enqueue(fn,session=false,alreadyRunning){
+  const t=this.token();
+  const job=this.queue.then(async()=>{
+   this.assert(t);
+   if(alreadyRunning?.())return this.snapshot();
+   this.busy=true;this.notify();
+   let result;
+   try{result=await fn(t)}finally{this.busy=false;this.notify()}
+   return session?result:this.snapshot();
+  });
+  this.queue=job.catch(()=>{});return job;
+ }
  async refreshEmpty(s,t,valid){
   this.assert(t,valid);if(s.kind!=='empty')return s;
   return this.refreshKnownFeed(s,t,valid);
@@ -921,6 +932,20 @@ class MobileController{
   if(action==='watch')return this.watch();
   if(action==='pause'||action==='stop'){this.invalidate(action==='stop'?'Stopped.':'Paused.',{stop:action==='stop'});return this.snapshot()}
   if(action==='visibility'){this.visible=data.visible===true;if(!this.visible&&!this.config.swipe.allowBackground)this.invalidate('Paused while the app is hidden.');return this.snapshot()}
+  const guarded=action==='start'&&Object.hasOwn(data??{},'resumeRunId');
+  if(guarded&&(typeof data.resumeRunId!=='string'||!data.resumeRunId.trim()))throw Error('A valid resume run ID is required.');
+  if(action==='start'&&Object.hasOwn(data??{},'expectedResumeEpoch')&&
+     (!guarded||!Number.isSafeInteger(data.expectedResumeEpoch)||data.expectedResumeEpoch<0))throw Error('Invalid expected resume epoch.');
+  const resumeRunId=data?.resumeRunId,expectedResumeEpoch=data?.expectedResumeEpoch;
+  const alreadyRunning=guarded?()=>{
+   if(!this.loaded)return false;
+   const {runId,status}=this.session;
+   if(runId===resumeRunId&&status==='running')return true;
+   if(runId!==resumeRunId||status!=='paused'||(expectedResumeEpoch!==undefined&&this.epoch!==expectedResumeEpoch))
+    throw Error('The requested run is no longer paused at the observed state.');
+   return false;
+  }:undefined;
+  if(alreadyRunning?.())return this.snapshot();
   const manual=['review','act','generate','insert','send'].includes(action);
   const assertOwnership=()=>{if(manual&&this.session.status==='running')throw Error('Pause the running session before manual mobile actions.');};assertOwnership();
   return this.enqueue(async t=>{assertOwnership();await this.load(t);if(action==='context'){await this.read(t);return this.snapshot()}
@@ -943,12 +968,15 @@ class MobileController{
    if(action==='review'){await this.review(t);return this.snapshot()}
    if(action==='start'){
     const session=this.session;
+    if(alreadyRunning?.())return this.snapshot();
     if(this.busy&&session.status==='running')throw Error('Session is already running.');
     await this.consent(t);await this.verifyBinding(t);
     const resuming=['error','paused'].includes(session.status);
     if(session.status==='error')session.restore(this.checkpoint().session);
     if(resuming&&(session.timeExpired()||session.reachedProfileLimit())){
-     session.finish(session.reachedProfileLimit()?'limit':'time');return this.snapshot();
+     session.finish(session.reachedProfileLimit()?'limit':'time');
+     if(guarded)throw Error('The requested run has already reached its limit.');
+     return this.snapshot();
     }
     let s=await this.read(t);
     if(this.platform==='bumble'){
@@ -960,12 +988,15 @@ class MobileController{
      s=await this.identifyProfile(s,t);this.supported(s,['profile']);
     }
     if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');
+    this.assert(t);if(alreadyRunning?.())return this.snapshot();
     if(session.status!=='paused'){this.reservedCount=0;this.recoveryAttempts=0;this.readFailures=0;}
-    this.persist();session.start(this.config.swipe);await this.record('session');
+    this.persist();this.assert(t);session.start(this.config.swipe);
+    if(guarded&&session.status!=='running')throw Error('The requested run did not resume.');
+    await this.record('session');this.assert(t);
     this.openerArmed=this.config.autoOpeners===true;return this.snapshot();
    }
    if(action==='act')return this.act(data.kind,t);if(action==='generate')return this.generate(t);if(action==='insert')return this.insert(data,t);if(action==='send')return this.send(data,t);throw Error('Unknown mobile action.');
-  });
+  },false,alreadyRunning);
  }
 }
 module.exports=MobileController;
