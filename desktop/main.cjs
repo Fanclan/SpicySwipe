@@ -46,7 +46,7 @@ async function persistAndroid(patch,platform){
 const mobileControllers = new Map();
 function invalidateMobile(reason,force=false,platform){
  for(const [key,session] of mobileSessions)if(!platform||key===platform)session.revision++;
- for(const [key,c] of mobileControllers)if((!platform||key===platform)&&(force||c.busy||c.screen||c.draft||c.session.status==='running'))c.invalidate(reason,{stop:force});
+ for(const [key,c] of mobileControllers)if((!platform||key===platform)&&(force||c.busy||c.screen||c.draft||c.session.status==='running'||c.session.status==='paused'))c.invalidate(reason,{stop:force});
 }
 const drainMobile=platform=>Promise.all([...mobileControllers].filter(([key])=>!platform||key===platform).map(([,c])=>c.drain()));
 function getMobile(platform=activePlatform){
@@ -275,6 +275,9 @@ async function dispatch(action,data={}) {
       await drainMobile(platform);
       if(revision!==session.revision||device!==session.device||serial!==device.serial||epoch!==device.inputEpoch)throw Error('Android input context changed. Pending input was canceled.');
       return mutations[action](device);
+    }).finally(()=>{
+      const controller=mobileControllers.get(platform);
+      if(controller?.session.status==='paused')controller.invalidateResume();
     });
     session.commands=task.catch(()=>{});
     return task;
