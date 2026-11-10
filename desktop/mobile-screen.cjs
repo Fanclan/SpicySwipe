@@ -373,6 +373,7 @@ function control(node, allowCompose = false) {
  return { key: hash([label(node), node.a['resource-id'], bounds(node)]), bounds: bounds(node), label: label(node) };
 }
 const discoverTabNames = ['Discover', 'Standouts', 'Likes You', 'Matches', 'Profile Hub'];
+const matchesMessageCount = /^Matches, (?:1 new message|(?:[2-9]|[1-9]\d+) new messages)$/;
 // Both native Discover placeholders keep the same contiguous row of five tabs.
 function discoverNavigation(find, minY) {
  const tabs = [];
@@ -396,7 +397,13 @@ function blankDiscoverShell(visible, find) {
  if (discover.length !== 2) return false;
  const header = discover.find(n => n.a.class === 'android.widget.TextView');
  if (!header || header.a.clickable !== 'false' || !header.enabled || !fullyVisible(header)) return false;
- const box = bounds(header), tabs = discoverNavigation(find, box.y + box.height);
+ // The unread count replaces the Matches accessibility label on the blank shell.
+ // The Retry form still requires its separately verified navigation labels.
+ const badge = visible.find(n => matchesMessageCount.test(label(n)));
+ if (badge && (badge.a['content-desc'] !== label(badge) || clean(badge.a.text) || badge.a.focusable === 'true' ||
+     badge.a['long-clickable'] === 'true' || badge.a.checkable === 'true' || visible.some(n => n.parent === badge))) return false;
+ const box = bounds(header);
+ const tabs = discoverNavigation(text => find(text === 'Matches' && badge ? label(badge) : text), box.y + box.height);
  if (!tabs || visible.filter(n => label(n)).length !== 6) return false;
  const otherTabs = new Set(tabs.slice(1));
  const containers = /^(?:android\.(?:view\.(?:View|ViewGroup)|widget\.(?:FrameLayout|LinearLayout))|(?:[\w.]+\.)?(?:ComposeView|ycl))$/;
@@ -467,7 +474,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const labels=new Set([...required,'Discover','Standouts','Likes You','Matches','Profile Hub','Dating Preferences','Signals filter, Off','Age filter options','Height filter options','Dating intentions filter options']);
   // Unread message counts change independently of the exhausted Discover queue.
   // Accept that inert label only inside a sibling native navigation tab, never in an overlay.
-  const badges=visible.filter(n=>/^Matches, (?:1 new message|(?:[2-9]|[1-9]\d+) new messages)$/.test(label(n)));
+  const badges=visible.filter(n=>matchesMessageCount.test(label(n)));
   const navigationBadge=n=>{
    const discover=nav[0],tab=n.parent,discoverTab=discover?.parent,b=bounds(n),d=discover&&bounds(discover),t=tab&&bounds(tab);
    return badges.length===1&&n===badges[0]&&nav.length===1&&n.a.class==='android.view.View'&&n.a.clickable==='false'&&

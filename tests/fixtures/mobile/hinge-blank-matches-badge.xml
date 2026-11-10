@@ -1,0 +1,20 @@
+<hierarchy><node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][720,1280]">
+ <node class="android.widget.TextView" text="Discover" clickable="false" bounds="[40,177][266,245]"/>
+ <node class="android.view.View" bounds="[0,1112][720,1280]">
+  <node class="android.view.View" clickable="false" selected="true" bounds="[0,1112][144,1232]">
+   <node class="android.view.View" content-desc="Discover" clickable="false" bounds="[0,1112][144,1232]"/>
+  </node>
+  <node class="android.view.View" clickable="true" selected="false" bounds="[144,1112][288,1232]">
+   <node class="android.view.View" content-desc="Standouts" clickable="false" bounds="[144,1112][288,1232]"/>
+  </node>
+  <node class="android.view.View" clickable="true" selected="false" bounds="[288,1112][432,1232]">
+   <node class="android.view.View" content-desc="Likes You" clickable="false" bounds="[288,1112][432,1232]"/>
+  </node>
+  <node class="android.view.View" clickable="true" selected="false" bounds="[432,1112][576,1232]">
+   <node class="android.view.View" content-desc="Matches, 1 new message" clickable="false" bounds="[432,1112][576,1232]"/>
+  </node>
+  <node class="android.view.View" clickable="true" selected="false" bounds="[576,1112][720,1232]">
+   <node class="android.view.View" content-desc="Profile Hub" clickable="false" bounds="[576,1112][720,1232]"/>
+  </node>
+ </node>
+</node></hierarchy>
