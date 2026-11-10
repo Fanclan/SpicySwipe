@@ -142,7 +142,11 @@ function staticWheelFrame(visible,owner,display,discover,kids,backdrops,measurem
 // bounded swipe lies inside the original native photo, including its hit margin.
 function recoveryGeometry(visible,owner,display,geometry,kids,behindDiscover) {
  const {discover,skip,originalPhoto}=geometry;
- const path=node=>{const nodes=[];for(let p=node;p?.tag==='node';p=p.parent)nodes.push(p);return nodes};
+ const path=node=>{
+  const nodes=[];
+  for(let p=node;p?.tag==='node';p=p.parent)nodes.push(p);
+  return nodes;
+ };
  const passive=n=>n.enabled && n.a.clickable==='false' && !['long-clickable','focusable','focused','checkable','checked','selected','password']
   .some(k=>n.a[k]==='true') && (n===owner||n.a.scrollable!=='true') && !/(?:Button|EditText|Picker|SeekBar|Spinner|Switch|WebView)$/.test(n.a.class||'');
  const viewport=bounds(owner),nav=bounds(discover),skipBounds=bounds(skip);
@@ -574,7 +578,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });
   return { key: hash(['photo', label(n), b]), bounds: b, revealDirection: photoRevealDirection(n), like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
  });
- const originalPhoto=pictures.length===1&&result.photos[0].like?pictures[0]:null;
+ const originalPhoto=!prompts.length&&pictures.length===1&&result.photos[0].like?pictures[0]:null;
  const surfaces = discoverScrollSurfaces(visible,nav[0],[...pictures,...staticPrompts],skips[0],originalPhoto);
  if(surfaces.recoveryChromeKey)result.recoveryChromeKey=surfaces.recoveryChromeKey;
  if(surfaces.recoveryDrag)result.recoveryDrag=surfaces.recoveryDrag;

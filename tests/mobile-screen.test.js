@@ -668,6 +668,7 @@ function recoveryScene({moved=false,other='',backOrder=2,backAttr='',photoBlock=
 test('original square photo exposes a bounded passive recovery drag and continuous Discover chrome',()=>{
  const readScene=opts=>read(recoveryScene(opts),{photoIdentity:'0123456789abcdef'});
  const source=readScene({});assert.equal(source.kind,'profile');assert.match(source.recoveryChromeKey,/^[a-f0-9]{64}$/);
+ const imageWithoutFingerprint=read(recoveryScene());assert.equal(imageWithoutFingerprint.recoveryDrag,undefined);
  assert.equal(source.recoveryDrag?.chromeKey,source.recoveryChromeKey);
  const lane=source.recoveryDrag.surface,photo=source.photos[0].bounds;
  assert.ok(lane.width>=96&&lane.height>=120);
