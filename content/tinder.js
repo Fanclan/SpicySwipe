@@ -2,7 +2,14 @@
 (function(root){
   const C=root.SSCore;
   const visible=el=>el&&!el.disabled&&el.getClientRects().length>0&&!el.closest('#spicyswipe-root,[inert],[hidden],[aria-hidden="true"]');
-  const first=selectors=>{for(const s of selectors){const found=[...document.querySelectorAll(s)].find(visible);if(found)return found}return null};
+  function first(selectors,unique=false){
+    for(const selector of selectors){
+      const elements=[...document.querySelectorAll(selector)];
+      const found=elements.find(visible);
+      if(found)return unique&&elements.some(el=>el!==found&&visible(el))?null:found;
+    }
+    return null;
+  }
   const input=()=>first(['#chat-text-area','textarea[placeholder*="message" i]','textarea[placeholder*="Type" i]','textarea[aria-label*="message" i]']);
   const conversationId=()=>location.pathname.match(/^\/app\/messages\/([^/]+)/)?.[1]||null;
   const feedCheckInterval=300000;
@@ -19,7 +26,7 @@
     const bio=card?.querySelector('[class*="bio"]')?.textContent.trim().slice(0,2000)||'';
     return {conversationId:id,name:heading?.textContent.trim().slice(0,70)||'',bio,history,canMessage:Boolean(id&&input()),emptyConversationConfirmed:Boolean(id&&first(['[data-testid="empty-chat"]','[data-testid="chat-empty-state"]'])),page:location.pathname};
   }
-  function snapshot(){return {connected:true,context:context(),session:session.snapshot(),automaticDraft}}
+  function snapshot(){return {connected:true,capabilities:{budgetGuard:1},context:context(),session:session.snapshot(),automaticDraft}}
   function requireConsent(){if(settings?.desktopActive===false)throw new Error('Return to the active Tinder workspace before using its controls.');if(!settings?.sidebarConsentGiven)throw new Error('Finish setup before using Tinder controls.')}
   function insertDraft(text,id){
     requireConsent();
@@ -47,12 +54,12 @@
     if(el.value.trim())throw new Error('Tinder has not cleared the message box. Check the conversation before retrying.');
     await rpc('record',{kind:'message',detail:'Message submitted to Tinder'});return {ok:true};
   }
-  function swipeButton(decision){
+  function swipeButton(decision,unique=false){
     const selectors=decision==='like'?['button[data-testid="gamepad-like"]','button[aria-label="Like" i]','button[class*="gamepad-button"][class*="like"]:not([class*="super"])']:['button[data-testid="gamepad-nope"]','button[aria-label="Nope" i]','button[aria-label="Pass" i]','button[class*="gamepad-button"][class*="nope"]'];
-    return first(selectors);
+    return first(selectors,unique);
   }
   // The cardsContainer/cards wrappers include queued profiles, not just the person on top.
-  const currentCard=()=>first(['[data-keyboard-gamepad="true"][aria-hidden="false"]','[data-testid="recs-card"]','[class*="recs-card"]','[class*="gamepad-card"]']);
+  const currentCard=(unique=false)=>first(['[data-keyboard-gamepad="true"][aria-hidden="false"]','[data-testid="recs-card"]','[class*="recs-card"]','[class*="gamepad-card"]'],unique);
   function cardIdentity(card){
     const id=card.getAttribute('data-user-id')||card.getAttribute('data-profile-id');
     if(id)return {key:JSON.stringify(['id',id]),canRebind:true};
@@ -139,9 +146,10 @@
     return valid();
   }
   function refreshableFeed(){
-    if(currentDialog()||automaticDraft||sending||autoBusy)return false;
+    if(currentDialog()||first(['dialog[open]'])||automaticDraft||sending||autoBusy)return false;
     // A reload would discard a draft, including one in a collapsed composer.
-    return ![...document.querySelectorAll(messageFields)].some(el=>visible(el)||(el.value??el.textContent??'').trim());
+    const editors=messageFields+',[role="textbox"],[contenteditable=""],[contenteditable="plaintext-only"]';
+    return ![...document.querySelectorAll(editors)].some(el=>visible(el)||(el.value??el.textContent??'').trim());
   }
   function waitForFeed(card,identity){
     const now=Date.now();
@@ -237,14 +245,57 @@
        (!hidden||(session.config.allowBackground&&settings.swipeConfig.allowBackground))&&(!dialog||promptDecline(dialog)))session.start();
     else notify();
   }
+  function requireStartBudget(data){
+    const invalid='Invalid Tinder start budget guard.';
+    if(!data||typeof data!=='object'||Array.isArray(data))throw Error(invalid);
+    const options=Object.keys(data);
+    if(!options.length)return;
+    if(options.length!==1||options[0]!=='budgetGuard')throw Error(invalid);
+    const guard=data.budgetGuard;
+    const required=['previousStatus','previousRunId','previousCount','maxSwipes'];
+    if(!guard||typeof guard!=='object'||Array.isArray(guard)||required.some(key=>!Object.hasOwn(guard,key))||
+        Object.keys(guard).some(key=>!required.includes(key)&&key!=='allowPossibleRepeat')||
+        (Object.hasOwn(guard,'allowPossibleRepeat')&&typeof guard.allowPossibleRepeat!=='boolean')||
+        !Number.isInteger(guard.maxSwipes)||guard.maxSwipes<1||guard.maxSwipes>10000)throw Error(invalid);
+    const {previousStatus,previousRunId,previousCount,maxSwipes}=guard;
+    const fresh=previousStatus==='idle'&&previousRunId===null&&previousCount===0;
+    const failed=previousStatus==='error'&&typeof previousRunId==='string'&&/^[a-f0-9]{32}$/.test(previousRunId)&&
+      Number.isInteger(previousCount)&&previousCount>0;
+    if(!fresh&&!failed)throw Error(invalid);
+    if(session.status!==previousStatus||session.runId!==previousRunId||session.count!==previousCount||
+        (fresh&&(session.epoch!==0||session.endsAt!==null)))throw Error('The Tinder predecessor changed.');
+    if(failed&&(session.error!=='The profile has not changed. Check Tinder before continuing.'||!lastCard||
+        guard.allowPossibleRepeat!==true||!Number.isInteger(session.config.maxSwipes)||
+        maxSwipes>session.config.maxSwipes-session.count))throw Error('The Tinder predecessor does not permit this successor budget.');
+    const sw=settings.swipeConfig,mc=settings.messagingConfig;
+    if(sw.maxSwipes!==maxSwipes||sw.sessionMinutes!==null||sw.likeRatio!==1||sw.allowBackground!==true||
+        mc?.autoMessageOnMatch!==false||mc.autoSend!==false)throw Error('Tinder settings changed. Check the successor budget and messaging settings.');
+    const card=currentCard(true),like=swipeButton('like',true);
+    if(!/^\/app\/recs\/?$/.test(location.pathname)||!card||!cardIdentity(card)?.canRebind||!like||
+        getComputedStyle(card).visibility!=='visible'||getComputedStyle(like).visibility!=='visible'||
+        getComputedStyle(like).pointerEvents==='none'||like.closest('[aria-disabled="true" i]')||
+        !refreshableFeed())throw Error('Open an ordinary Tinder Discover profile before starting this successor.');
+  }
   async function request(action,data={}){
-    if(action==='context')return snapshot();
+    if(action==='context'){
+      const result=snapshot();
+      if(data&&Object.hasOwn(data,'budgetGuard')){
+        try{requireConsent();requireStartBudget(data);result.guardedStartReady=true}
+        catch{result.guardedStartReady=false}
+      }
+      return result;
+    }
     if(action==='insert')return {ok:Boolean(insertDraft(data.text,data.conversationId))};
     if(action==='send')return sendDraft(data.text,data.conversationId);
     if(action==='start'){
       requireConsent();if(!/^\/app\/(recs|explore)(\/|$)/.test(location.pathname))throw new Error('Open Tinder Discover before starting a session.');
+      requireStartBudget(data);
       if(!['paused','running'].includes(session.status)){lastCard=null;nextFeedRefreshAt=0;}
-      session.start(settings.swipeConfig);await rpc('record',{kind:'session',detail:'Swipe session started'});return snapshot();
+      session.start(settings.swipeConfig);
+      const startedRunId=session.runId;
+      await rpc('record',{kind:'session',detail:'Swipe session started'});
+      if(data.budgetGuard&&session.runId!==startedRunId)throw Error('The Tinder successor changed before Start was acknowledged.');
+      return snapshot();
     }
     if(action==='pause'){session.pause();await rpc('record',{kind:'pause',detail:'Swipe session paused'});return snapshot()}
     if(action==='stop'){session.stop();await rpc('record',{kind:'stop',detail:'Swipe session stopped'});return snapshot()}
