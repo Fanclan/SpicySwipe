@@ -583,3 +583,27 @@ test('a guarded Tinder acknowledgement cannot bind a replacement run created whi
  await assert.rejects(pending,/successor changed/i);
  assert.equal(x.api.snapshot().session.runId,other.runId);
 });
+
+test('resuming a capped successor requires the exact paused run and preserves the remaining budget',async t=>{
+ const x=await swipeSetup(t,recoveryConfig);
+ const started=(await guardedStart(x,idleGuard)).session;
+ const resume={resumeRunId:started.runId,expectedCount:0};
+ await assert.rejects(x.api.request('start',resume));
+ await step(x);
+ const paused=(await x.api.request('pause')).session;
+ assert.equal(paused.count,1);
+ for(const invalid of [resume,{resumeRunId:'b'.repeat(32),expectedCount:1},{resumeRunId:started.runId},null]){
+  await assert.rejects(x.api.request('start',invalid));
+  assert.deepEqual(x.api.snapshot().session,paused);
+ }
+ x.update({swipeConfig:{...recoveryConfig,maxSwipes:1000}});
+ const match={resumeRunId:started.runId,expectedCount:1};
+ const resumed=(await x.api.request('start',match)).session;
+ assert.deepEqual([resumed.status,resumed.runId,resumed.count,resumed.limit,resumed.endsAt],
+  ['running',started.runId,1,750,null]);
+ await x.api.request('stop');
+ await assert.rejects(x.api.request('start',match));
+ const fresh=await swipeSetup(t,recoveryConfig);
+ await assert.rejects(fresh.api.request('start',match));
+ assert.equal(fresh.api.snapshot().session.runId,null);
+});

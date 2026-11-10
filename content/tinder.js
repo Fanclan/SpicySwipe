@@ -250,6 +250,13 @@
     if(!data||typeof data!=='object'||Array.isArray(data))throw Error(invalid);
     const options=Object.keys(data);
     if(!options.length)return;
+    if(Object.hasOwn(data,'resumeRunId')){
+      if(options.length!==2||!Object.hasOwn(data,'expectedCount')||typeof data.resumeRunId!=='string'||
+          !/^[a-f0-9]{32}$/.test(data.resumeRunId)||!Number.isInteger(data.expectedCount)||data.expectedCount<0)throw Error(invalid);
+      if(session.status!=='paused'||session.runId!==data.resumeRunId||session.count!==data.expectedCount)
+        throw Error('The paused Tinder session changed.');
+      return;
+    }
     if(options.length!==1||options[0]!=='budgetGuard')throw Error(invalid);
     const guard=data.budgetGuard;
     const required=['previousStatus','previousRunId','previousCount','maxSwipes'];
@@ -294,7 +301,7 @@
       session.start(settings.swipeConfig);
       const startedRunId=session.runId;
       await rpc('record',{kind:'session',detail:'Swipe session started'});
-      if(data.budgetGuard&&session.runId!==startedRunId)throw Error('The Tinder successor changed before Start was acknowledged.');
+      if((data.budgetGuard||data.resumeRunId)&&session.runId!==startedRunId)throw Error('The Tinder successor changed before Start was acknowledged.');
       return snapshot();
     }
     if(action==='pause'){session.pause();await rpc('record',{kind:'pause',detail:'Swipe session paused'});return snapshot()}

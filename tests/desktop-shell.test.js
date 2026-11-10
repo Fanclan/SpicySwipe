@@ -2,19 +2,19 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');const path=require('node:path');const vm=require('node:vm');const {EventEmitter}=require('node:events');
 const P=require('../desktop/policy.cjs');
-async function setup(androidConfig,checkpoints={},permissions={}){
- const handlers={},events={},windows=[],views=[],opened=[],commands=[],savedAndroid=[],androidOptions=[];let commandGate,menu,promptCount=0;const permissionFiles=new Map();if(permissions.saved)permissionFiles.set("location-permission.json",JSON.stringify(permissions.saved));let promptAnswer=0,settings={sidebarConsentGiven:true,messagingConfig:{autoSend:true}};
- class Contents extends EventEmitter{constructor(){super();this.mainFrame={url:''};this.messages=[];this.session={setPermissionRequestHandler:fn=>this.permissionRequest=fn,setPermissionCheckHandler:fn=>this.permissionCheck=fn};}getURL(){return this.mainFrame.url}isDestroyed(){return false}setWindowOpenHandler(fn){this.open=fn}send(channel,data){this.messages.push({channel,data});if(channel==='tinder:command')queueMicrotask(()=>events['tinder:result']({sender:this,senderFrame:this.mainFrame},{id:data.id,result:{connected:true,session:{status:'paused'}}}));}async loadURL(url){this.mainFrame.url=url}close(){}reload(){this.reloadCount=(this.reloadCount||0)+1}}
+async function setup(androidConfig,checkpoints={},permissions={},web){
+ const handlers={},events={},windows=[],views=[],opened=[],commands=[],savedAndroid=[],androidOptions=[];let commandGate,menu,webRequest,promptCount=0;const permissionFiles=new Map();if(permissions.saved)permissionFiles.set("location-permission.json",JSON.stringify(permissions.saved));let promptAnswer=0,settings={sidebarConsentGiven:true,messagingConfig:{autoSend:true}};
+ class Contents extends EventEmitter{constructor(){super();this.mainFrame={url:''};this.messages=[];this.session={setPermissionRequestHandler:fn=>this.permissionRequest=fn,setPermissionCheckHandler:fn=>this.permissionCheck=fn};}getURL(){return this.mainFrame.url}isDestroyed(){return false}setWindowOpenHandler(fn){this.open=fn}send(channel,data){this.messages.push({channel,data});if(channel==='tinder:command')queueMicrotask(()=>events['tinder:result']({sender:this,senderFrame:this.mainFrame},{id:data.id,result:web?.renderer?.(data)||{connected:true,session:{status:'paused'}}}));}async loadURL(url){this.mainFrame.url=url}close(){}reload(){this.reloadCount=(this.reloadCount||0)+1}}
  class Window extends EventEmitter{constructor(options){super();this.options=options;this.webContents=new Contents();this.contentView={addChildView:()=>{}};windows.push(this);}async loadFile(file){this.webContents.mainFrame.url=require('node:url').pathToFileURL(file).href;}getContentSize(){return [1200,800]}isDestroyed(){return Boolean(this.destroyed)}show(){} focus(){} close(){this.destroyed=true;this.emit('closed');} }
  class View{constructor(){this.webContents=new Contents();views.push(this)}setVisible(v){this.visible=v}setBounds(b){this.bounds=b}}
- class Service{async request(action){return settings}}
+ class Service{async request(){return web?.settings||settings}async transaction(update){return web.settings=await update(web.settings)}}
  class Android{constructor(options){androidOptions.push(options);this.serial=null;this.inputEpoch=0}cancelInput(){this.inputEpoch++}async type(text){commands.push(text);if(commandGate)await commandGate;return {ok:true}}async select(serial){this.serial=serial;return {serial}}async inspect(){if(!this.serial)throw Error('Select a device');return {serial:this.serial}}async screenshot(){return 'frame'}async isAppInstalled(platform){return platform==='hinge'}async key(key){commands.push(key);return {key}}async status(){return {devices:[]}}dispose(){}}
- const app=new EventEmitter();Object.assign(app,{requestSingleInstanceLock:()=>true,whenReady:()=>Promise.resolve(),getPath:()=>'/tmp/spicy-test',getVersion:()=> '3.0.0',quit:()=>{}});
+ const app=new EventEmitter();Object.assign(app,{requestSingleInstanceLock:()=>true,whenReady:()=>Promise.resolve(),getPath:()=>web?.folder||'/tmp/spicy-test',getVersion:()=> '3.0.0',quit:()=>{}});
  const electron={app,BrowserWindow:Window,WebContentsView:View,ipcMain:{handle:(name,fn)=>handlers[name]=fn,on:(name,fn)=>events[name]=fn},safeStorage:{},shell:{openExternal:async url=>opened.push(url)},dialog:{showMessageBox:async()=>{promptCount++;return {response:promptAnswer}},showErrorBox:()=>{}},Menu:{buildFromTemplate:x=>x,setApplicationMenu:value=>menu=value,getApplicationMenu:()=>({getMenuItemById:id=>(menu||[]).flatMap(x=>x.submenu||[]).find(x=>x.id===id)})}};
- const filename=path.resolve('desktop/main.cjs');const context={require:name=>name==='node:fs/promises'?{readFile:async file=>{const name=path.basename(file);if(name==='android.json'&&androidConfig)return JSON.stringify(androidConfig);if(permissionFiles.has(name))return permissionFiles.get(name);throw Error('No saved setup')},writeFile:async(file,text)=>{if(path.basename(file)==='android.json')savedAndroid.push(JSON.parse(text));else permissionFiles.set(path.basename(file),text)},rename:async(from,to)=>{permissionFiles.set(path.basename(to),permissionFiles.get(path.basename(from)));permissionFiles.delete(path.basename(from))},unlink:async file=>permissionFiles.delete(path.basename(file))}:name==='electron'?electron:name==='./service.cjs'?Service:name==='./android.cjs'?Android:name==='./managed-phone.cjs'?require('../desktop/managed-phone.cjs'):name==='./policy.cjs'?P:name==='./location-permission.cjs'?require('../desktop/location-permission.cjs'):name==='./mobile-checkpoint.cjs'?class {constructor(file){this.key=path.basename(file,'.json')}read(){return checkpoints[this.key]??null}write(value){checkpoints[this.key]=structuredClone(value)}}:name==='./mobile-controller.cjs'?require('../desktop/mobile-controller.cjs'):require('node:module').createRequire(filename)(name),__dirname:path.dirname(filename),process,setTimeout,clearTimeout,console};
+ const filename=path.resolve('desktop/main.cjs');const context={require:name=>name==='node:fs/promises'?{readFile:async file=>{const name=path.basename(file);if(name==='android.json'&&androidConfig)return JSON.stringify(androidConfig);if(permissionFiles.has(name))return permissionFiles.get(name);throw Error('No saved setup')},writeFile:async(file,text)=>{if(path.basename(file)==='android.json')savedAndroid.push(JSON.parse(text));else permissionFiles.set(path.basename(file),text)},rename:async(from,to)=>{permissionFiles.set(path.basename(to),permissionFiles.get(path.basename(from)));permissionFiles.delete(path.basename(from))},unlink:async file=>permissionFiles.delete(path.basename(file))}:name==='electron'?electron:name==='../web/server.cjs'&&web?{credentialStore:()=>({}),start:async options=>{webRequest=options.request;const server=await web.startServer?.(options);return {emit:event=>{web.events.push(event);server?.emit(event)}}}}:name==='./service.cjs'?Service:name==='./android.cjs'?Android:name==='./managed-phone.cjs'?require('../desktop/managed-phone.cjs'):name==='./policy.cjs'?P:name==='./location-permission.cjs'?require('../desktop/location-permission.cjs'):name==='./mobile-checkpoint.cjs'?class {constructor(file){this.key=path.basename(file,'.json')}read(){return checkpoints[this.key]??null}write(value){checkpoints[this.key]=structuredClone(value)}}:name==='./mobile-controller.cjs'?require('../desktop/mobile-controller.cjs'):require('node:module').createRequire(filename)(name),__dirname:path.dirname(filename),process:web?{platform:process.platform,env:{SPICYSWIPE_WEB:'1',SPICYSWIPE_TINDER_HELD_SESSION:web.seed}}:process,setTimeout,clearTimeout,console};
  vm.runInNewContext(fs.readFileSync(filename,'utf8'),context,{filename});for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
  const ui=windows[0].webContents,event={sender:ui,senderFrame:ui.mainFrame};
- return {get menu(){return menu},get promptCount(){return promptCount},permissionFiles,app,windows,commands,savedAndroid,androidOptions,setGate:gate=>commandGate=gate,call:(action,data)=>handlers['desktop:request'](event,action,data),handlers,ui,event,views,opened,allow:()=>promptAnswer=1};
+ return {webCall:(action,data={})=>webRequest(action,data,{}),events,get menu(){return menu},get promptCount(){return promptCount},permissionFiles,app,windows,commands,savedAndroid,androidOptions,setGate:gate=>commandGate=gate,call:(action,data)=>handlers['desktop:request'](event,action,data),handlers,ui,event,views,opened,allow:()=>promptAnswer=1};
 }
 test('desktop IPC rejects foreign contents and subframes',async()=>{const x=await setup();await assert.rejects(x.handlers['desktop:request']({sender:{},senderFrame:{}},'load'),/Untrusted/);await assert.rejects(x.handlers['desktop:request']({...x.event,senderFrame:{url:x.ui.mainFrame.url}},'load'),/Untrusted/);assert.equal((await x.call('load')).sidebarConsentGiven,true);});
 test('setup guide and disconnected context work before opening Tinder',async()=>{const x=await setup();await x.call('android:docs');assert.equal(x.opened[0],'https://developer.android.com/studio/run/managing-avds');assert.equal((await x.call('page',{action:'context'})).connected,false);});
@@ -149,4 +149,90 @@ test('Tinder status can be explicitly observed while an Android phone is visible
  await x.call('openTinder');await x.call('platform',{platform:'hinge'});
  assert.equal((await x.call('page',{action:'context'})).connected,false);
  assert.equal((await x.call('page',{action:'context',platform:'tinder'})).connected,true);
+});
+
+function heldWebFixture(t,options={}) {
+ const folder=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'spicy-web-held-'));
+ t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+ const source={version:1,runId:'a'.repeat(32),count:7,limit:10,endsAt:null};
+ const raw={connected:true,context:{page:'/app/recs'},capabilities:{budgetGuard:1},session:{status:'idle',phase:'idle',count:0,runId:null,endsAt:null,limit:10,nextActionAt:null,completionReason:'',error:''},automaticDraft:null};
+ return {folder,source,raw,seed:JSON.stringify(source),events:[],renderer:()=>raw,
+  settings:{sidebarConsentGiven:true,swipeConfig:{maxSwipes:10,sessionMinutes:null,allowBackground:true,likeRatio:1},messagingConfig:{autoSend:false,autoMessageOnMatch:false}},...options};
+}
+test('web page commands and events show the held Tinder budget before opening and across tab or renderer changes',async t=>{
+ const web=heldWebFixture(t),password='synthetic-held-workspace';let base,started;
+ const listening=new Promise(resolve=>{started=resolve});
+ web.startServer=async options=>{
+  const api=await require('../web/server.cjs').start({...options,password,port:0,host:'127.0.0.1'});
+  t.after(()=>{api.server.closeAllConnections();return new Promise(resolve=>api.server.close(resolve))});
+  base='http://127.0.0.1:'+api.server.address().port;started();return api;
+ };
+ const x=await setup(undefined,{}, {},web);await listening;
+ const post=(path,data,cookie='')=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify(data)});
+ const request={action:'page',data:{platform:'tinder',action:'context'}};
+ const context=()=>x.webCall('page',{platform:'tinder',action:'context'});
+ const held=value=>{assert.equal(value.session.count,7);assert.equal(value.session.limit,10);assert.equal(value.session.runId,web.source.runId);assert.equal(value.tinderHandoff.stage,'held')};
+ assert.equal((await post('/api/request',request)).status,401);
+ const login=await post('/api/login',{password});assert.equal(login.status,200);
+ const receipt=await post('/api/request',request,login.headers.get('set-cookie').split(';')[0]);assert.equal(receipt.status,200);
+ held((await receipt.json()).result);
+ held(await context());
+ await x.webCall('openTinder');const wc=x.views[0].webContents,event={sender:wc,senderFrame:wc.mainFrame};
+ held(await context());
+ await assert.rejects(x.webCall('page',{platform:'tinder',action:'start'}));
+ assert.equal(wc.messages.some(m=>m.channel==='tinder:command'&&m.data.action==='start'),false);
+ x.events['tinder:state'](event,web.raw);held(web.events.at(-1).data);
+ await x.webCall('platform',{platform:'hinge'});
+ const mobile=await x.webCall('mobile:request',{platform:'hinge',action:'status'});assert.equal(mobile.session.status,'idle');
+ held(await context());wc.emit('render-process-gone');held(web.events.at(-1).data);
+ await x.webCall('reloadTinder');held(await context());
+});
+test('web page recovery stays unavailable without an imported session',async t=>{
+ const web=heldWebFixture(t,{seed:''}),x=await setup(undefined,{}, {},web);
+ await x.webCall('openTinder');
+ assert.equal((await x.webCall('page',{platform:'tinder',action:'context'})).session.count,0);
+ await assert.rejects(x.webCall('page',{platform:'tinder',action:'continueHeld',data:{}}));
+ assert.equal(x.views[0].webContents.messages.some(m=>m.data?.action==='continueHeld'),false);
+});
+test('web page continuation rechecks owner settings and sends only a guarded remaining budget',async t=>{
+ const web=heldWebFixture(t),x=await setup(undefined,{}, {},web);
+ await x.webCall('openTinder');
+ const remaining=3,next='b'.repeat(32),wc=x.views[0].webContents;
+ const data={sourceRunId:web.source.runId,sourceCount:7,remaining,acceptPossibleRepeat:true};
+ const recover=()=>x.webCall('page',{platform:'tinder',action:'continueHeld',data});
+ const original=structuredClone(web.settings);
+ let start;
+ web.renderer=command=>{
+  if(command.action==='start'){
+   start=command.data;
+   Object.assign(web.raw.session,{status:'running',phase:'waiting',runId:next,limit:remaining});
+  }
+  return {...web.raw,guardedStartReady:command.data?.budgetGuard?.maxSwipes===web.settings.swipeConfig.maxSwipes};
+ };
+ for(const edit of [
+  s=>{s.sidebarConsentGiven=false},s=>{s.swipeConfig.allowBackground=false},s=>{s.swipeConfig.likeRatio=.5},
+  s=>{s.messagingConfig.autoSend=true},s=>{s.messagingConfig.autoMessageOnMatch=true},
+  s=>{s.swipeConfig.maxSwipes=20},s=>{s.swipeConfig.sessionMinutes=10}
+ ]){
+  web.settings=structuredClone(original);edit(web.settings);
+  await assert.rejects(recover());assert.equal(start,undefined);
+ }
+ web.settings=structuredClone(original);
+ const result=await recover();
+ assert.equal(web.settings.swipeConfig.maxSwipes,remaining);assert.equal(web.settings.swipeConfig.sessionMinutes,null);
+ assert.equal(start.budgetGuard.maxSwipes,remaining);assert.equal(start.budgetGuard.previousRunId,null);
+ assert.equal(result.session.runId,web.source.runId);assert.equal(result.session.count,7);
+ assert.equal(result.tinderHandoff.rendererSession.runId,next);
+ assert.equal(wc.messages.some(m=>m.data?.action==='continueHeld'),false);
+ web.raw.session.count=1;
+ x.events['tinder:state']({sender:wc,senderFrame:wc.mainFrame},web.raw);assert.equal(web.events.at(-1).data.session.count,8);
+ await assert.rejects(recover());
+ assert.equal(wc.messages.filter(m=>m.data?.action==='start').length,1);
+ const archive=()=>x.webCall('page',{platform:'tinder',action:'archiveHeld',data:{sourceRunId:web.source.runId,finalCount:10}});
+ await assert.rejects(archive());
+ Object.assign(web.raw.session,{count:remaining,status:'complete',phase:'complete',completionReason:'limit'});
+ x.events['tinder:state']({sender:wc,senderFrame:wc.mainFrame},web.raw);
+ const archived=await archive();
+ assert.equal(archived.tinderHandoffArchived.count,10);
+ assert.equal(wc.messages.some(m=>m.data?.action==='archiveHeld'),false);
 });

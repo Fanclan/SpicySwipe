@@ -7,6 +7,7 @@
  const empty=(icon,heading,text)=>`<div class="empty-state">${I(icon)}<h3>${heading}</h3><p>${text}</p></div>`;
  async function mount(target,bridge){
   let state=await bridge.load(),view='overview',page={connected:false,context:{},session:{status:'idle',count:0,limit:30}},context={},draft='',draftMeta='',busy=false,models=[],settingsProvider=state.activeAI;
+  let handoffReview=null,handoffPending=false,pageRevision=0;
   let toastTimer,polling=false,disposed=false,lastAutoDraft=null,draftContext={},messageInputs={},discoveryEpoch=0;
   target.innerHTML=`<div class="ss-app" data-theme="${state.theme}"><div class="workspace-shell">
    <aside class="nav-rail"><a class="brand" href="#overview" data-view="overview"><span class="brand-mark">${I('bolt')}</span><span>spicy<span class="brand-light">swipe</span><small>YOUR DATING COPILOT</small></span></a>
@@ -47,7 +48,7 @@
     <div class="form-row">${number('breakEvery','Break every (profiles)',1,1000)}${number('breakMinSeconds','Shortest break (seconds)',10,1800)}${number('breakMaxSeconds','Longest break (seconds)',10,1800)}</div></fieldset>
     ${toggle('allowBackground',bridge.web?'Keep running when this tab closes':'Continue when Tinder is in the background',bridge.web?'The server runs this session until it reaches a limit or needs your attention.':'Keep Chrome open and your computer awake. Browser throttling can lengthen waits; closing or reloading Tinder ends the session.')}
     ${button('Save preferences','saveSwiping','check')}</form></section>
-    <aside class="editor-aside swipe-status"><article class="panel live-session"><div class="section-heading"><h2>Current session</h2><span id="session-badge" class="badge">Idle</span></div><div class="session-progress"><strong id="session-count">0</strong> <span id="session-limit">profiles</span></div><progress id="session-progress" aria-label="Profile progress"></progress><p id="session-message" role="status">Ready when you are.</p><p id="session-deadline" class="session-deadline"></p><div class="session-controls">${button('Start session','start','play','primary')}${button('Pause','pause','pause')}${button('Stop','stop','stop')}</div><p class="field-help">Resume keeps your count and any end time. Preference changes apply to your next new session.</p></article>
+    <aside class="editor-aside swipe-status"><article class="panel live-session"><div class="section-heading"><h2>Current session</h2><span id="session-badge" class="badge">Idle</span></div><div class="session-progress"><strong id="session-count">0</strong> <span id="session-limit">profiles</span></div><progress id="session-progress" aria-label="Profile progress"></progress><p id="session-message" role="status">Ready when you are.</p><p id="session-deadline" class="session-deadline"></p><div class="session-controls">${button('Start session','start','play','primary')}${button('Review remaining Likes','reviewHeld','arrow','primary','hidden')}${button('Archive session','reviewArchive','check','secondary','hidden')}${button('Pause','pause','pause')}${button('Stop','stop','stop')}</div><p class="field-help" id="session-controls-help">Resume keeps your count and any end time. Preference changes apply to your next new session.</p></article>
     <article class="tip-card"><span class="tip-label">${I('moon')} ROOM TO BREATHE</span><blockquote>A little less rush.<br><em>A little more rhythm.</em></blockquote><p>Varied waits, a few photos, and time between sessions.</p></article><article class="panel"><h3>Before you start</h3><ul class="advice-list"><li>${I('check')} Open Tinder Discover</li><li>${I('check')} Keep your computer awake</li><li>${I('check')} Unrecognized dialogs and missing controls stop the session</li></ul>${button('Open Tinder','openTinder','external','text')}</article></aside></div>`;
   }
   function updateTimingFields(){
@@ -76,7 +77,32 @@
     updatePage();
   }
   function navigate(next){if(!views[next])return;discoveryEpoch++;if(next==='messages'&&!draft)context=page.context||context;view=next;render();if(view==='settings'&&settingsProvider==='ollama')discoverModels();$('.main').scrollTop=0;pollPage()}
+  function handoffDecision(action){
+    const h=page.tinderHandoff,source=h?.source,raw=h?.rendererSession;
+    const s=page.session;
+    if(view!=='swiping'||!state.sidebarConsentGiven||!page.connected||!source||h.minimumOnly||
+       typeof source.runId!=='string'||!source.runId||s?.runId!==source.runId||!Number.isInteger(source.count)||source.count<0||
+       !Number.isInteger(source.limit)||s.limit!==source.limit||source.limit<=source.count||source.endsAt!==null)return null;
+    if(action==='archiveHeld'){
+      if(!['complete','stopped'].includes(h.stage)||!Number.isInteger(s.count)||s.count<source.count||s.count>source.limit)return null;
+      return {sourceRunId:source.runId,finalCount:s.count};
+    }
+    if(h.stage!=='held'||s.status!=='held'||s.count!==source.count||raw?.status!=='idle'||raw.runId!==null||raw.count!==0||raw.endsAt!==null)return null;
+    return {sourceRunId:source.runId,sourceCount:source.count,remaining:source.limit-source.count,acceptPossibleRepeat:true};
+  }
+  function reviewStillCurrent(){
+    if(!handoffReview)return false;
+    const current=handoffDecision(handoffReview.action);
+    return current&&Object.keys(current).every(k=>current[k]===handoffReview.data[k]);
+  }
+  function closeHandoffReview(){
+    const opener=handoffReview?.action==='archiveHeld'?'reviewArchive':'reviewHeld';
+    handoffReview=null;
+    $('.modal-layer').hidden=true;
+    $(`[data-action="${opener}"]`)?.focus();
+  }
   function updatePage(){
+    if(handoffReview&&!reviewStillCurrent())closeHandoffReview();
     const conn=$('#connection');conn.innerHTML=`<span class="dot ${page.connected?'green':''}"></span> ${bridge.preview?'Preview mode':page.connected?'Tinder connected':'Tinder not connected'}`;
     if(view==='swiping'){
       const s=page.session||{},active=s.status==='running';
@@ -89,11 +115,47 @@
       const countdown=seconds>=60?`${Math.floor(seconds/60)}m ${seconds%60}s`:`${seconds}s`;
       $('#session-message').textContent=s.error||(active?({'waiting for profiles':`Checking Discover for new profiles in ${countdown}.`,break:`Taking a breather. Continuing in ${countdown}.`,photos:`Looking at a photo · ${countdown} remaining.`,reading:`Reading the profile · ${countdown} remaining.`,waiting:`Next profile review in ${countdown}.`,reviewing:'Reviewing the current profile.'}[s.phase]||'Session in progress.'):s.status==='paused'?'Paused. Resume when you’re ready.':s.status==='complete'?(s.completionReason==='time'?'Your session time is up.':'Profile limit reached. All done.'):'Open Tinder Discover, review your preferences, and start when ready.');
       $('#session-deadline').textContent=s.endsAt&&['running','paused'].includes(s.status)?`Ends at ${new Date(s.endsAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`:'';
-      $('[data-action="start"]').disabled=active;$('[data-action="start"] span').textContent=s.status==='paused'?'Resume session':'Start session';$('[data-action="pause"]').disabled=!active;
-
+      const start=$('[data-action="start"]'),pause=$('[data-action="pause"]'),stop=$('[data-action="stop"]'),review=$('[data-action="reviewHeld"]');
+      start.disabled=active||Boolean(bridge.web&&!page.connected);start.hidden=false;start.querySelector('span').textContent=s.status==='paused'?'Resume session':'Start session';
+      pause.disabled=!active;stop.disabled=false;review.hidden=true;
+      const archive=$('[data-action="reviewArchive"]'),help=$('#session-controls-help');
+      archive.hidden=true;help.hidden=false;
+      const archived=page.tinderHandoffArchived;
+      help.textContent=Number.isInteger(archived?.count)&&Number.isInteger(archived.source?.limit)?
+        `Previous session archived at ${archived.count} of ${archived.source.limit} profiles.`:'Resume keeps your count and any end time. Preference changes apply to your next new session.';
+      const handoff=page.tinderHandoff;
+      if(handoff){
+        const {stage,minimumOnly,rendererSession}=handoff;
+        const resume=stage==='acknowledged'&&s.status==='paused'&&rendererSession?.status==='paused'&&!minimumOnly;
+        const known=Number.isInteger(s.count)&&Number.isInteger(s.limit)&&s.count>=0&&s.count<=s.limit;
+        start.disabled=!page.connected||!resume;start.hidden=stage==='held';
+        pause.disabled=!page.connected||!(stage==='dispatching'||(stage==='acknowledged'&&active));
+        stop.disabled=!page.connected||!(stage==='dispatching'||(stage==='acknowledged'&&['running','paused','error'].includes(s.status)));
+        review.hidden=stage!=='held';review.disabled=handoffPending||!handoffDecision('continueHeld');
+        archive.hidden=!['complete','stopped'].includes(stage);archive.disabled=handoffPending||!handoffDecision('archiveHeld');
+        help.hidden=true;
+        $('#session-count').textContent=known?(minimumOnly?`At least ${s.count}`:s.count):'Unknown';
+        $('#session-limit').textContent=known?`of ${s.limit} profiles`:'';
+        progress.hidden=!known;
+        if(known){progress.max=s.limit;progress.value=s.count}
+        $('#session-deadline').textContent=known?(minimumOnly?'No time limit':`${s.limit-s.count} remaining · No time limit`):'';
+        if(stage==='held'){
+          $('#session-badge').textContent='On hold';
+          $('#session-message').textContent='Tinder could not confirm the last Like. The session is waiting for your decision.';
+        }else if(stage==='dispatching'||(stage==='acknowledged'&&minimumOnly)){
+          $('#session-badge').textContent='Awaiting confirmation';
+          $('#session-message').textContent='The server has not confirmed the current Tinder count.';
+        }else if(stage==='invalid'){
+          $('#session-badge').textContent='Needs attention';
+          $('#session-message').textContent='The server could not verify the saved Tinder budget.';
+        }else if(stage==='stopped'){
+          $('#session-badge').textContent='Stopped';
+          $('#session-message').textContent='This Tinder session was stopped.';
+        }
+      }
     }
   }
-  async function pollPage(){if(polling||disposed)return;polling=true;try{const result=await bridge.page('context');if(result?.error)throw new Error(result.error);page=result;updatePage();if(result.automaticDraft&&result.automaticDraft!==lastAutoDraft&&result.automaticDraft.response!==lastAutoDraft?.response){lastAutoDraft=result.automaticDraft;draft=result.automaticDraft.response;context=result.automaticDraft.context;draftContext={...context};draftMeta=`${result.automaticDraft.modelUsed} · Automatic draft`;navigate('messages');toast('An opener is ready to review.')}}catch{page={...page,connected:false};updatePage()}finally{polling=false}}
+  async function pollPage(){if(polling||disposed||handoffPending)return;polling=true;const revision=pageRevision;try{const result=await bridge.page('context');if(revision!==pageRevision&&(result?.tinderHandoff||page.tinderHandoff||page.tinderHandoffArchived))return;if(result?.error)throw new Error(result.error);page=result;updatePage();if(result.automaticDraft&&result.automaticDraft!==lastAutoDraft&&result.automaticDraft.response!==lastAutoDraft?.response){lastAutoDraft=result.automaticDraft;draft=result.automaticDraft.response;context=result.automaticDraft.context;draftContext={...context};draftMeta=`${result.automaticDraft.modelUsed} · Automatic draft`;navigate('messages');toast('An opener is ready to review.')}}catch{if(revision===pageRevision){page={...page,connected:false};updatePage()}}finally{polling=false}}
   async function refreshContext(){const result=await bridge.page('context');if(result.error)throw new Error(result.error);page=result;const next=result.context||{};if(draft&&context.conversationId&&context.conversationId!==next.conversationId){draft='';draftContext={};draftMeta='Conversation changed. Generate a fresh draft.'}context=next;if(view==='messages')render();updatePage()}
   async function save(patch){state=await bridge.save(patch);app.dataset.theme=state.theme;return state}
   async function connectionSave(authorize=false,current=()=>true){
@@ -144,7 +206,7 @@
     if(name==='close')return bridge.close?.();
     if(name==='openTinder')return bridge.request('openTinder');
     if(name==='dashboard')return bridge.request('dashboard');
-    if(name==='dismiss'){$('.modal-layer').hidden=true;return}
+    if(name==='dismiss'){if(handoffReview)closeHandoffReview();else $('.modal-layer').hidden=true;return}
     if(name==='accept'){await save({sidebarConsentGiven:true});$('.modal-layer').hidden=true;navigate('settings');return}
     if(name==='finishSetup'){await save({hasCompletedOnboarding:true});navigate('overview');toast('Your workspace is ready.');return}
     if(name==='refreshContext')return refreshContext();
@@ -179,7 +241,34 @@
       for(const [low,high,label]of [['minDelaySeconds','maxDelaySeconds','Profile wait'],['minPhotoSeconds','maxPhotoSeconds','Photo dwell'],['breakMinSeconds','breakMaxSeconds','Break']])if(config[low]>config[high])throw new Error(`${label}: the maximum must be at least the minimum.`);
       await save({swipeConfig:config});toast('Session preferences saved.');return;
     }
-    if(['start','pause','stop'].includes(name)){if(name==='start'){if(!state.sidebarConsentGiven)return onboarding();if(page.session?.status!=='paused'&&await action('saveSwiping')===false)return}const result=await bridge.page(name);if(result.error)throw new Error(result.error);page=result;updatePage();return}
+    if(name==='reviewHeld'||name==='reviewArchive'){
+      const method=name==='reviewArchive'?'archiveHeld':'continueHeld';
+      const data=handoffDecision(method);if(!data||handoffPending)return;
+      handoffReview={action:method,data};
+      if(method==='archiveHeld'){
+        confirmDialog('Archive this Tinder session?',`Keep the recorded total of ${data.finalCount} profiles and enable Start for a new session.`,'confirmArchive','Archive session');
+      }else{
+        confirmDialog('Continue this Tinder session?',`Tinder could not confirm the last Like. The first Like after you continue may repeat it. SpicySwipe will send up to ${data.remaining} more ordinary Likes with no time limit.`,'confirmHeld','Accept and continue');
+      }
+      return;
+    }
+    if(name==='confirmHeld'||name==='confirmArchive'){
+      if(!reviewStillCurrent()||handoffPending)return;
+      const decision=handoffReview;
+      if(decision.action!==(name==='confirmArchive'?'archiveHeld':'continueHeld'))return;
+      handoffPending=true;closeHandoffReview();updatePage();
+      const revision=++pageRevision;
+      try{
+        const result=await bridge.page(decision.action,decision.data);
+        if(result?.error)throw new Error(result.error);
+        if(pageRevision===revision||page.tinderHandoff?.stage==='held'||decision.action==='archiveHeld'){page=result;pageRevision++}
+      }catch(error){
+        if(pageRevision===revision)page={...page,connected:false};
+        throw error;
+      }finally{handoffPending=false;updatePage()}
+      return;
+    }
+    if(['start','pause','stop'].includes(name)){if(name==='start'){if(!state.sidebarConsentGiven)return onboarding();if(page.tinderHandoff&&(page.tinderHandoff.stage!=='acknowledged'||page.session?.status!=='paused'))return;if(page.session?.status!=='paused'&&await action('saveSwiping')===false)return}const result=await bridge.page(name);if(result.error)throw new Error(result.error);page=result;updatePage();return}
     if(name==='clearActivity')return confirmDialog('Clear activity history?','This removes the recent event list. Your all-time totals and settings stay saved.','confirmClear','Clear history');
     if(name==='confirmClear'){state=await bridge.request('clearActivity');$('.modal-layer').hidden=true;render();return}
     if(name==='revoke')return confirmDialog('Turn off workspace access?','This stops swiping and automatic openers. Your settings and API keys stay saved.','confirmRevoke','Revoke access');
@@ -213,12 +302,12 @@
   });
   target.addEventListener('keydown',e=>{
     const modal=$('.modal-layer');if(modal.hidden)return;
-    if(e.key==='Escape'&&$('[data-action="dismiss"]'))modal.hidden=true;
+    if(e.key==='Escape'&&$('[data-action="dismiss"]')){if(handoffReview)closeHandoffReview();else modal.hidden=true}
     if(e.key==='Tab'){const focusable=[...modal.querySelectorAll('button,a,input,select,textarea')].filter(el=>!el.disabled);const first=focusable[0],last=focusable.at(-1),active=target.getRootNode().activeElement||document.activeElement;if(e.shiftKey&&active===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&active===last){e.preventDefault();first.focus()}}
   });
   const unsub=bridge.subscribe?.(event=>{
     if(event.type==='settings'){state=event.data;app.dataset.theme=state.theme;if(view==='overview'){$('#metrics').innerHTML=metrics();$('#recent-events').innerHTML=eventRows(3);$('#model-card').innerHTML=modelCard()}if(view==='activity'){$('#activity-events').innerHTML=eventRows(100)}}
-    if(event.type==='page'){page=event.data;updatePage()}
+    if(event.type==='page'){page=event.data;pageRevision++;updatePage()}
   });
   render();pollPage();const timer=setInterval(pollPage,2500);if(!state.sidebarConsentGiven&&!bridge.preview)onboarding();
   return {navigate,destroy(){disposed=true;clearInterval(timer);clearTimeout(toastTimer);unsub?.()}};
