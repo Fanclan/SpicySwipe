@@ -34,7 +34,7 @@ function processStarts(proc, ticks, avd) {
     let target;
     try { target = fs.readlinkSync(path.join(fds,n)); }
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    if (target === avd || target.startsWith(avd + '/')) return;
+    if (target === avd || target.startsWith(avd + path.sep)) return;
    }
   } catch (error) {
    if (error.code === 'ENOENT' && !fs.existsSync(dir)) { starts.delete(pid); continue; }
@@ -47,10 +47,10 @@ function processStarts(proc, ticks, avd) {
 function sameFile(a,b) {
  return a.dev === b.dev && a.ino === b.ino && a.ctimeMs === b.ctimeMs && a.size === b.size;
 }
-function readMarker(file) {
+function readMarker(file,ownerUid) {
  const before = fs.lstatSync(file,{throwIfNoEntry:false});
  if (!before) return null;
- if (!before.isFile() || before.nlink !== 1 || before.uid !== process.getuid() || before.size > 16) throw Error('Unexpected lock marker.');
+ if (!before.isFile() || before.nlink !== 1 || before.uid !== ownerUid || before.size > 16) throw Error('Unexpected lock marker.');
  const fd = fs.openSync(file,fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
  try {
   if (!sameFile(before,fs.fstatSync(fd))) throw Error('Lock marker changed.');
@@ -60,18 +60,18 @@ function readMarker(file) {
  } finally { fs.closeSync(fd); }
 }
 
-function quarantineStaleLocks(home, name, {proc='/proc',ticks,lockShare:acquire=lockShare}={}) {
- if (!managed.has(name)) return 0;
+function quarantineStaleLocks(home, name, {proc='/proc',ticks,lockShare:acquire=lockShare,ownerUid=process.getuid?.()}={}) {
+ if (!managed.has(name) || !Number.isSafeInteger(ownerUid) || ownerUid < 0) return 0;
  const avd = path.resolve(home,name+'.avd'), sharePath = path.join(avd,'multiinstance.lock');
  let share, archived=0;
  try {
   if (fs.realpathSync(avd) !== avd) return 0;
-  const markers = markerNames.map(n => readMarker(path.join(avd,n))).filter(Boolean);
+  const markers = markerNames.map(n => readMarker(path.join(avd,n),ownerUid)).filter(Boolean);
   if (!markers.length) return 0;
   // Open only the native, existing multiinstance lock. Never create or truncate it.
   share = fs.openSync(sharePath,fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   const info = fs.fstatSync(share);
-  if (!info.isFile() || info.nlink !== 1 || info.size !== 0 || info.uid !== process.getuid() || !acquire(share)) return 0;
+  if (!info.isFile() || info.nlink !== 1 || info.size !== 0 || info.uid !== ownerUid || !acquire(share)) return 0;
   const starts = processStarts(proc,ticks ?? Number(execFileSync('getconf',['CLK_TCK'],{encoding:'utf8'})),avd);
   if (!starts || !markers.every(m => m.stat.mtimeMs + 2000 < (starts.get(m.pid) ?? starts.get('1')))) return 0;
   if (!sameFile(info,fs.lstatSync(sharePath)) || !markers.every(m => sameFile(m.stat,fs.lstatSync(m.file)))) return 0;
