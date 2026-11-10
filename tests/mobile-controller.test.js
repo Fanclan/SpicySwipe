@@ -1660,6 +1660,139 @@ async function exhaustedDiscover(fromSource=false){
  x.android.scrollProfile=x.android.wheelDiscover=x.android.tapControl=async()=>assert.fail('An inventory refresh cannot browse or vote');
  return {...x,card,hint,deadline};
 }
+async function refreshedPromptFixture(){
+ const x=await exhaustedDiscover(),avd='managed-hinge',chromeKey='c'.repeat(64);
+ const cp=structuredClone(x.c.checkpoint());cp.session.runId='current-run';cp.session.endsAt=Date.now()+3600000;
+ cp.binding.avd=avd;Object.assign(cp.rejectedPhoto,{runId:cp.session.runId,endsAt:cp.session.endsAt,avd});
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';x.c.isManagedPhone=b=>b.avd===avd;
+ x.android.deviceIdentity=async()=>({serial:x.android.serial,avd});
+ const surface={x:140,y:300,width:120,height:180},source={...coldPhoto(x),recoveryChromeKey:chromeKey,recoveryDrag:{chromeKey,surface}};
+ const promptCard={...source,identity:'prompt-identity',screenKey:'new-prompt-screen',recoveryDrag:null,prompts:[x.prompt],
+  photos:[{...source.photos[0],revealDirection:'up',like:null}]};
+ const form={...x.form,prompts:[{...x.prompt,like:null}],photos:[],controls:{sendLike:control('Send like')}};
+ const taps=[],moves=[];
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();x.set(source)};
+ x.android.scrollProfile=async(opts,valid)=>{assert.equal(valid(),true);assert.deepEqual(opts.surface,surface);
+  assert.ok(x.saved().rejectedPhoto.promptRecovery);moves.push(opts);x.set(promptCard)};
+ x.android.tapControl=async(bounds,valid,onIssued)=>{assert.equal(valid(),true);taps.push(bounds);onIssued?.();
+  x.set(taps.length===1?form:screen({identity:'next',name:'Other'}))};
+ return {...x,source,promptCard,form,surface,taps,moves};
+}
+test('a successful held refresh permits one durable nonvoting drag and only an independently linked ordinary prompt',async()=>{
+ const x=await refreshedPromptFixture();
+ await x.step();if(!x.commits())await x.step();
+ assert.equal(x.moves.length,1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+test('a profile-only recovered prompt retains the original managed run and its single 1000-profile budget',async()=>{
+ const x=await refreshedPromptFixture(),cp=structuredClone(x.c.checkpoint());
+ cp.session.endsAt=cp.rejectedPhoto.endsAt=null;cp.session.config.sessionMinutes=cp.config.swipe.sessionMinutes=null;
+ cp.session.config.maxSwipes=cp.config.swipe.maxSwipes=1000;cp.session.count=cp.rejectedPhoto.count=999;
+ cp.session.nextBreakAt=1001;
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+ const step=()=>x.c.sessionStep(x.c.session.config,()=>x.c.session.status==='running',()=>{x.c.session.count++},async()=>true,x.c.token());
+ await step();await step();assert.equal(x.c.session.count,1000);assert.equal(x.c.session.endsAt,null);assert.equal(x.c.session.runId,cp.session.runId);
+ assert.equal(x.moves.length,1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+});
+test('a consumed post-refresh drag can resume a newly visible linked prompt without replaying the gesture',async()=>{
+ const x=await refreshedPromptFixture();let saved;
+ x.android.scrollProfile=async()=>{saved=x.saved();x.set(x.promptCard);throw Object.assign(Error('lost motion response'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();if(!saved)await x.step();assert.ok(saved?.rejectedPhoto.promptRecovery);
+ x.c.restoreCheckpoint(saved);x.c.session.status='running';
+ x.android.scrollProfile=async()=>assert.fail('never replay a charged motion');
+ await x.step();assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+});
+test('an interrupted prompt opening is not repeated and later held-refresh cycles keep their normal pacing',async()=>{
+ const x=await refreshedPromptFixture();let openings=0,refreshes=0,saved,now=Date.now();x.c.session.now=()=>now;
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++;x.set(x.source)};
+ x.android.tapControl=async()=>{openings++;saved=x.saved();throw Object.assign(Error('Lost prompt acknowledgment'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();await x.step();
+ assert.equal(openings,1);assert.equal(saved.rejectedPhoto.promptRecovery.opened,true);assert.equal(x.commits(),0);
+ assert.ok(!JSON.stringify(saved.rejectedPhoto.promptRecovery).includes(x.prompt.text));
+ x.c.restoreCheckpoint(saved);x.c.session.status='running';await x.step();await x.step();
+ assert.equal(refreshes,1);now+=300001;await x.step();await x.step();
+ assert.equal(refreshes,2);assert.equal(openings,1);assert.equal(x.moves.length,1);assert.equal(x.commits(),0);
+});
+test('a consumed recovery keeps periodic refresh on an exact held endpoint with changed or missing chrome, and releases a different profile',async()=>{
+ for(const chrome of [undefined,'d'.repeat(64)]){
+  const x=await refreshedPromptFixture();let now=Date.now(),refreshes=0;x.c.session.now=()=>now;
+  x.android.scrollProfile=async(_opts,valid)=>{assert.ok(valid());x.moves.push(1);x.set({...x.promptCard,prompts:[]})};
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++;x.set(refreshes===1?x.source:screen({name:'Different',identity:'new-profile',screenKey:'new'}))};
+  await x.step();await x.step();assert.equal(x.moves.length,1);
+  const held={...x.promptCard,prompts:[],recoveryChromeKey:chrome};
+  assert.equal(x.c.rejectedPhoto.heldRevision,held.screenKey);x.set(held);now+=300001;
+  const result=await x.step();assert.equal(refreshes,2);assert.equal(result.phase,'checking next profile');
+  const ordinary=deferred();x.c.review=async()=>{ordinary.resolve();throw Object.assign(Error('observed regular review'),{code:'MOBILE_REVIEW_INTERRUPTED'})};
+  await x.step();await ordinary.promise;assert.equal(x.moves.length,1);assert.equal(x.commits(),0);
+ }
+});
+test('a prompt that changes during the blank ordinary Like form cannot acquire a vote reservation',async()=>{
+ for(const mode of ['edited','photo','rose','unknown-composer','message','changed form']){
+  const x=await refreshedPromptFixture();let openings=0;
+  x.android.tapControl=async(bounds)=>{openings++;assert.deepEqual(bounds,x.prompt.like.bounds);const form=structuredClone(x.form);
+   if(mode==='edited')form.prompts[0].text+=' changed';
+   if(mode==='photo')form.photos=[x.failedPhoto];
+   if(mode==='rose')form.controls.sendLike=control('Send a Rose');
+   if(mode==='unknown-composer')form.composerTextVerified=false;
+   if(mode==='message')form.composerText='user draft';
+   if(mode==='changed form'){const hierarchy=x.android.hierarchy;let reads=0;x.android.hierarchy=async()=>++reads===2?
+    {xml:{...form,prompts:[{...form.prompts[0],text:'Different'}]},foreground:'co.hinge.app'}:hierarchy()}
+   x.set(form);
+  };
+  await x.step();await x.step();
+  assert.equal(openings,1,mode);assert.equal(x.commits(),0,mode);assert.equal(x.c.lastAction,null,mode);
+ }
+});
+test('a different same-name card from a later acknowledged inventory refresh returns to ordinary Hinge review',async()=>{
+ for(const chrome of [undefined,'c'.repeat(64)]){
+  const x=await refreshedPromptFixture();let now=Date.now(),launches=0,reviewed=0;
+  x.c.session.now=()=>now;
+  const different={...x.source,identity:'independent-new-card',screenKey:'different-revision',recoveryChromeKey:chrome,
+   photos:[{...x.source.photos[0],visual:'ff00ff00ff00ff00'}],prompts:[{...x.prompt,text:'different native prompt'}]};
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();x.set(++launches===1?x.source:different)};
+  x.android.scrollProfile=async()=>{x.moves.push(1);x.set({...x.promptCard,prompts:[]})};
+  await x.step();await x.step();now+=300001;await x.step();assert.equal(launches,2);
+  const oldRevision=x.c.rejectedPhoto.heldRevision;x.c.review=async()=>{reviewed++;throw Object.assign(Error('observed ordinary review'),{code:'MOBILE_REVIEW_INTERRUPTED'})};
+  await x.step();
+  assert.equal(reviewed,1);assert.equal(x.c.rejectedPhoto.heldRevision,oldRevision);
+  assert.equal(x.moves.length,1);assert.equal(x.commits(),0);
+ }
+});
+test('a later refresh can anchor a changed prompt-only or clipped endpoint for inventory without enabling a Like',async()=>{
+ for(const clipped of [false,true]){
+  const x=await refreshedPromptFixture();let launches=0,now=Date.now();x.c.session.now=()=>now;
+  const first={...x.promptCard,prompts:[]},later={...x.promptCard,screenKey:'other-viewport',identity:'different-evidence',recoveryChromeKey:undefined,
+   photos:clipped?[{...x.failedPhoto,visual:'ff00ff00ff00ff00',like:null,revealDirection:'up'}]:[]};
+  x.android.scrollProfile=async()=>{x.moves.push(1);x.set(first)};
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();x.set(++launches===1?x.source:later)};
+  await x.step();await x.step();assert.equal(x.c.rejectedPhoto.heldRevision,first.screenKey);
+  now+=300001;await x.step();await x.step();assert.equal(x.c.rejectedPhoto.heldRevision,later.screenKey);
+  now+=300001;await x.step();assert.equal(launches,3);assert.equal(x.moves.length,1);assert.equal(x.taps.length,0);assert.equal(x.commits(),0);
+ }
+});
+test('the post-refresh prompt recovery refuses unproven routes, changed ownership, and unrelated prompt screens',async()=>{
+ for(const mode of ['no-refresh','failed-refresh','same-endpoint','wrong-chrome','no-route','not-managed','near-source','no-link','different-chrome','not-a-prompt','pending','deadline','limit','break','draft','storage']){
+  const x=await refreshedPromptFixture();let c=x.c;
+  if(mode==='no-refresh'){c.nextFeedRefreshAt=c.session.now()+60000;x.set(x.source)}
+  if(mode==='failed-refresh')x.android.refreshFeed=async()=>{x.set(x.source);throw Object.assign(Error('no ack'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+  if(mode==='same-endpoint'){c.rejectedPhoto.heldRevision=x.source.screenKey;c.rejectedPhoto.heldIdentity=x.source.identity;x.set(x.source)}
+  if(mode==='wrong-chrome')x.source.recoveryDrag.chromeKey='f'.repeat(64);
+  if(mode==='no-route')x.source.recoveryDrag=null;
+  if(mode==='not-managed')c.isManagedPhone=()=>false;
+  if(mode==='near-source')x.source.photos[0]={...x.source.photos[0],visual:'123456789abcdef1'};
+  if(mode==='no-link')x.promptCard.photos=[{...x.source.photos[0],visual:'0000000000000000'}];
+  if(mode==='different-chrome')x.promptCard.recoveryChromeKey='f'.repeat(64);
+  if(mode==='not-a-prompt')x.promptCard.prompts=[];
+  if(mode==='pending')c.lastAction={identity:x.card.identity||'held',name:x.card.name,kind:'like',runId:c.session.runId,sessionEndsAt:c.session.endsAt};
+  if(mode==='deadline')c.session.now=()=>c.session.endsAt;
+  if(mode==='limit')c.session.config.maxSwipes=c.session.count;
+  if(mode==='break')Object.assign(c.session,{config:{...c.session.config,breaksEnabled:true},nextBreakAt:c.session.count});
+  if(mode==='draft')c.draft={text:'private'};
+  if(mode==='storage')c.storageError='unavailable';
+  for(let i=0;i<2;i++)await x.step().catch(()=>{});
+  assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+  assert.equal(x.moves.length,['no-link','different-chrome','not-a-prompt'].includes(mode)?1:0,mode);
+ }
+});
 test('a consumed Hinge review periodically checks inventory from its exact held poll or cold source',async()=>{
  for(const [entry,result] of [['poll','same'],['cold','empty'],['poll','new']]){
   const x=await exhaustedDiscover(entry==='cold');let now=Date.now(),launches=0;
