@@ -138,6 +138,49 @@ function staticWheelFrame(visible,owner,display,discover,kids,backdrops,measurem
  return {point,frame:{ownerKey:hash(['discover-scroll',shape(owner)]),
   chromeKey:hash(['discover-chrome',shape(discover),shape(skips[0]),label(skips[0])]),landmarks}};
 }
+// The recovery move has one fixed corridor. Expose it only when the complete
+// bounded swipe lies inside the original native photo, including its hit margin.
+function recoveryGeometry(visible,owner,display,geometry,kids,behindDiscover) {
+ const {discover,skip,originalPhoto}=geometry;
+ const path=node=>{const nodes=[];for(let p=node;p?.tag==='node';p=p.parent)nodes.push(p);return nodes};
+ const passive=n=>n.enabled && n.a.clickable==='false' && !['long-clickable','focusable','focused','checkable','checked','selected','password']
+  .some(k=>n.a[k]==='true') && (n===owner||n.a.scrollable!=='true') && !/(?:Button|EditText|Picker|SeekBar|Spinner|Switch|WebView)$/.test(n.a.class||'');
+ const viewport=bounds(owner),nav=bounds(discover),skipBounds=bounds(skip);
+ const ownerPath=path(owner),navPath=path(discover),skipPath=path(skip);
+ const common=ownerPath.find(n=>navPath.includes(n)&&skipPath.includes(n));
+ if(!common || !['android.view.View','android.widget.FrameLayout'].includes(common.a.class) ||
+    navPath.includes(owner)||skipPath.includes(owner)||!ownerPath.every(passive)||viewport.height<=viewport.width||
+    discover.a.class!=='android.view.View'||skip.a.class!=='android.widget.Button'||skip.a.clickable!=='true'||
+    !skip.enabled||!fullyVisible(skip)||skipBounds.y+skipBounds.height>nav.y)return;
+ const shape=nodes=>nodes.map(n=>[n.a.class,n.a['resource-id']||'',n.a.index||'',n.a['drawing-order']||'']);
+ // Discover can collapse its header as content moves. Bind the scroller's fixed
+ // horizontal edges and bottom, native navigation and named Skip across that change.
+ geometry.recoveryChromeKey=hash(['recovery-discover',shape(ownerPath),viewport.x,viewport.width,viewport.y+viewport.height,
+  shape(navPath),nav,shape(skipPath),skipBounds,label(skip)]);
+ if(!originalPhoto || kids(originalPhoto).length || !fullyVisible(originalPhoto))return;
+ const image=bounds(originalPhoto),lineage=path(originalPhoto);
+ if(image.width!==image.height||!lineage.includes(owner)||!lineage.every(passive))return;
+ const x=Math.floor(image.x+image.width/2)-48,center=image.y+image.height/2,margin=12;
+ let top=Math.ceil(Math.max(image.y,display.y+display.height*.1)+margin);
+ let bottom=Math.floor(Math.min(image.y+image.height,display.y+display.height*.9)-margin);
+ if(x<image.x+margin||x+96>image.x+image.width-margin)return;
+ for(const n of visible){
+  if(lineage.includes(n))continue;
+  const b=bounds(n);
+  if(!b)return;
+  if(x>=b.x+b.width||x+96<=b.x||top>=b.y+b.height+margin||bottom<=b.y-margin)continue;
+  const children=kids(n);
+  if(passive(n)&&(behindDiscover(n,b)||(children.length===1&&passive(children[0])&&behindDiscover(children[0],bounds(children[0])))))continue;
+  if(b.y+b.height+margin<=center)top=Math.max(top,b.y+b.height+margin);
+  else if(b.y-margin>=center)bottom=Math.min(bottom,b.y-margin);
+  else return;
+ }
+ // Android caps a bounded drag at 72% of its surface. Keep enough room for
+ // a .36-profile swipe, or at least a third of a large photo, whichever fits.
+ const minMotion=Math.max(120,Math.min(display.height*.65*.36,image.height*.35));
+ if((bottom-top)*.72<minMotion)return;
+ geometry.recoveryDrag={surface:{x,y:top,width:96,height:bottom-top},chromeKey:geometry.recoveryChromeKey};
+}
 // Options and their Like are interactive, so only the heading and the blank space above
 // the choices can supply a drag surface. An unobscured photo or prompt keeps precedence.
 function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
@@ -188,6 +231,7 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
   return lower>0 && lower<upper && kids(common).filter(layer=>order(layer)===lower).length===1 &&
    kids(common).filter(layer=>order(layer)===upper).length===1;
  };
+ recoveryGeometry(visible,owner,display,geometry,kids,behindDiscover);
  const candidates=[], headingBackdrops=new Map(), measurementOnly=new Map();
  // Read-only landmarks are never input targets. The passive text and decorative
  // native Button must be the sole children of this known, selectable option.
@@ -249,7 +293,7 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
  geometry.newChoiceLane=candidates[0].clipped;
  return candidates[0].bounds;
 }
-function discoverScrollSurfaces(visible, discover, media) {
+function discoverScrollSurfaces(visible, discover, media, skip, originalPhoto) {
  const tab = bounds(discover);
  if (!tab) return {review:null};
  // The full-width profile scroller shares its lower edge with the Discover navigation.
@@ -264,11 +308,12 @@ function discoverScrollSurfaces(visible, discover, media) {
  });
  let root = discover;
  while (root.parent?.tag === 'node') root = root.parent;
- const geometry={discover,wheelPoint:null,scrollFrame:null,newChoiceLane:false};
+ const geometry={discover,skip,originalPhoto,wheelPoint:null,scrollFrame:null,newChoiceLane:false};
  return {
   // Existing reviews use an explicit surface only when a banner compresses the viewport.
   compressed:compressed.length ? mediaScrollSurface(visible, media, compressed, root, false) : undefined,
   review:discover.enabled && fullyVisible(discover) ? mediaScrollSurface(visible, media, owners, root, geometry) : null,
+  recoveryChromeKey:geometry.recoveryChromeKey,recoveryDrag:geometry.recoveryDrag,
   wheelPoint:geometry.wheelPoint,scrollFrame:geometry.scrollFrame,newChoiceLane:geometry.newChoiceLane
  };
 }
@@ -524,17 +569,20 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const unknownControl=visible.find(n => n.enabled && n.a.clickable === 'true' && /Button$/.test(n.a.class || '') && !allowedLabels.has(label(n)) && !friendTake(n) && n !== skips[0]);
  if (unknownControl) return block('Unrecognized profile control: '+(label(unknownControl).slice(0,80)||'(unlabeled)')+'.');
  result.kind = 'profile';
- const surfaces = discoverScrollSurfaces(visible, nav[0], [...pictures, ...staticPrompts]);
- if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;
- result.reviewScrollSurface = surfaces.review;
- result.reviewNewChoiceLane = surfaces.newChoiceLane===true;
- result.reviewWheelPoint = surfaces.wheelPoint || null;
- result.reviewScrollFrame = surfaces.scrollFrame || null;
  const likes = [...find('Like photo'),...find('Like photo prompt')];
  result.photos = pictures.map(n => {
   const b = bounds(n); const matching = likes.filter(l => { const p = bounds(l); return sharesPhotoCard(n, l) && p && p.x >= b.x && p.y >= b.y && p.x + p.width <= b.x + b.width && p.y + p.height <= b.y + b.height; });
   return { key: hash(['photo', label(n), b]), bounds: b, revealDirection: photoRevealDirection(n), like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
  });
+ const originalPhoto=pictures.length===1&&result.photos[0].like?pictures[0]:null;
+ const surfaces = discoverScrollSurfaces(visible,nav[0],[...pictures,...staticPrompts],skips[0],originalPhoto);
+ if(surfaces.recoveryChromeKey)result.recoveryChromeKey=surfaces.recoveryChromeKey;
+ if(surfaces.recoveryDrag)result.recoveryDrag=surfaces.recoveryDrag;
+ if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;
+ result.reviewScrollSurface = surfaces.review;
+ result.reviewNewChoiceLane = surfaces.newChoiceLane===true;
+ result.reviewWheelPoint = surfaces.wheelPoint || null;
+ result.reviewScrollFrame = surfaces.scrollFrame || null;
  result.prompts=staticPrompts.map(n=>{
   const b=bounds(n),matching=find('Like prompt').filter(button=>{
    const p=bounds(button);

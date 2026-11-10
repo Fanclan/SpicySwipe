@@ -645,3 +645,59 @@ test('alternate Discover can cross only the clear heading and padding of an owne
  assert.deepEqual(edge.reviewWheelPoint,{x:245,y:268});
  assert.equal(edge.reviewScrollFrame,null,'a viewport-clipped label may resize during motion');
 });
+
+function recoveryScene({moved=false,other='',backOrder=2,backAttr='',photoBlock='',ownerAttr='',otherOwner=false,
+ name='Sample',skipBox='[40,948][164,1072]',tab='Discover',clipped=false,ownerId='discover-list',includeLike=true,header=355}={}){
+ const rect='[0,0][720,1280]',photoBounds=clipped?'[40,355][680,910]':'[40,355][680,995]';
+ const node=(cls,box,props,body='')=>'<node class="android.'+cls+'" bounds="'+box+'" '+props+'>'+body+'</node>';
+ const view=(box,props,body)=>node('view.View',box,'clickable="false" '+props,body);
+ const chrome=view('[0,1112][144,1232]','selected="true" focusable="true"',view('[0,1112][144,1232]','content-desc="'+tab+'"',''))+
+  node('widget.Button',skipBox,'clickable="true" content-desc="Skip '+name+'"');
+ const photo=()=>node('widget.ImageView',photoBounds,'clickable="false" content-desc="'+name+'&apos;s photo"');
+ const like=node('widget.Button','[551,868][650,965]','clickable="true" content-desc="Like photo"');
+ const card=view(photoBounds,'',view(photoBounds,'',view(photoBounds,'',photo())+photoBlock+(includeLike?like:'')));
+ const prompt=view('[40,360][680,800]','',view('[40,360][680,800]','content-desc="Prompt: Weekend activity. Answer: Reading."','')+
+  node('widget.Button','[551,665][650,765]','clickable="true" content-desc="Like prompt"'));
+ const owner=view('[0,'+header+'][720,1112]','scrollable="true" resource-id="'+ownerId+'" '+ownerAttr,moved?prompt:card);
+ const front=node('widget.FrameLayout',rect,'clickable="false" drawing-order="3"',view(rect,'',owner+chrome+other+(otherOwner?owner:'')));
+ const back=node('view.ViewGroup',rect,'clickable="false" '+(backOrder===null?'':'drawing-order="'+backOrder+'"'),
+  view(rect,backAttr,''));
+ return '<hierarchy>'+node('view.ViewGroup',rect,'clickable="false" package="co.hinge.app"',front+back)+'</hierarchy>';
+}
+
+test('original square photo exposes a bounded passive recovery drag and continuous Discover chrome',()=>{
+ const readScene=opts=>read(recoveryScene(opts),{photoIdentity:'0123456789abcdef'});
+ const source=readScene({});assert.equal(source.kind,'profile');assert.match(source.recoveryChromeKey,/^[a-f0-9]{64}$/);
+ assert.equal(source.recoveryDrag?.chromeKey,source.recoveryChromeKey);
+ const lane=source.recoveryDrag.surface,photo=source.photos[0].bounds;
+ assert.ok(lane.width>=96&&lane.height>=120);
+ assert.ok(lane.x>=photo.x&&lane.y>=photo.y&&lane.x+lane.width<=photo.x+photo.width&&lane.y+lane.height<=photo.y+photo.height);
+ const moved=readScene({moved:true,header:137});
+ assert.equal(moved.kind,'profile');assert.equal(moved.prompts[0]?.like?.label,'Like prompt');
+ assert.equal(moved.recoveryDrag,undefined);assert.equal(moved.recoveryChromeKey,source.recoveryChromeKey);
+ for(const opts of [{name:'Other'},{skipBox:'[42,948][166,1072]'},{ownerId:'different-list'}])
+  assert.notEqual(readScene(opts).recoveryChromeKey,source.recoveryChromeKey);
+ for(const opts of [{otherOwner:true},{tab:'Standouts'},{ownerAttr:'focusable="true"'}])assert.equal(readScene(opts).recoveryChromeKey,undefined);
+});
+
+test('recovery does not cross unknown z-order, covered or incomplete media, or actionable layers',()=>{
+ const readScene=opts=>read(recoveryScene(opts),{photoIdentity:'0123456789abcdef'});
+ const overlay=(attrs,rect='[349,652][380,700]')=>'<node class="android.view.View" bounds="'+rect+'" '+attrs+'/>';
+ for(const opts of [
+  {backOrder:3},{backOrder:4},{backOrder:null},{backAttr:'focusable="true"'},{backAttr:'content-desc="Passive unknown overlay"'},
+  {other:overlay('clickable="false"')},{other:overlay('clickable="true"')},{other:overlay('clickable="false" scrollable="true"')},
+  {other:overlay('clickable="false"','invalid')},{photoBlock:overlay('clickable="false"')},
+  {clipped:true},{includeLike:false}
+ ])assert.equal(readScene(opts).recoveryDrag,undefined,JSON.stringify(opts));
+});
+
+test('a recovery drag stays inside the useful clear interval around the photo center',()=>{
+ const overlay='<node class="android.view.View" clickable="false" bounds="[210,882][511,995]"/>';
+ const source=read(recoveryScene({other:overlay}),{photoIdentity:'0123456789abcdef'});
+ const surface=source.recoveryDrag?.surface;assert.ok(surface);
+ assert.ok(surface.y+surface.height<=882-12,'input and its contact margin end before the passive overlay');
+ assert.ok(Math.min(1280*.65*.36,surface.height*.72)>=224,'the bounded gesture still moves through substantial photo content');
+ const short=overlay.replace('[210,882][511,995]','[210,720][511,995]')+
+  '<node class="android.view.View" clickable="true" bounds="[215,355][498,615]"/>';
+ assert.equal(read(recoveryScene({other:short}),{photoIdentity:'0123456789abcdef'}).recoveryDrag,undefined);
+});

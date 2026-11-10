@@ -97,7 +97,13 @@ class MobileController{
     (hint.promptMovesRemaining!==undefined&&(!hint.promptScan||!Number.isInteger(hint.promptMovesRemaining)||hint.promptMovesRemaining<0||hint.promptMovesRemaining>promptMoveLimit))||
     typeof hint.attempted!=='boolean'||(hint.runId!==undefined&&!(typeof hint.runId==='string'&&hint.runId.length>0))||
     !(Number.isFinite(hint.endsAt)||(hint.endsAt===null&&hint.runId))||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
-  this.rejectedPhoto=hint||null;
+  if(hint?.promptRecovery!==undefined){
+   const r=hint.promptRecovery;
+   if(!r||!hint.runId||!hint.attempted||hint.promptScan!=='spent'||hint.promptMovesRemaining!==0||
+      !/^[a-f0-9]{64}$/.test(r.chromeKey)||typeof r.opened!=='boolean'||(r.bound!==undefined&&r.bound!==true)||
+      (r.candidate!==undefined&&!/^[a-f0-9]{64}$/.test(r.candidate))||(r.opened&&!r.candidate))throw Error('Invalid rejected photo prompt recovery.');
+  }
+  this.rejectedPhoto=hint||null;this.heldPromptRefresh=null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
   this.loadingFeedRelaunched=saved.loadingFeedRelaunched??false;
   this.nextHomeLaunchAt=saved.nextHomeLaunchAt??0;
@@ -154,6 +160,8 @@ class MobileController{
   }:undefined;
   await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal),beforeStop);
   this.assert(t,valid);
+  // Unlike a cooldown reservation, this receipt follows an acknowledged native relaunch.
+  if(held)this.heldPromptRefresh={hint:held,epoch:this.session.epoch,until:this.nextFeedRefreshAt};
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
    if(s.kind!=='blocked')return s;
@@ -190,6 +198,71 @@ class MobileController{
   }
   if(after.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
   return this.heldInventoryScreen(after,hint)?waiting:{retryAfter:1000,phase:'checking next profile'};
+ }
+ async recoverRefreshedPrompt(s,hint,t,valid,commit){
+  const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
+  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&
+   Boolean(hint.runId&&this.binding?.avd&&this.isManagedPhone(this.binding))&&this.config.swipe.scrollProfile&&this.session.config.scrollProfile;
+  const official=card=>this.observedForeground==='co.hinge.app'&&card.kind==='profile'&&card.name&&nameDigest(card.name)===hint.nameDigest&&
+   card.screenKey&&!card.composerText?.trim()&&!card.controls?.composer&&!card.controls?.sendLike;
+  const restored=card=>official(card)&&exactRejectedSource(card,hint)&&hint.heldRevision!==card.screenKey&&hint.heldIdentity!==card.identity&&
+   !card.prompts?.length&&card.recoveryDrag?.surface&&/^[0-9a-f]{64}$/.test(card.recoveryChromeKey)&&card.recoveryDrag.chromeKey===card.recoveryChromeKey;
+  if(!owned()||!official(s))return null;
+  const refresh=this.heldPromptRefresh;
+  const acknowledged=refresh?.hint===hint&&refresh.epoch===epoch&&this.session.now()<refresh.until;
+  let r=hint.promptRecovery,before;
+  if(!r){
+   if(!acknowledged||!restored(s))return null;
+   await this.consent(t);await this.verifyBinding(t);before=await this.fresh(s,t,owned);
+   if(!owned()||!restored(before)||before.recoveryChromeKey!==s.recoveryChromeKey||
+      !['x','y','width','height'].every(k=>before.recoveryDrag.surface[k]===s.recoveryDrag.surface[k])||this.session.now()>=refresh.until)return waiting;
+   // Charge before issuing the nonvoting gesture. A restart can observe its result but cannot replay it.
+   this.heldPromptRefresh=null;
+   r=hint.promptRecovery={chromeKey:before.recoveryChromeKey,opened:false};this.persist();
+   await this.android.scrollProfile({surface:before.recoveryDrag.surface,fraction:.36,duration:450,direction:'up'},owned);
+   await this.pauseFor(450,t);this.assert(t,owned);s=await this.read(t);this.assert(t,owned);
+  }
+  if(!official(s))return waiting;
+  if(!before&&acknowledged){
+   // Only a later inventory relaunch can release a same-name card to the ordinary independent review.
+   // An unrelated-looking card immediately after our drag cannot supply that evidence.
+   const independent=card=>{
+    const photo=card.photos?.[0];
+    return official(card)&&card.identity&&card.controls?.skip?.label==='Skip '+card.name&&
+     ![hint.heldIdentity,hint.entryIdentity,hint.sourceIdentity].includes(card.identity)&&card.screenKey!==hint.heldRevision&&
+     card.photos?.length===1&&photoFingerprint(photo.visual)&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
+     photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height&&![hint.visual,hint.entryVisual].some(other=>matchesFingerprint(photo,other,12));
+   };
+   if(independent(s))return independent(await this.fresh(s,t,owned))?null:waiting;
+  }
+  const sameChrome=s.recoveryChromeKey===r.chromeKey,prompt=sameChrome&&uniqueNativePrompt(s);
+  const seal=(card,p)=>createHash('sha256').update(JSON.stringify([card.identity,card.screenKey,p.key,p.text,p.like.key])).digest('hex');
+  const photos=s.photos||[],linked=photos.length===1&&(photos[0].visual===hint.visual||
+   (before&&sameScrollPhoto(scrollPhotos.get(before.photos[0]),scrollPhotos.get(photos[0]))));
+  if(prompt&&!r.opened&&(r.candidate?seal(s,prompt)===r.candidate:linked)){
+   r.candidate=seal(s,prompt);this.persist();
+   const card=await this.fresh(s,t,owned),target=uniqueNativePrompt(card);
+   if(!official(card)||card.recoveryChromeKey!==r.chromeKey||!target||seal(card,target)!==r.candidate)return waiting;
+   this.assert(t,owned);hint.heldIdentity=card.identity;hint.heldRevision=card.screenKey;r.opened=true;r.bound=true;this.persist();
+   this.selectedPhoto=null;this.selectedPrompt={...target,type:'prompt'};
+   this.reviewContext={identity:card.identity,screenKey:card.screenKey,alternate:hint,promptScan:true,expectedTarget:this.selectedPrompt,
+    context:{name:card.name,bio:card.context?.bio||'',history:[]}};
+   // submitLike replaces the photo guard with the ordinary durable vote reservation before the final tap.
+   const current=()=>owned()||(valid()&&this.session.epoch===epoch&&this.lastAction?.kind==='like'&&
+    this.lastAction.runId===hint.runId&&this.lastAction.identity===card.identity);
+   await this.act('like',t,current,commit,card);
+   return {retryAfter:1000,phase:'checking next profile'};
+  }
+  if(this.heldInventoryScreen(s,hint))return null;
+  // An unchanged named Discover header can anchor an inventory check, never a vote on this endpoint.
+  if((acknowledged||(!r.bound&&(before||sameChrome)))&&(s.controls?.skip?.label==='Skip '+s.name||(!s.identity&&s.context?.name===s.name))){
+   const fresh=await this.fresh(s,t,owned);
+   if(official(fresh)&&fresh.recoveryChromeKey===s.recoveryChromeKey){
+    if(acknowledged)this.heldPromptRefresh=null;
+    hint.heldIdentity=fresh.identity||null;hint.heldRevision=fresh.screenKey;r.bound=true;this.persist();
+   }
+  }
+  return waiting;
  }
  async waitForDiscover(s,t,valid,sleep){
   const session=this.session,epoch=session.epoch,runId=session.runId,pending=this.lastAction,avd=this.binding?.avd;
@@ -265,6 +338,9 @@ class MobileController{
      &&c.allowBackground&&this.session.status==='running'&&this.isManagedPhone(this.binding)){
     return await this.recoverFromHome(t,valid);
    }
+   if(this.heldPromptRefresh&&observed.kind!=='feedLoading'&&
+      !(observed.kind==='profile'&&this.heldPromptRefresh.hint.promptRecovery)&&
+      !this.heldInventoryScreen(observed,this.heldPromptRefresh.hint))this.heldPromptRefresh=null;
    if(this.platform==='hinge'&&observed.kind==='feedLoading')return await this.waitForDiscover(observed,t,valid,sleep);
    if(observed.kind==='feedError')return await this.retryFeed(observed,t,valid);
    if(this.lastAction){
@@ -274,6 +350,10 @@ class MobileController{
     return waiting;
    }
    const held=this.exhaustedReview(t);
+   if(held&&(held.promptRecovery||this.heldPromptRefresh?.hint===held)){
+    const recovery=await this.recoverRefreshedPrompt(observed,held,t,valid,commit);
+    if(recovery)return recovery;
+   }
    if(held&&this.heldInventoryScreen(observed,held))return await this.checkHeldInventory(observed,held,t,valid,sleep);
    if(observed.kind==='empty'){
     try{observed=await this.refreshEmpty(observed,t,valid)}catch(error){
