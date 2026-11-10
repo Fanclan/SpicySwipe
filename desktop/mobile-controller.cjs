@@ -616,11 +616,16 @@ class MobileController{
  async footerBumble(kind,original,t,valid,commit){
   if(this.config.mode!=='like')throw Error('Choose plain Likes for Bumble.');
   let s=await this.fresh(original.reviewEndpoint||original,t,valid);const key=kind==='like'?'profileLike':'profilePass';
+  const {swipe,scrollMax}=this.config,run=this.session;
+  const directToFooter=original.reviewEndpoint&&run.status==='running'&&this.isManagedPhone(this.binding)&&
+   !swipe.browsePhotos&&!run.config.browsePhotos&&(scrollMax===0||(!swipe.scrollProfile&&!run.config.scrollProfile));
   for(let i=0;!s.controls?.[key]&&i<24;i++){
    if(s.footerScrollSurface)s=await this.repositionBumbleFooter(s,t,valid);
    else{
-    this.assert(t,valid);await this.android.scrollProfile({fraction:.65,direction:'up',duration:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
-    await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
+    this.assert(t,valid);await this.android.scrollProfile({fraction:.65,direction:'up',duration:directToFooter?250:400},()=>{try{this.assert(t,valid);return true}catch{return false}});
+    // UIAutomator waits for idle when reading the new viewport.
+    if(!directToFooter)await this.pauseFor(450,t);
+    this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
    }
    if(s.kind!=='profile'||s.actionStrategy!=='footer')throw transientError('Bumble footer review was interrupted.');
    if((s.name&&s.name!==original.name)||(s.profileDiscriminator&&original.profileDiscriminator&&s.profileDiscriminator!==original.profileDiscriminator))throw transientError('Bumble profile changed during footer review.');
