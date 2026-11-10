@@ -68,7 +68,18 @@ class MobileController{
   this.resumeRevision=0;this.coldControl=null;
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),{session:true}),changed:()=>this.notify()});
  }
- snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.resumeRevision,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
+ snapshot(){
+  const offer=this.currentSkipOffer(),session=this.session.snapshot(),hasPendingAction=Boolean(this.lastAction);
+  let reason=this.reason||'';
+  if(hasPendingAction&&['complete','error'].includes(session.status)){
+   // A terminal worker can still own a slot reserved before native dispatch.
+   session.count=Math.max(session.count,this.reservedCount);
+   reason=this.storageError||session.error||reason||'The session ended. The final action is unconfirmed.';
+  }else if(hasPendingAction&&!reason&&session.phase==='verifying previous action'){
+   reason='The previous action is still being verified. No duplicate Like will be sent.';
+  }
+  return {hasPendingAction,pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.resumeRevision,session,screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason};
+ }
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,...(this.rejectedPhoto?{rejectedPhoto:this.rejectedPhoto}:{}),recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
  notify(){
@@ -412,10 +423,12 @@ class MobileController{
  }
  pendingWait(error){
   this.session.count=Math.max(this.session.count,this.reservedCount);
-  if(this.session.reachedProfileLimit())this.session.finish('limit');
-  const operation=error?.diagnostics?.operation;
   if(error)this.skipOffer=null;
-  this.reason='The previous action is still being verified. No duplicate Like will be sent.'+(operation?' Recovering '+operation+'.':'');
+  const operation=error?.diagnostics?.operation;
+  this.reason=operation?'The previous action remains unconfirmed after '+operation+' failed.':'';
+  if(this.session.reachedProfileLimit()){
+   this.session.finish('limit');this.persist();return;
+  }
   this.persist();return {retryAfter:30000,phase:'verifying previous action'};
  }
  // A Like guard can survive a restart. Permission to Skip belongs only to one live observation.

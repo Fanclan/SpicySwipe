@@ -174,7 +174,10 @@
       el('photo').textContent = s ? state.selectedPrompt ? 'Selected visible text prompt: ready' : photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
       el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'Waiting for new profiles. The session will check again automatically.' : s?.reason) || '';
       const limit = session.limit === undefined || session.status === 'idle' ? field('maxSwipes').value : session.limit;
-      const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} issued profile actions`;
+      const actionLabel = state.hasPendingAction && ['complete', 'error'].includes(session.status)
+        ? 'recorded profile actions · Last action unconfirmed'
+        : 'issued profile actions';
+      const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} ${actionLabel}`;
       const hingeWaitLabel = active && current === 'hinge' && ({
         'waiting for another profile': 'No verified Like target on this profile',
         'waiting to reopen Discover': 'Waiting to reopen Discover'
