@@ -1,5 +1,6 @@
 'use strict';
 const {createHash,randomUUID}=require('node:crypto');
+const {isDeepStrictEqual}=require('node:util');
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
 const {sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
@@ -64,7 +65,7 @@ class MobileController{
   if(!['hinge','bumble'].includes(platform))throw Error('Unknown mobile platform.');
   Object.assign(this,{android,service,platform,changed,random,wait,photoHashes,readEvidence,checkpointStore,recoverDevice,isManagedPhone});this.readFailures=0;this.nextFeedRefreshAt=0;this.nextFeedRetryAt=0;this.nextHomeLaunchAt=0;this.loadingFeedRelaunched=false;this.binding=null;this.reservedCount=0;this.recoveryAttempts=0;this.readScreen=readScreen||require('./mobile-screen.cjs').readScreen;
   this.config=Config.normalize();this.screen=null;this.draft=null;this.selectedPhoto=null;this.selectedPrompt=null;this.queue=Promise.resolve();this.epoch=0;this.busy=false;this.loaded=false;this.loading=null;this.reviewContext=null;this.visible=true;this.lastAction=null;this.openerAttempts=new Set();this.openerArmed=false;this.watchPending=false;this.abort=new AbortController();
-  this.resumeRevision=0;
+  this.resumeRevision=0;this.coldControl=null;
   this.session=new Session({random,wait,act:(c,valid,commit,sleep)=>this.enqueue(token=>this.sessionStep(c,valid,commit,sleep,token),{session:true}),changed:()=>this.notify()});
  }
  snapshot(){const offer=this.currentSkipOffer();return {pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.resumeRevision,session:this.session.snapshot(),screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason:this.reason||''}}
@@ -475,7 +476,24 @@ class MobileController{
  }
  async load(t){
   if(!this.loaded){
-   if(!this.loading)this.loading=this.service.request('load').then(s=>{this.config=Config.normalize(s.mobileConfig?.[this.platform]||{});this.restoreCheckpoint(this.checkpointStore?.read());this.loaded=true;this.persist()}).finally(()=>{this.loading=null});
+   if(!this.loading)this.loading=(async()=>{
+    const s=await this.service.request('load');
+    const saved=this.checkpointStore?.read();
+    this.config=Config.normalize(s.mobileConfig?.[this.platform]||{});this.restoreCheckpoint(saved);
+    const control=this.coldControl;
+    if(control?.stop)this.session.stop();
+    if(control)this.reason=control.reason;
+    this.loaded=true;
+    // A passive restore of the same record must preserve the original file.
+    // Explicit controls still write even if they repeat a saved Pause.
+    try{
+     if(this.checkpointStore&&(control||!isDeepStrictEqual(saved,this.checkpoint())))this.persist();
+     if(!control&&!this.visible&&!this.config.swipe.allowBackground)this.invalidate('Paused while the app is hidden.');
+    }catch(error){this.loaded=false;throw error}
+   })().finally(()=>{
+    // A later retry can encounter a repaired or replaced checkpoint.
+    this.coldControl=null;this.loading=null;
+   });
    await this.loading;
   }
   if(t)this.assert(t);
@@ -1058,8 +1076,21 @@ class MobileController{
  async request(action,data={}){
   if(action==='status'){await this.load();return this.snapshot()}
   if(action==='watch')return this.watch();
-  if(action==='pause'||action==='stop'){this.invalidate(action==='stop'?'Stopped.':'Paused.',{stop:action==='stop'});return this.snapshot()}
-  if(action==='visibility'){this.visible=data.visible===true;if(!this.visible&&!this.config.swipe.allowBackground)this.invalidate('Paused while the app is hidden.');return this.snapshot()}
+  if(action==='pause'||action==='stop'){
+   const stop=action==='stop',reason=stop?'Stopped.':'Paused.';
+   // Abort pending work immediately. The first restore also applies this intent
+   // to the saved run before acknowledging it. Pause after Stop leaves it idle.
+   if(!this.loaded)this.coldControl={stop:stop||this.coldControl?.stop===true,reason};
+   this.invalidate(reason,{stop});if(!this.loaded)await this.load();return this.snapshot();
+  }
+  if(action==='visibility'){
+   this.visible=data.visible===true;
+   if(!this.visible){
+    if(!this.loaded)await this.load();
+    else if(!this.config.swipe.allowBackground)this.invalidate('Paused while the app is hidden.');
+   }
+   return this.snapshot();
+  }
   const guarded=action==='start'&&Object.hasOwn(data??{},'resumeRunId');
   if(guarded&&(typeof data.resumeRunId!=='string'||!data.resumeRunId.trim()))throw Error('A valid resume run ID is required.');
   if(action==='start'&&Object.hasOwn(data??{},'expectedResumeEpoch')&&
