@@ -762,6 +762,29 @@ class MobileController{
    (this.visible||(this.config.swipe.allowBackground&&this.session.config.allowBackground));
   return owned;
  }
+ nativePhotoSource(s,photo){
+  const b=photo?.bounds,l=photo?.like;
+  return this.observedForeground==='co.hinge.app'&&s.platform==='hinge'&&s.kind==='profile'&&Boolean(s.identity&&s.screenKey&&s.name)&&
+   s.controls?.skip?.label==='Skip '+s.name&&Boolean(s.controls.skip.key)&&!s.controls?.composer&&!s.controls?.sendLike&&!s.composerText?.trim()&&
+   Boolean(photo?.key&&l?.key)&&photoFingerprint(photo.visual)&&!photo.text&&!photo.revealDirection&&
+   ['Like photo','Like photo prompt'].includes(l.label)&&b?.width>=160&&b.width===b.height&&
+   s.photos?.filter(p=>p.key===photo.key&&p.like?.key===l.key).length===1;
+ }
+ nativePhotoForm(form,original){
+  return form.platform==='hinge'&&form.kind==='like'&&form.nativePhotoForm===true&&Boolean(form.identity)&&form.name===original.name&&
+   form.photos?.length===1&&!form.prompts?.length&&form.composerTextVerified===true&&form.composerText===''&&
+   Boolean(form.controls?.composer&&form.controls?.comment)&&['Send like','Send priority like'].includes(form.controls?.sendLike?.label);
+ }
+ async tapNativePhoto(s,photo,t,owned,proof){
+  const current=await this.fresh(s,t,owned),target=current.photos?.find(p=>p.key===photo.key&&p.like?.key===photo.like.key);
+  if(!this.nativePhotoSource(current,target)||(proof&&!samePreviewSourceFrame(proof,previewPhotos.get(target))))throw alternativeUnavailable();
+  const unchanged=()=>owned()&&this.screen===current&&this.nativePhotoSource(current,target);
+  this.assert(t,unchanged);
+  const acknowledged=await this.android.tapControl(target.like.bounds,()=>{try{this.assert(t,unchanged);return true}catch{return false}});
+  if(acknowledged?.ok!==true)throw transientError('The photo opener acknowledgement is unavailable.');
+  // Only successful completion of this opener can authorize its new form.
+  this.assert(t,unchanged);
+ }
  async tapPreviewSource(s,photo,proof,t,owned){
   const current=await this.fresh(s,t,owned),target=current.photos?.find(p=>p.key===photo.key&&p.like?.key===photo.like.key);
   if(!target||!samePreviewSourceFrame(proof,previewPhotos.get(target)))throw alternativeUnavailable();
@@ -786,10 +809,12 @@ class MobileController{
   const source=card=>owned()&&this.heldInventoryScreen(card,hint)&&exactRejectedEntry(card,hint)&&
    card.photos?.length===1&&!card.prompts?.length&&card.photos[0].bounds?.width===card.photos[0].bounds?.height&&
    !card.photos[0].revealDirection&&['Like photo','Like photo prompt'].includes(card.photos[0].like?.label)&&
-   /^[a-f0-9]{64}$/.test(card.recoveryChromeKey||'')&&hasSourcePreviewProof(previewPhotos.get(card.photos[0]));
+   /^[a-f0-9]{64}$/.test(card.recoveryChromeKey||'')&&(this.nativePhotoSource(card,card.photos[0])||hasSourcePreviewProof(previewPhotos.get(card.photos[0])));
   if(hint.previewVerification||hint.entryPromptScan!==true||!acknowledged()||!source(s))return null;
   await this.consent(t);await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
   if(!acknowledged()||!source(before)||before.recoveryChromeKey!==s.recoveryChromeKey||
+     (!(this.nativePhotoSource(s,s.photos[0])&&this.nativePhotoSource(before,before.photos[0]))||
+      hasSourcePreviewProof(previewPhotos.get(s.photos[0]))||hasSourcePreviewProof(previewPhotos.get(before.photos[0])))&&
      !samePreviewSourceFrame(previewPhotos.get(s.photos[0]),previewPhotos.get(before.photos[0])))return {retryAfter:30000,phase:'waiting for another profile'};
   // This receipt spends one nonvoting opener. It never replenishes the old navigation budgets.
   hint.previewVerification={version:1,sourceRevision:before.screenKey,chromeKey:before.recoveryChromeKey};this.persist();
@@ -1162,7 +1187,7 @@ class MobileController{
    const skip=s.controls.skip;
    const overlay=automaticPlainLike&&skip?.label==='Skip '+s.name?skip.bounds:null;
    const photos=(s.photos||[]).filter(p=>p.like&&(!overlapsPhotoPatch(p.bounds,overlay)||
-    (automaticPlainLike&&this.previewLikeEligible()&&hasSourcePreviewProof(previewPhotos.get(p)))));
+    (automaticPlainLike&&this.previewLikeEligible()&&(this.nativePhotoSource(s,p)||hasSourcePreviewProof(previewPhotos.get(p))))));
    const prompts=(s.prompts||[]).filter(p=>p.like).map(p=>({...p,type:'prompt'}));
    if(alternate){
     if(!s.identity)return [];
@@ -1214,7 +1239,7 @@ class MobileController{
   }
   throw Error('Could not confirm the action transition. It will not be retried on this profile.'+(last?.reason?' '+last.reason:''));
  }
- async submitLike(screen,original,t,valid,commit,verifyForm,previewScope=null){
+ async submitLike(screen,original,t,valid,commit,verifyForm,previewScope=null,nativeTransaction=false){
   if(previewScope){await this.consent(t);await this.verifyBinding(t);this.assert(t,valid);}
   const fresh=await this.fresh(screen,t,valid);this.assert(t,valid);
   if(verifyForm&&!verifyForm(fresh))throw alternativeUnavailable();
@@ -1224,13 +1249,15 @@ class MobileController{
    if(this.session.runId)action.runId=this.session.runId;
   }
   if(screen.kind==='likeOffer')action.offerKey=screen.screenKey;
+  const formStamp=nativeTransaction?JSON.stringify(fresh):null;
   this.reserveAction(action);
-  const current=previewScope?()=>previewScope.reserved(action):valid;
+  const reserved=previewScope?()=>previewScope.reserved(action):valid;
+  const current=()=>reserved()&&(!nativeTransaction||(this.screen===fresh&&JSON.stringify(fresh)===formStamp));
   let issued=false;const onIssued=()=>{issued=true};
   try{
    this.assert(t,current);
    await this.android.tapControl(screen.controls.sendLike.bounds,()=>{try{this.assert(t,current);return true}catch{return false}},onIssued);onIssued();
-   this.draft=null;this.assert(t,current);await this.transition(original,t,current,screen.kind!=='likeOffer');
+   this.draft=null;this.assert(t,current);await this.transition(original,t,reserved,screen.kind!=='likeOffer');
   }finally{if(issued){commit();await this.record('like')}}
   return this.snapshot();
  }
@@ -1242,6 +1269,8 @@ class MobileController{
    s=await this.fresh(s,t,valid);if(!distinctBumbleProfile(this.lastAction,s))throw Error('Profile evidence changed; the previous action remains uncertain.');this.lastAction=null;
   }
   if(this.platform==='bumble')return s.actionStrategy==='footer'?this.footerBumble(kind,s,t,valid,commit):this.swipeBumble(kind,s,t,valid,commit);
+  if(s.kind==='like'&&this.platform==='hinge'&&this.loaded&&this.checkpointStore&&this.session.status==='running'&&
+   this.config.mode==='like'&&this.config.swipe.likeRatio===1&&this.session.config.likeRatio===1)throw transientError('A fresh source review and acknowledged opener are required before submitting this form.');
   if(s.kind==='likeOffer')return this.submitLike(s,s,t,valid,commit);
   const selection=prepared?this.reviewContext:null;
   const original=s,reviewContext=this.reviewContext?.identity===s.identity&&this.reviewContext.screenKey===s.screenKey?this.reviewContext.context:null;
@@ -1249,7 +1278,7 @@ class MobileController{
    await this.fresh(s,t,valid);if(!s.controls.skip)throw Error('No supported Skip control.');this.reserveAction({kind:'pass',identity:s.identity,name:s.name});
    let issued=false;try{await this.finalTap(s.controls.skip,t,valid,()=>{issued=true},'pass');this.assert(t,valid);await this.transition(s,t,valid)}finally{if(issued)commit()}return this.snapshot();
   }
-  let verifyForm,previewDispatchScope=null;
+  let verifyForm,previewDispatchScope=null,nativeTransaction=false;
   if(s.kind==='profile'){
    let photo;
    if(selection?.alternate){
@@ -1282,9 +1311,12 @@ class MobileController{
    }
    if(!photo?.like)throw Error('No supported fully visible photo. Scroll or review again before liking.');this.selectedPhoto=photo;
    const previewOwner=this.previewScope(t,valid),proof=previewOwner()&&hasSourcePreviewProof(previewPhotos.get(photo))?previewPhotos.get(photo):null;
+   const nativeSource=Boolean(prepared&&selection&&selection.identity===s.identity&&selection.screenKey===s.screenKey&&
+    (!selection.alternate||selection.previewVerification)&&previewOwner()&&this.nativePhotoSource(s,photo));
    const needsPreview=Boolean(selection?.previewVerification||(proof&&overlapsPhotoPatch(photo.bounds,s.controls?.skip?.bounds)));
-   if(selection?.previewVerification&&!proof)throw alternativeUnavailable();
-   if(proof)await this.tapPreviewSource(s,photo,proof,t,previewOwner);else await this.tap(s,photo.like,t,valid);
+   if(selection?.previewVerification&&!proof&&!nativeSource)throw alternativeUnavailable();
+   if(nativeSource)await this.tapNativePhoto(s,photo,t,previewOwner,proof);
+   else if(proof)await this.tapPreviewSource(s,photo,proof,t,previewOwner);else await this.tap(s,photo.like,t,valid);
    await this.pauseFor(900,t);s=await this.read(t);
    // Native keyboard/form animation can briefly expose conflicting background controls.
    // Reread once, retaining every identity, comment and control check below.
@@ -1305,6 +1337,12 @@ class MobileController{
      throw transientError('Could not verify the reviewed prompt and its blank ordinary Like form.');
     }
    }
+   if(nativeSource)this.assert(t,previewOwner);
+   if(nativeSource){
+    verifyForm=form=>previewOwner()&&this.nativePhotoForm(form,original);
+    if(!verifyForm(s))throw alternativeUnavailable();
+    previewDispatchScope=previewOwner;nativeTransaction=true;
+   }else{
    const samePrompt=photo.text&&s.prompts?.some(p=>p.text===photo.text);
    let samePhoto=photo.visual&&s.photos?.some(p=>hashDistance(photo.visual,p.visual)<=6||hashDistance(photo.visual,p.visualSquare)<=6);
    if(!samePhoto&&!photo.text&&(selection?.alternate||s.identity!==original.identity)&&s.name===original.name&&this.config.mode==='like'&&!this.lastAction&&!this.draft&&s.composerTextVerified===true&&s.composerText===''&&s.controls.sendLike&&s.photos?.length===1){
@@ -1329,6 +1367,7 @@ class MobileController{
     }
     throw transientError("Could not verify the selected profile/photo or prompt in the Like confirmation.");
    }
+   }
   }
   if(s.composerTextVerified===false)throw Error('The comment field cannot be verified. Nothing was sent.');
   if(s.composerText?.trim())throw Error('An existing comment is present. Review or clear it manually first.');
@@ -1336,7 +1375,7 @@ class MobileController{
    if(!s.controls.comment)throw Error('Photo comments are unavailable on this screen or account.');const result=await this.service.request('generate',{context:reviewContext||s.context,options:this.options('Write a short comment about the supplied profile text. Do not describe unseen photo contents. Use printable ASCII, one line only, maximum 120 characters.')});this.assert(t,valid);const text=this.text(result.response,this.platform==='bumble'?150:120);
    this.draft={text,identity:s.identity,serial:t.serial,kind:'like',contextRevision:s.screenKey};await this.tap(s,s.controls.comment,t,valid);let field=await this.read(t);if(field.name!==s.name||field.composerText?.trim())throw Error('Comment field changed or contains unsent text.');if(!field.controls.composer)throw Error('Comment editor is not recognized. Type the draft manually.');await this.tap(field,field.controls.composer,t,valid);await this.android.type(text);this.assert(t,valid);s=await this.read(t);if(s.composerText!==text)throw Error('Inserted comment could not be verified. Nothing was sent.');
   }
-  if(!s.controls.sendLike)throw Error(s.reason||'The ordinary Like confirmation is unsupported; no Like was sent.');return this.submitLike(s,original,t,valid,commit,verifyForm,previewDispatchScope);
+  if(!s.controls.sendLike)throw Error(s.reason||'The ordinary Like confirmation is unsupported; no Like was sent.');return this.submitLike(s,original,t,valid,commit,verifyForm,previewDispatchScope,nativeTransaction);
  }
  options(extra=''){return {tone:this.config.tone,language:this.config.language,length:this.config.length,instruction:[this.config.instruction,extra].filter(Boolean).join('\n')}}
  text(value,max=2000){if(typeof value!=='string'||!value.trim()||value.length>max||!/^[\x20-\x7e]+$/.test(value))throw Error('Android entry requires one line of printable ASCII characters (no emoji), within the message limit.');return value}

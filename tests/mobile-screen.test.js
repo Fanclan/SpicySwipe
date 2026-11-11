@@ -6,6 +6,68 @@ const { readScreen } = require('../desktop/mobile-screen.cjs');
 const profile = fs.readFileSync(path.join(__dirname, 'fixtures/mobile/hinge-profile.xml'), 'utf8');
 const like = fs.readFileSync(path.join(__dirname, 'fixtures/mobile/hinge-like.xml'), 'utf8');
 const read = (xml, options = {}) => readScreen(xml, { platform: 'hinge', foreground: 'co.hinge.app', ...options });
+const {nativePhotoForm}=require('./fixtures/hinge-native-photo-form.cjs');
+
+test('native photo form ownership recognizes shallow and deep clipped previews without pixel matching',()=>{
+ for(const height of [181,271,400]){
+  const s=read(nativePhotoForm({height}),{photoIdentity:'0123456789abcdef',commentText:''});
+  assert.equal(s.kind,'like');assert.equal(s.nativePhotoForm,true);assert.equal(s.photos.length,1);
+  assert.equal(s.photos[0].bounds.height,height);assert.equal(s.controls.sendLike.label,'Send priority like');
+  assert.equal(s.composerTextVerified,true);assert.equal(s.composerText,'');
+ }
+ assert.equal(read(like,{commentText:''}).nativePhotoForm,true);
+ assert.equal(read(profile).nativePhotoForm,undefined);
+});
+
+test('native photo form ownership rejects aligned photos or Send controls outside the selected card',()=>{
+ for(const options of [{detachedPhoto:true},{detachedForm:true},{detachedSend:true},{photoOwner:'Other'}]){
+  const s=read(nativePhotoForm(options),{photoIdentity:'0123456789abcdef',commentText:''});
+  assert.equal(s.kind,'blocked',JSON.stringify(options));assert.equal(s.nativePhotoForm,undefined);assert.equal(s.controls.sendLike,null);
+ }
+ const disabled=nativePhotoForm({detachedSend:true}).replace('content-desc="Send priority like" enabled="true"','content-desc="Send priority like" enabled="false"');
+ assert.equal(read(disabled,{photoIdentity:'0123456789abcdef',commentText:''}).kind,'blocked');
+});
+
+test('native photo form ownership requires inert bounded photo wrappers and a shared bounded comment form',()=>{
+ const xml=nativePhotoForm();
+ const mutations=[
+  xml.replace('resource-id="photo-subtree" class="android.view.View"','resource-id="photo-subtree" class="android.widget.FrameLayout"'),
+  xml.replace('resource-id="photo-visible" class="android.view.View" clickable="false"','resource-id="photo-visible" class="android.view.View" clickable="true"'),
+  xml.replace('resource-id="photo-full" class="android.view.View" clickable="false" scrollable="false"','resource-id="photo-full" class="android.view.View" clickable="false" scrollable="true"'),
+  xml.replace('resource-id="photo-subtree" class="android.view.View" clickable="false" scrollable="false" bounds="[72,137][648,318]"','resource-id="photo-subtree" class="android.view.View" clickable="false" scrollable="false" bounds="[40,137][680,318]"'),
+  xml.replace('resource-id="comment-form" class="android.view.View" clickable="false" scrollable="false" bounds="[40,318][680,608]"','resource-id="comment-form" class="android.view.View" clickable="false" scrollable="false" bounds="[40,319][680,608]"'),
+  xml.replace('bounds="[296,502][648,584]"','bounds="[296,502][700,584]"'),
+ ];
+ for(const candidate of mutations){assert.notEqual(candidate,xml);const s=read(candidate,{photoIdentity:'0123456789abcdef',commentText:''});assert.equal(s.kind,'blocked');assert.equal(s.nativePhotoForm,undefined);}
+});
+
+test('native photo form ownership never supplies ordinary action or blank-text verification by itself',()=>{
+ const xml=nativePhotoForm(), unverified=read(xml,{photoIdentity:'0123456789abcdef'});
+ assert.equal(unverified.nativePhotoForm,true);assert.equal(unverified.controls.sendLike,null);
+ assert.equal(read(xml,{photoIdentity:'0123456789abcdef',commentText:'Unsent draft'}).controls.sendLike,null);
+ for(const candidate of [xml.replace('Send priority like','Send a Rose'),xml.replace('Send priority like','Purchase Like'),xml.replace('Send priority like','Send priority like with message')])assert.equal(read(candidate,{photoIdentity:'0123456789abcdef',commentText:''}).controls.sendLike,null);
+});
+
+test('native photo form ownership cannot survive extra editors, sibling sends, or foreign overlays',()=>{
+ const xml=nativePhotoForm(),extra=content=>xml.replace('</hierarchy>',content+'</hierarchy>');
+ const mutations=[
+  extra('<node class="android.view.View" content-desc="Edit comment" bounds="[72,342][648,478]"/>'),
+  extra('<node class="android.widget.Button" content-desc="Send like" bounds="[296,502][648,584]"/>'),
+  extra('<node class="android.widget.Button" content-desc="Send a Rose" bounds="[296,502][648,584]"/>'),
+  extra('<node class="android.widget.Button" content-desc="Send a Rose" enabled="false" bounds="[296,502][648,584]"/>'),
+  extra('<node package="com.android.systemui" class="android.view.View" bounds="[0,0][720,1280]"/>'),
+  xml.replace('content-desc="Skip Sample"','content-desc="Skip Other"'),
+ ];
+ for(const candidate of mutations){const s=read(candidate,{photoIdentity:'0123456789abcdef',commentText:''});assert.equal(s.kind,'blocked');assert.equal(s.nativePhotoForm,undefined);assert.equal(s.controls.sendLike,null);}
+});
+
+test('native photo form ownership rejects unfamiliar editable or password surfaces',()=>{
+ for(const attrs of ['class="android.widget.EditText"','class="com.example.TextInputEditText"','class="android.view.View" password="true"']){
+  const xml=nativePhotoForm().replace('</hierarchy>','<node '+attrs+' bounds="[72,700][648,800]"/></hierarchy>');
+  const s=read(xml,{photoIdentity:'0123456789abcdef',commentText:''});
+  assert.equal(s.kind,'blocked');assert.equal(s.nativePhotoForm,undefined);assert.equal(s.controls.sendLike,null);
+ }
+});
 
 test('observed Discover profile returns decoded prompts and exact photo/skip bounds', () => {
  const screen = read(profile);

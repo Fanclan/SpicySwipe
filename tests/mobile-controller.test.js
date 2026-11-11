@@ -3047,7 +3047,7 @@ async function previewProofFixture({held=false}={}){
  const opener={...control('Like photo prompt'),bounds:{x:564,y:975,width:96,height:96}},send={...control('Send like'),bounds:{x:200,y:800,width:300,height:80}};
  const source=screen({identity:'preview-entry',screenKey:'entry',photos:[{key:'photo',bounds:sourceBox,like:opener}],prompts:[],
   controls:{skip,like:null,sendLike:null,composer:null,comment:null},recoveryChromeKey:'c'.repeat(64)});
- const form=screen({kind:'like',identity:'preview-form',screenKey:'form',photos:[{key:'preview',bounds:formBox,like:null}],prompts:[],
+ const form=screen({kind:'like',nativePhotoForm:true,identity:'preview-form',screenKey:'form',photos:[{key:'preview',bounds:formBox,like:null}],prompts:[],
   controls:{sendLike:send,composer:control('composer'),comment:control('Edit comment')},composerTextVerified:true,composerText:''});
  const sourceProof=V.previewPhotoEvidence(photoPicture(sourceBox),sourceBox,'profile',[skip.bounds,opener.bounds]);
  const formProof=V.previewPhotoEvidence(photoPicture(formBox),formBox,'like',[]);
@@ -3069,7 +3069,7 @@ async function previewProofFixture({held=false}={}){
  x.c.persist();const original=structuredClone(x.c.rejectedPhoto);
  x.android.refreshFeed=async(_p,valid,_wait,beforeStop)=>{await beforeStop();assert.equal(valid(),true);refreshes++;x.set(source)};
  x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);taps.push(bounds);issued?.();
-  x.set(taps.length===1?form:screen({kind:'empty',identity:null,photos:[],prompts:[],controls:{}}));};
+  x.set(taps.length===1?form:screen({kind:'empty',identity:null,photos:[],prompts:[],controls:{}}));return {ok:true};};
  const step=()=>{const epoch=x.c.session.epoch;return x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(epoch),
   ()=>{commits++;x.c.session.count++},async()=>true,x.c.token())};
  return {...x,source,form,sourceBox,formBox,sourceProof,formProof,wrongProof,opener,send,taps,step,original,
@@ -3108,7 +3108,7 @@ test('preview-proof checkpoint extension is optional, exact and cannot invent a 
  }
 });
 
-test('preview-proof rechecks source pixels before its opener and form pixels immediately before Send',async()=>{
+test('preview-proof rechecks source pixels before its opener and native form ownership immediately before Send',async()=>{
  const V=require('../desktop/mobile-vision.cjs'),{photoPicture,scene}=require('./fixtures/hinge-preview-image.cjs');
  for(const changed of ['source','form']){
   const x=await previewProofFixture({held:true});await x.step();let reads=0;
@@ -3116,7 +3116,7 @@ test('preview-proof rechecks source pixels before its opener and form pixels imm
   const different=V.previewPhotoEvidence(photoPicture(x.sourceBox,(u,v)=>scene(1-u,v)),x.sourceBox,'profile',[x.source.controls.skip.bounds,x.opener.bounds]);
   x.c.readEvidence=async(s,...args)=>{
    if(s.kind===(changed==='source'?'profile':'like')&&++reads===(changed==='source'?3:2)){
-    if(changed==='source')x.setSourceProof(different);else x.setFormProof(x.wrongProof());
+    if(changed==='source')x.setSourceProof(different);else x.form.nativePhotoForm=false;
    }
    return evidence(s,...args);
   };
@@ -3127,9 +3127,8 @@ test('preview-proof rechecks source pixels before its opener and form pixels imm
 });
 
 test('preview-proof rejects unverified, wrong-recipient, message, Rose and nonblank forms without a Send',async()=>{
- for(const mode of ['wrong-image','wrong-name','unverified','typed','Rose','message','prompt','missing-composer']){
+ for(const mode of ['wrong-name','unverified','typed','Rose','message','prompt','missing-composer']){
   const x=await previewProofFixture({held:true});await x.step();const altered=structuredClone(x.form);
-  if(mode==='wrong-image')x.setFormProof(x.wrongProof());
   if(mode==='wrong-name')altered.name='Other';
   if(mode==='unverified')altered.composerTextVerified=false;
   if(mode==='typed')altered.composerText='unsent';
@@ -3137,7 +3136,7 @@ test('preview-proof rejects unverified, wrong-recipient, message, Rose and nonbl
   if(mode==='message')altered.controls.sendLike.label='Send like with message';
   if(mode==='prompt')altered.prompts=[{key:'different',text:'Different item'}];
   if(mode==='missing-composer')altered.controls.composer=null;
-  x.android.tapControl=async(bounds,valid)=>{assert.equal(valid(),true);x.taps.push(bounds);x.set(altered)};
+  x.android.tapControl=async(bounds,valid)=>{assert.equal(valid(),true);x.taps.push(bounds);x.set(altered);return {ok:true}};
   await x.step();await x.step();assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
   assert.equal(x.saved().session.count,96);assert.equal(x.saved().pendingAction,null);
  }
@@ -3194,11 +3193,11 @@ test('preview-proof keeps the old receipt when persistence fails before its one 
 test('preview-proof honors consent and configuration changes while the preview is open',async()=>{
  for(const mode of ['consent','config','run','input']){
   const x=await previewProofFixture({held:true});await x.step();const tap=x.android.tapControl;
-  x.android.tapControl=async(...args)=>{await tap(...args);
+  x.android.tapControl=async(...args)=>{const result=await tap(...args);
    if(mode==='consent')x.settings({sidebarConsentGiven:false,mobileConfig:{}});
    if(mode==='config')x.c.config.autoSend=true;
    if(mode==='run')x.c.session.runId='new-run';
-   if(mode==='input')x.android.cancelInput();
+   if(mode==='input')x.android.cancelInput();return result;
   };
   await x.step().catch(()=>{});assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
   assert.equal(x.saved().pendingAction,null,mode);assert.equal(x.saved().session.count,96,mode);
@@ -3208,7 +3207,7 @@ test('preview-proof honors consent and configuration changes while the preview i
 test('preview-proof final Like reserves the next original slot once and retains an uncertain Send guard',async()=>{
  const x=await previewProofFixture({held:true});await x.step();
  x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);x.taps.push(bounds);
-  if(!issued){x.set(x.form);return}
+  if(!issued){x.set(x.form);return {ok:true}}
   assert.equal(x.saved().session.count,97);assert.equal(x.saved().pendingAction.kind,'like');
   assert.equal(x.saved().rejectedPhoto,undefined);issued();throw Object.assign(Error('Send acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
  };
@@ -3225,6 +3224,7 @@ test('preview-proof keeps old screen hashes and rechecks final native overlay ow
  const unbound=V.previewPhotoEvidence(photoPicture(x.sourceBox),x.sourceBox,'profile',[]);
  x.c.readEvidence=async(...args)=>({...await evidence(...args),previewEvidence:[unbound]});
  const blocked={...x.source,controls:{...x.source.controls,skip:{...x.source.controls.skip,bounds:{x:240,y:940,width:100,height:100}}}};
+ x.c.config.autoOpeners=true; // Outside native all-profile mode, existing pixel/overlay proof still governs.
  x.set(blocked);await x.step();assert.deepEqual(x.taps,[]);assert.equal(x.commits(),0);
 });
 
@@ -3274,5 +3274,187 @@ test('preview-proof dispatch retains visibility and managed ownership after rese
    if(held)x.c.isManagedPhone=()=>false;else x.c.visible=false;
   }};
   await x.step().catch(()=>{});assert.equal(changed,true);assert.deepEqual(x.taps,[x.opener.bounds]);assert.equal(x.commits(),0);
+ }
+});
+
+async function nativeLikeFixture({held=false}={}){
+ const x=await previewProofFixture({held});
+ x.setSourceProof(null);x.setFormProof(null);
+ x.form.nativePhotoForm=true;x.form.photos[0].bounds={x:72,y:137,width:576,height:181};
+ if(held)await x.step();
+ return x;
+}
+
+test('native-like transaction accepts an owned shallow or differently rendered photo form in a persisted all-profile run',async()=>{
+ for(const height of [181,271,576]){
+  const x=await nativeLikeFixture();x.form.photos[0].bounds.height=height;
+  await x.step();assert.deepEqual(x.taps,[x.opener.bounds,x.send.bounds]);
+  assert.equal(x.commits(),1);assert.equal(x.saved().session.count,97);assert.equal(x.c.lastAction,null);
+  assert.equal(x.saved().rejectedPhoto,undefined);
+ }
+});
+
+test('native-like transaction uses only an unspent held-entry opener and preserves every earlier review charge',async()=>{
+ const x=await nativeLikeFixture({held:true}),tap=x.android.tapControl;
+ x.android.tapControl=async(...args)=>{
+  if(!x.taps.length){const {previewVerification,...old}=x.saved().rejectedPhoto;
+   assert.equal(previewVerification.version,1);assert.deepEqual(old,x.original);assert.equal(x.saved().session.count,96);}
+  return tap(...args);
+ };
+ await x.step();assert.deepEqual(x.taps,[x.opener.bounds,x.send.bounds]);assert.equal(x.commits(),1);
+ assert.equal(x.saved().session.count,97);assert.equal(x.saved().rejectedPhoto,undefined);
+});
+
+test('native-like transaction rejects missing form ownership, wrong recipients, comments and nonordinary actions',async()=>{
+ for(const mode of ['owner','name','typed','unverified','Rose','message','prompt','second-photo','composer','comment']){
+  const x=await nativeLikeFixture();
+  if(mode==='owner')delete x.form.nativePhotoForm;
+  if(mode==='name')x.form.name='Other';
+  if(mode==='typed')x.form.composerText='existing';
+  if(mode==='unverified')x.form.composerTextVerified=false;
+  if(mode==='Rose')x.form.controls.sendLike.label='Send a Rose';
+  if(mode==='message')x.form.controls.sendLike.label='Send like with message';
+  if(mode==='prompt')x.form.prompts=[{key:'another',text:'A different item'}];
+  if(mode==='second-photo')x.form.photos.push({...x.form.photos[0],key:'another'});
+  if(mode==='composer')x.form.controls.composer=null;
+  if(mode==='comment')x.form.controls.comment=null;
+  await x.step().catch(()=>{});assert.deepEqual(x.taps,[x.opener.bounds],mode);
+  assert.equal(x.commits(),0,mode);assert.equal(x.saved().pendingAction,null,mode);assert.equal(x.saved().session.count,96,mode);
+ }
+});
+
+test('native-like transaction cannot authorize a pre-existing or restored modal even through direct act',async()=>{
+ for(const restore of [false,true]){
+  const x=await nativeLikeFixture();x.set(x.form);
+  if(restore){const cp=x.saved();x.c.restoreCheckpoint(cp);x.c.session.status='running';}
+  await assert.rejects(x.c.act('like',x.c.token()),/source|review|fresh|transaction/i);
+  assert.deepEqual(x.taps,[]);assert.equal(x.saved().pendingAction,null);
+ }
+});
+
+test('native-like transaction does not continue after a lost opener acknowledgement or reuse its held receipt',async()=>{
+ const x=await nativeLikeFixture({held:true});
+ x.android.tapControl=async(bounds,valid)=>{assert.equal(valid(),true);x.taps.push(bounds);x.set(x.form);
+  throw Object.assign(Error('Lost opener acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'});};
+ await x.step();assert.equal(x.taps.length,1);assert.equal(x.commits(),0);
+ const saved=x.saved();assert.equal(saved.rejectedPhoto.previewVerification.version,1);
+ x.c.restoreCheckpoint(JSON.parse(JSON.stringify(saved)));x.c.session.status='running';
+ x.c.nextFeedRefreshAt=Date.now()+300000;await x.step();assert.equal(x.taps.length,1);
+ x.set(x.source);x.c.heldPromptRefresh={hint:x.c.rejectedPhoto,epoch:x.c.session.epoch,until:Date.now()+300000};
+ await x.step();assert.equal(x.taps.length,1);assert.deepEqual(x.saved().rejectedPhoto,saved.rejectedPhoto);
+});
+
+test('native-like transaction rechecks exact source ownership before its opener',async()=>{
+ for(const mode of ['revision','identity','control','foreground']){
+  const x=await nativeLikeFixture(),read=x.c.read.bind(x.c);let reads=0;
+  x.c.read=async t=>{if(++reads===3){const changed=structuredClone(x.source);
+   if(mode==='revision')changed.screenKey='changed';if(mode==='identity')changed.identity='changed';
+   if(mode==='control')changed.photos[0].like={...changed.photos[0].like,key:'another-control'};
+   x.set(changed);if(mode==='foreground')x.android.hierarchy=async()=>({xml:changed,foreground:'another.app'});
+  }return read(t);};
+  await x.step().catch(()=>{});assert.deepEqual(x.taps,[],mode);assert.equal(x.commits(),0,mode);
+ }
+});
+
+test('native-like transaction retains scope before and after its final durable reservation',async()=>{
+ for(const boundary of ['open','reserve'])for(const mode of ['config','binding','run','count','deadline','background','input']){
+  const x=await nativeLikeFixture(),tap=x.android.tapControl,write=x.c.checkpointStore.write;let changed=false;
+  if(mode==='background')x.c.config.swipe.allowBackground=x.c.session.config.allowBackground=false;
+  const change=()=>{changed=true;
+   if(mode==='config')x.c.config.autoSend=true;if(mode==='binding')x.c.binding={...x.c.binding,avd:'another'};
+   if(mode==='run')x.c.session.runId='another';if(mode==='count')x.c.session.count++;
+   if(mode==='deadline')x.c.session.endsAt=Date.now()+100000;if(mode==='background')x.c.visible=false;
+   if(mode==='input')x.android.cancelInput();};
+  if(boundary==='open')x.android.tapControl=async(...args)=>{await tap(...args);if(!changed)change()};
+  else x.c.checkpointStore.write=cp=>{write(cp);if(cp.pendingAction&&!changed)change()};
+  await x.step().catch(()=>{});assert.equal(changed,true,boundary+':'+mode);
+  assert.deepEqual(x.taps,[x.opener.bounds],boundary+':'+mode);assert.equal(x.commits(),0,boundary+':'+mode);
+  assert.equal(Boolean(x.saved().pendingAction),boundary==='reserve',boundary+':'+mode);
+ }
+});
+
+test('native-like transaction independently revalidates the final blank native form before reservation',async()=>{
+ for(const mode of ['owner','name','typed','ordinary']){
+  const x=await nativeLikeFixture(),read=x.c.read.bind(x.c);let forms=0;
+  x.c.read=async t=>{if(x.taps.length===1&&++forms===2){const altered=structuredClone(x.form);
+   if(mode==='owner')altered.nativePhotoForm=false;if(mode==='name')altered.name='Other';
+   if(mode==='typed')altered.composerText='inserted';if(mode==='ordinary')altered.controls.sendLike.label='Send a Rose';
+   x.set(altered);
+  }return read(t)};
+  await x.step().catch(()=>{});assert.deepEqual(x.taps,[x.opener.bounds],mode);
+  assert.equal(x.commits(),0,mode);assert.equal(x.saved().pendingAction,null,mode);
+ }
+});
+
+test('native-like transaction preserves uncertain final Sends and the thousand-profile boundary',async()=>{
+ const x=await nativeLikeFixture(),rid=x.c.session.runId;
+ x.c.session.count=x.c.reservedCount=999;x.c.persist();
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);x.taps.push(bounds);
+  if(!issued){x.set(x.form);return {ok:true}}
+  assert.equal(x.saved().session.count,1000);assert.equal(x.saved().pendingAction.kind,'like');issued();
+  throw Object.assign(Error('Send acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ let waits=0;x.c.session.wait=async()=>{if(++waits>6)throw Error('Native transaction did not reach cap')};
+ x.c.session.status='paused';x.c.session.start(x.c.config.swipe);
+ await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+ assert.equal(x.c.session.count,1000);assert.equal(x.c.session.runId,rid);assert.ok(['complete','error'].includes(x.c.session.status));
+ if(x.c.session.status==='error')assert.equal(x.c.session.error,'Send acknowledgement lost');
+ assert.equal(x.saved().session.count,1000);assert.equal(x.c.lastAction.kind,'like');assert.equal(x.taps.length,2);
+ await x.step();assert.equal(x.taps.length,2);
+});
+
+test('native-like transaction cannot recover missing owner proof from equal form identity or pixels',async()=>{
+ for(const mode of ['missing-owner','prompt']){
+  const x=await nativeLikeFixture();x.form.identity=x.source.identity;
+  delete x.form.nativePhotoForm;if(mode==='prompt'){x.form.photos=[];x.form.prompts=[{key:'other',text:'Other content'}];}
+  await x.step().catch(()=>{});assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
+ }
+});
+
+test('native-like transaction requires a positive opener result rather than merely a resolved promise',async()=>{
+ for(const response of [undefined,null,false,{ok:false},{}]){
+  const x=await nativeLikeFixture(),tap=x.android.tapControl;
+  x.android.tapControl=async(...args)=>{await tap(...args);return response};
+  await x.step().catch(()=>{});assert.equal(x.taps.length,1);assert.equal(x.commits(),0);assert.equal(x.saved().pendingAction,null);
+ }
+});
+
+test('native-like transaction cannot submit an orphaned form when eligibility has expired',async()=>{
+ for(const mode of ['cap','time','draft','pending','storage']){
+  const x=await nativeLikeFixture();x.set(x.form);
+  if(mode==='cap')x.c.session.config.maxSwipes=96;if(mode==='time')x.c.session.endsAt=Date.now()-1;
+  if(mode==='draft')x.c.draft={text:'unsent'};if(mode==='pending')x.c.lastAction={identity:'unrelated',name:'Other'};
+  if(mode==='storage')x.c.storageError='Unavailable';
+  await assert.rejects(x.c.act('like',x.c.token()),/source|review|fresh|transaction/i);
+  assert.deepEqual(x.taps,[],mode);
+ }
+});
+
+
+test('native-like transaction pins the verified native form across the final reservation write',async()=>{
+ for(const mode of ['object','owner','recipient','control']){
+  const x=await nativeLikeFixture(),write=x.c.checkpointStore.write;
+  x.c.checkpointStore.write=cp=>{write(cp);if(cp.pendingAction){
+   if(mode==='object')x.c.screen=structuredClone(x.c.screen);
+   if(mode==='owner')x.c.screen.nativePhotoForm=false;
+   if(mode==='recipient')x.c.screen.name='Other';
+   if(mode==='control')x.c.screen.controls.sendLike.bounds={...x.c.screen.controls.sendLike.bounds,x:1};
+  }};
+  await x.step().catch(()=>{});assert.deepEqual(x.taps,[x.opener.bounds],mode);assert.equal(x.commits(),0,mode);
+  assert.equal(x.saved().pendingAction.kind,'like',mode);assert.equal(x.saved().session.count,97,mode);
+ }
+});
+
+test('native-like transaction does not replace selected-content proof outside its persisted all-profile mode',async()=>{
+ for(const mode of ['manual','ratio','messages','no-store']){
+  const x=await nativeLikeFixture();
+  if(mode==='manual')x.c.session.status='paused';
+  if(mode==='ratio')x.c.config.swipe.likeRatio=x.c.session.config.likeRatio=.5;
+  if(mode==='messages')x.c.config.autoOpeners=true;
+  if(mode==='no-store')x.c.checkpointStore=null;
+  const t=x.c.token(),source=await x.c.read(t);
+  x.c.selectedPhoto=source.photos[0];x.c.reviewContext={identity:source.identity,screenKey:source.screenKey,context:{}};
+  await x.c.act('like',t,()=>true,()=>assert.fail('Cross-render mismatch is still unverified'),source).catch(()=>{});
+  assert.deepEqual(x.taps,[x.opener.bounds],mode);assert.equal(x.c.lastAction,null,mode);
  }
 });
