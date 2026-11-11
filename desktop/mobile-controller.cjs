@@ -30,6 +30,11 @@ function exactRejectedSource(card,hint){
   card.photos?.length===1&&photo.visual===hint.visual&&!photo.revealDirection&&['Like photo','Like photo prompt'].includes(photo.like?.label)&&
   photo.bounds?.width>0&&photo.bounds.width===photo.bounds.height;
 }
+function exactRejectedEntry(card,hint){
+ return hint.entryIdentity!==hint.sourceIdentity&&card.identity===hint.entryIdentity&&
+  card.controls?.skip?.label==='Skip '+card.name&&card.photos?.length===1&&
+  photoFingerprint(hint.entryVisual)&&card.photos[0].visual===hint.entryVisual;
+}
 function sameSessionRun(session,runId,endsAt){
  if(endsAt!==session.endsAt)return false;
  if(runId!==undefined)return typeof runId==='string'&&runId.length>0&&runId===session.runId;
@@ -107,6 +112,7 @@ class MobileController{
     !(hint.heldIdentity===null||typeof hint.heldIdentity==='string')||!(hint.heldRevision===null||typeof hint.heldRevision==='string')||!(hint.avd===null||typeof hint.avd==='string')||
     (hint.promptScan!==undefined&&!['moving','spent'].includes(hint.promptScan))||
     (hint.promptMovesRemaining!==undefined&&(!hint.promptScan||!Number.isInteger(hint.promptMovesRemaining)||hint.promptMovesRemaining<0||hint.promptMovesRemaining>promptMoveLimit))||
+    (hint.entryPromptScan!==undefined&&(hint.entryPromptScan!==true||!hint.runId||!hint.attempted||!hint.promptScan||hint.promptMovesRemaining===undefined))||
     typeof hint.attempted!=='boolean'||(hint.runId!==undefined&&!(typeof hint.runId==='string'&&hint.runId.length>0))||
     !(Number.isFinite(hint.endsAt)||(hint.endsAt===null&&hint.runId))||!Number.isInteger(hint.count)||hint.count<0))throw Error('Invalid rejected photo checkpoint.');
   if(hint?.promptRecovery!==undefined){
@@ -194,7 +200,7 @@ class MobileController{
   // The parser derives both names from one native named Skip under selected Discover.
   // On an unidentified poll it intentionally exposes no actionable Skip.
   const named=s.controls?.skip?.label==='Skip '+s.name||(!s.identity&&!s.controls?.skip&&s.context?.name===s.name);
-  return (named&&s.screenKey===hint.heldRevision&&hint.heldIdentity===(s.identity||null))||exactRejectedSource(s,hint);
+  return (named&&s.screenKey===hint.heldRevision&&hint.heldIdentity===(s.identity||null))||exactRejectedSource(s,hint)||exactRejectedEntry(s,hint);
  }
  async checkHeldInventory(s,hint,t,valid,sleep){
   const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
@@ -211,7 +217,7 @@ class MobileController{
   if(after.kind==='empty')return {retryAfter:300000,phase:'waiting for profiles'};
   return this.heldInventoryScreen(after,hint)?waiting:{retryAfter:1000,phase:'checking next profile'};
  }
- async recoverRefreshedPrompt(s,hint,t,valid,commit){
+ async recoverRefreshedPrompt(s,hint,t,valid,commit,sleep){
   const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
   const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&
    Boolean(hint.runId&&this.binding?.avd&&this.isManagedPhone(this.binding))&&this.config.swipe.scrollProfile&&this.session.config.scrollProfile;
@@ -223,6 +229,13 @@ class MobileController{
   const refresh=this.heldPromptRefresh;
   const acknowledged=refresh?.hint===hint&&refresh.epoch===epoch&&this.session.now()<refresh.until;
   let r=hint.promptRecovery,before;
+  if(!r&&!hint.entryPromptScan&&acknowledged&&exactRejectedEntry(s,hint)&&s.reviewScrollSurface){
+   // The refresh returned the separately recorded entry photo, not the rejected
+   // Like target. Permit one charged prompt scan, retaining all ordinary form checks.
+   const card=await this.reviewHeldPrompt(s,hint,t,valid,sleep,true);
+   await this.act('like',t,valid,commit,card);
+   return {retryAfter:1000,phase:'checking next profile'};
+  }
   if(!r){
    if(!acknowledged||!restored(s))return null;
    await this.consent(t);await this.verifyBinding(t);before=await this.fresh(s,t,owned);
@@ -363,7 +376,7 @@ class MobileController{
    }
    const held=this.exhaustedReview(t);
    if(held&&(held.promptRecovery||this.heldPromptRefresh?.hint===held)){
-    const recovery=await this.recoverRefreshedPrompt(observed,held,t,valid,commit);
+    const recovery=await this.recoverRefreshedPrompt(observed,held,t,valid,commit,sleep);
     if(recovery)return recovery;
    }
    if(held&&this.heldInventoryScreen(observed,held))return await this.checkHeldInventory(observed,held,t,valid,sleep);
@@ -755,7 +768,7 @@ class MobileController{
    (s.identity===h.entryIdentity&&(!h.entryVisual||visibleFingerprint(s,h.entryVisual)))||
    (includeEndpoint&&h.heldIdentity!==null&&s.identity===h.heldIdentity);
  }
- async reviewHeldPrompt(s,hint,t,valid,sleep){
+ async reviewHeldPrompt(s,hint,t,valid,sleep,refreshedEntry=false){
   const session=this.session,epoch=session.epoch;
   const owned=()=>valid()&&session.status==='running'&&session.epoch===epoch&&!session.timeExpired()&&
    this.scopedPhotoRejection(t)===hint&&this.binding?.serial===t.serial&&this.reservedCount===session.count&&
@@ -775,7 +788,13 @@ class MobileController{
    const p=card.reviewWheelPoint;
    return this.android.wheelDiscover&&Number.isInteger(p?.x)&&Number.isInteger(p?.y)&&wheelLandmarks(card.reviewScrollFrame)?'wheel':null;
   };
-  const legacy=hint.promptScan==='spent';
+  const refresh=this.heldPromptRefresh;
+  const entryRoute=card=>exactRejectedEntry(card,hint)&&card.reviewScrollSurface&&
+   ['x','y','width','height'].every(k=>Number.isInteger(card.reviewScrollSurface[k]))&&
+   card.reviewScrollSurface.width>0&&card.reviewScrollSurface.height>0;
+  const entryReady=()=>!hint.entryPromptScan&&!hint.promptRecovery&&this.exhaustedReview(t)===hint&&
+   this.isManagedPhone(this.binding)&&refresh?.hint===hint&&refresh.epoch===epoch&&session.now()<refresh.until;
+  const legacy=!refreshedEntry&&hint.promptScan==='spent';
   const legacyRoute=card=>{
    if(hint.promptMovesRemaining!==undefined||!hint.heldRevision||nativePrompt(card)||!route(card))return false;
    if(card.screenKey===hint.heldRevision)return hint.heldIdentity===(card.identity||null)&&
@@ -789,10 +808,12 @@ class MobileController{
    card.screenKey===hint.heldRevision&&(card.identity||null)===hint.heldIdentity&&this.heldInventoryScreen(card,hint)&&
    !route(card)&&!nativePrompt(card);
   if(!owned()||!this.checkpointStore||!this.android.deviceIdentity)throw alternativeUnavailable();
+  if(refreshedEntry&&(!entryReady()||!entryRoute(s)))throw alternativeUnavailable();
   const unreachable=unreachableEndpoint(s);
   if(!unreachable&&!eligible(s))throw alternativeUnavailable();
   await this.consent(t);await this.verifyBinding(t);s=await this.fresh(s,t,owned);
   this.assert(t,owned);
+  if(refreshedEntry&&(!entryReady()||!entryRoute(s)))throw alternativeUnavailable();
   if(unreachable){
    if(unreachableEndpoint(s)){
     hint.promptScan='spent';hint.promptMovesRemaining=0;this.persist();
@@ -802,6 +823,7 @@ class MobileController{
   if(!eligible(s))throw alternativeUnavailable();
   let remaining=promptMoveLimit;
   const hold=card=>{hint.heldIdentity=card.identity||null;hint.heldRevision=card.screenKey;hint.promptScan='spent';hint.promptMovesRemaining=remaining;this.persist()};
+  if(refreshedEntry){hint.entryPromptScan=true;this.heldPromptRefresh=null;}
   if(!legacy)hold(s);
   for(;;){
    const candidate=nativePrompt(s);

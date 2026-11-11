@@ -1922,6 +1922,54 @@ test('a successful held refresh permits one durable nonvoting drag and only an i
  await x.step();if(!x.commits())await x.step();
  assert.equal(x.moves.length,1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
 });
+async function refreshedEntryFixture(){
+ const x=await refreshedPromptFixture();
+ const entry={...x.source,identity:'original-entry-photo',screenKey:'refreshed-entry',recoveryChromeKey:undefined,recoveryDrag:null,
+  photos:[{...x.source.photos[0],visual:'ffff0000ffff0000',visualSquare:null,bounds:{x:40,y:160,width:640,height:420},like:null,revealDirection:null}]};
+ Object.assign(x.c.rejectedPhoto,{entryIdentity:entry.identity,entryVisual:entry.photos[0].visual});
+ x.c.persist();
+ const promptCard={...entry,identity:'new-native-prompt',screenKey:'entry-prompt',photos:[],prompts:[x.prompt]};
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();x.set(entry)};
+ x.android.scrollProfile=async(opts,valid)=>{
+  assert.equal(valid(),true);assert.deepEqual(opts.surface,entry.reviewScrollSurface);
+  assert.equal(x.saved().rejectedPhoto.entryPromptScan,true);x.moves.push(opts);x.set(promptCard);
+ };
+ return {...x,entry,promptCard};
+}
+test('a held refresh returning to the exact non-square entry photo starts one bounded ordinary prompt review',async()=>{
+ const x=await refreshedEntryFixture(),runId=x.c.session.runId;
+ await x.step();await x.step();
+ assert.equal(x.moves.length,1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);assert.equal(x.commits(),1);
+ assert.equal(x.c.session.runId,runId);assert.equal(x.c.lastAction,null);
+});
+test('the refreshed entry prompt scan is charged before motion and never rearmed after interruption or exhaustion',async()=>{
+ for(const interrupted of [false,true]){
+  const x=await refreshedEntryFixture();let saved;
+  x.android.scrollProfile=async()=>{
+   x.moves.push(1);saved=x.saved();assert.equal(saved.rejectedPhoto.entryPromptScan,true);
+   if(interrupted)throw Object.assign(Error('Lost motion acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'});
+   x.set({...x.entry,identity:'later-viewport',screenKey:'later-'+x.moves.length});
+  };
+  await x.step();await x.step();assert.equal(x.moves.length,interrupted?1:8);assert.equal(x.commits(),0);
+  x.c.restoreCheckpoint(interrupted?saved:x.saved());x.c.session.status='running';x.set(x.entry);
+  x.android.scrollProfile=async()=>assert.fail('The charged entry review cannot replay');
+  x.c.nextFeedRefreshAt=0;await x.step();await x.step();await x.step();
+  assert.equal(x.commits(),0);assert.deepEqual(x.taps,[]);
+ }
+});
+test('refreshed entry recovery rejects missing acknowledgement, drifted photo, unavailable route and pending action',async()=>{
+ for(const mode of ['no-ack','one-bit','other-identity','no-route','draft','pending']){
+  const x=await refreshedEntryFixture();
+  if(mode==='no-ack')x.android.refreshFeed=async()=>{x.set(x.entry);throw Object.assign(Error('No acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+  if(mode==='one-bit')x.entry.photos[0].visual='ffff0000ffff0001';
+  if(mode==='other-identity')x.entry.identity='unbound';
+  if(mode==='no-route')x.entry.reviewScrollSurface=null;
+  if(mode==='draft')x.c.draft={text:'user draft'};
+  if(mode==='pending')x.c.lastAction={identity:'earlier',name:x.entry.name,kind:'like',runId:x.c.session.runId,sessionEndsAt:x.c.session.endsAt};
+  for(let i=0;i<2;i++)await x.step().catch(()=>{});
+  assert.deepEqual(x.moves,[],mode);assert.deepEqual(x.taps,[],mode);assert.equal(x.commits(),0,mode);
+ }
+});
 test('a profile-only recovered prompt retains the original managed run and its single 1000-profile budget',async()=>{
  const x=await refreshedPromptFixture(),cp=structuredClone(x.c.checkpoint());
  cp.session.endsAt=cp.rejectedPhoto.endsAt=null;cp.session.config.sessionMinutes=cp.config.swipe.sessionMinutes=null;

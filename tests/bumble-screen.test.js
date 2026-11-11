@@ -133,6 +133,47 @@ test('Bumble verified SuperSwipe offer exposes only Close and ignores its countd
 test('Bumble offer countdown width may change but actionable geometry stays bound',()=>{const a=promoOffer().replace('bounds="[0,100][1080,2300]" text="Offer ends in','bounds="[357,2171][723,2230]" text="Offer ends in');const b=a.replace('[357,2171][723,2230]','[356,2171][724,2230]');assert.equal(read(a).screenKey,read(b).screenKey);assert.equal(read(a).screenKey,read(a.replace('[357,2171][723,2230]','[357,2171][724,2230]')).screenKey);assert.equal(read(a.replace('[357,2171][723,2230]','[360,2171][730,2230]')).kind,'blocked');assert.notEqual(read(a).screenKey,read(a.replace('[357,2171][723,2230]','[357,2172][723,2231]')).screenKey);});
 test('Bumble offer fails closed for changed offers, controls, hierarchy and timers',()=>{const xml=promoOffer();for(const bad of [xml.replace('SuperSwipes','Boosts'),xml.replace('Only $17.49','Subscribe'),xml.replace('clickable="true"','clickable="false"'),xml.replace('58:32','Buy now'),xml.replace('android.widget.ScrollView','android.widget.EditText'),xml.replace('</hierarchy>',node('clickable="true" text="Buy"')+'</hierarchy>')])assert.equal(read(bad).kind,'blocked');});
 
+function secondChanceOffer({names=['Alex','Sam','Jo','Lee'],remaining=3,counterEnabled=false}={}){
+ const n=(type,box,attrs='',children='')=>'<node package="com.bumble.app" class="'+type+'" bounds="'+box+'" '+attrs+'>'+children+'</node>';
+ const view=(box,attrs='',children='')=>n('android.view.View',box,attrs,children);
+ const text=(box,value,attrs='')=>n('android.widget.TextView',box,'text="'+value+'" '+attrs);
+ const header=view('[48,176][672,601]','',view('[48,176][192,320]')+
+  text('[48,352][601,425]','Second time’s a charm')+
+  text('[48,449][672,537]','You’ve already liked these bees, why not use Compliments to help you stand out?'));
+ const tiles=names.map((name,i)=>{
+  const x=i%2?376:32,y=617+Math.floor(i/2)*538,b='['+x+','+y+']['+(x+312)+','+Math.min(y+506,1232)+']';
+  // Lower rows are clipped by the scroll viewport, as on the native promotion.
+  return view(b,'',view(b,'',view(b,'clickable="true"',view('['+x+','+y+']['+(x+312)+','+(y+506)+']','',
+   view(b,'content-desc="'+name+' photo"')+text('['+(x+24)+','+(y+444)+']['+(x+150)+','+(y+482)+']',name)+
+   n('android.widget.ImageView','['+(x+12)+','+(y+344)+']['+(x+108)+','+(y+440)+']','content-desc="Compliment '+name+'" clickable="true"')))));
+ }).join('');
+ const sheet=view('[0,48][720,1232]','',n('android.widget.ImageView','[0,48][112,160]','content-desc="Back" clickable="true"')+
+  view('[622,56][718,152]','clickable="true" enabled="'+counterEnabled+'"',text('[664,90][677,119]',String(remaining),'content-desc="'+remaining+' compliments left"'))+
+  view('[0,160][720,1232]','scrollable="true"',header+tiles));
+ return '<hierarchy>'+n('android.widget.FrameLayout','[0,0][720,1280]','resource-id="android:id/content"',
+  n('androidx.compose.ui.platform.ComposeView','[0,48][720,1232]','',sheet))+'</hierarchy>';
+}
+test('Bumble second-chance promotion exposes only Back despite dynamic and clipped profile tiles',()=>{
+ for(const options of [{},{names:['Taylor','Casey'],remaining:0,counterEnabled:true},{names:['Morgan','Riley','Drew'],remaining:12}]){
+  const s=read(secondChanceOffer(options));assert.equal(s.kind,'promoOffer');assert.equal(s.identity,null);
+  assert.deepEqual(Object.keys(s.controls).filter(k=>s.controls[k]),['dismiss']);
+  assert.equal(s.controls.dismiss.label,'Back');assert.deepEqual(s.controls.dismiss.bounds,{x:0,y:48,width:112,height:112});
+ }
+});
+test('Bumble second-chance dismissal rejects changed copy, controls, geometry and overlays',()=>{
+ const xml=secondChanceOffer(),back='content-desc="Back" clickable="true"';
+ for(const bad of [
+  xml.replace('Second time’s a charm','A different promotion'),xml.replace('already liked these bees','new people nearby'),
+  xml.replace(back,'content-desc="Buy" clickable="true"'),xml.replace(back,'content-desc="Back" clickable="false"'),
+  xml.replace(back,back+' enabled="false"'),xml.replace('android.widget.ImageView','android.widget.Button'),
+  xml.replace('[0,48][112,160]','[500,48][612,160]'),
+  xml.replace('</hierarchy>',node('content-desc="Back" clickable="true"')+'</hierarchy>'),
+  xml.replace('</hierarchy>',node('text="Buy now" clickable="true"')+'</hierarchy>'),
+  xml.replace('class="android.view.View" bounds="[32,617][344,1123]" content-desc="Alex photo"','class="android.widget.EditText" bounds="[32,617][344,1123]" content-desc="Alex photo"'),
+  xml.replace('class="androidx.compose.ui.platform.ComposeView"','class="android.app.Dialog"'),
+ ])assert.equal(read(bad).kind,'blocked');
+});
+
 // Synthetic native footer; public control labels and geometry only.
 const footerNode=(type,box,attrs='',children='')=>`<node package="com.bumble.app" class="${type}" enabled="true" bounds="${box}" ${attrs}>${children}</node>`;
 const footerAction=(text,box)=>footerNode('android.view.View',box,'clickable="true"',footerNode('android.view.View',box,`content-desc="${text}" clickable="false"`)+footerNode('android.widget.Button',box,'clickable="false"'));
