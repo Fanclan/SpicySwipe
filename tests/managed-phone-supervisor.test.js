@@ -10,6 +10,37 @@ const { setTimeout: delay } = require('node:timers/promises');
 const hinge = 'SpicySwipe_Phone_API_36';
 const bumble = 'SpicySwipe_Bumble_API_36';
 
+function shutdown(child, output, timeoutMs = 2000) {
+  let didClose = false;
+  const closed = new Promise(resolve => child.once('close', () => { didClose = true; resolve(); }));
+  const signal = name => {
+    if (didClose) return;
+    try { process.kill(-child.pid, name); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  };
+  async function closedWithin(ms) {
+    let timer;
+    try {
+      return await Promise.race([closed.then(() => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]);
+    } finally { clearTimeout(timer); }
+  }
+  let stopping;
+  const stop = () => stopping ||= (async () => {
+    signal('SIGTERM');
+    if (await closedWithin(timeoutMs)) return;
+    const error = new Error(`Fixture shutdown timed out after ${timeoutMs}ms; SIGKILL cleanup for group ${child.pid}. ` +
+      `exitCode=${child.exitCode} signalCode=${child.signalCode}\n${output().slice(-4000)}`);
+    signal('SIGKILL');
+    if (!await closedWithin(2000)) {
+      error.message += '\nChild pipes did not close after SIGKILL.';
+      child.stdout.destroy(); child.stderr.destroy(); child.unref();
+    }
+    // Forced cleanup never turns a broken graceful shutdown into a passing test.
+    throw error;
+  })();
+  return {stop, get closed() { return stop(); }};
+}
+
 function fixture(t, scenario) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-supervisor-'));
   const sdk = path.join(home, 'android-runtime/sdk');
@@ -87,10 +118,12 @@ sleep() {
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
-  const closed = new Promise(resolve => child.once('close', resolve));
-  const stop = () => { try { process.kill(-child.pid, 'SIGTERM'); } catch (e) { if(e.code !== 'ESRCH') throw e; } };
-  t.after(async () => { stop(); await closed; fs.rmSync(home, {recursive:true, force:true}); });
-  return {stop, closed, output:() => output,
+  const lifecycle = shutdown(child, () => output);
+  t.after(async () => {
+    try { await lifecycle.stop(); }
+    finally { fs.rmSync(home, {recursive:true, force:true}); }
+  });
+  return {stop:lifecycle.stop, get closed() { return lifecycle.closed; }, output:() => output,
     args:avd => fs.readFileSync(path.join(home, 'args-' + avd), 'utf8').trim().split('\n'),
     async until(wanted) {
     for (let i=0; i<400 && !output.includes(wanted); i++) await delay(10);
@@ -99,6 +132,34 @@ sleep() {
 }
 
 const linux = {skip:process.platform !== 'linux'};
+test('fixture shutdown fails with diagnostics and reaps a TERM-resistant descendant', linux, async t => {
+  const child = spawn('bash', ['-c', `bash -c 'trap "" TERM; echo "resistant-ready $BASHPID"; exec sleep 60' & wait`],
+    {detached:true, stdio:['ignore','pipe','pipe']});
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  const lifecycle = shutdown(child, () => output, 50);
+  let didClose = false, watchdog, watchdogFired = false;
+  child.once('close', () => { didClose = true; });
+  const cleanup = () => {
+    if (didClose) return;
+    try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  };
+  t.after(() => { clearTimeout(watchdog); cleanup(); });
+  for (let i=0; i<400 && !output.includes('resistant-ready'); i++) await delay(10);
+  const descendant = Number(output.match(/resistant-ready (\d+)/)?.[1]);
+  assert.ok(descendant, output);
+  // An independent watchdog bounds the old implementation but cannot make this test pass.
+  watchdog = setTimeout(() => { watchdogFired = true; cleanup(); }, 5000);
+  lifecycle.stop();
+  await assert.rejects(lifecycle.closed, /shutdown timed out.*SIGKILL[\s\S]*resistant-ready/);
+  assert.equal(watchdogFired, false, 'shutdown depended on the independent watchdog');
+  assert.equal(didClose, true, 'shutdown left child pipes open');
+  let state;
+  try { state = fs.readFileSync('/proc/' + descendant + '/stat', 'utf8').split(') ')[1][0]; }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  assert.ok(state === undefined || state === 'Z', 'resistant descendant is still running');
+});
+
 test('a native fault after a sustained Android boot gets a fast retry, then a failed restart backs off', linux, async t => {
   const f = fixture(t, 'recovered');
   await f.until('backoff ' + hinge + ' 30');
