@@ -737,3 +737,33 @@ test('a recovery drag stays inside the useful clear interval around the photo ce
   '<node class="android.view.View" clickable="true" bounds="[215,355][498,615]"/>';
  assert.equal(read(recoveryScene({other:short}),{photoIdentity:'0123456789abcdef'}).recoveryDrag,undefined);
 });
+
+test('native interest fragments mark an owned wheel-only backtrack gap without becoming Like targets',()=>{
+ const node=(cls,b,attrs='',kids='')=>`<node class="android.${cls}" bounds="${b}" ${attrs}>${kids}</node>`;
+ const view=(b,kids='',attrs='')=>node('view.View',b,(attrs.includes('clickable=')?'':'clickable="false" ')+attrs,kids);
+ const text=(b,value)=>node('widget.TextView',b,`clickable="false" text="${value}"`);
+ const button=(b,attrs='')=>node('widget.Button',b,attrs);
+ const row=(b,label)=>{const top=Number(/^\[\d+,(\d+)\]/.exec(b)[1]);return view(b,view(b,'',`content-desc="Option: ${label}"`)+
+  view(`[120,${top+49}][496,${top+83}]`)+view(`[544,${top+38}][600,${top+94}]`)+button(b,'clickable="false"'),'clickable="true"')};
+ // Anonymous content; wrappers, roles and rectangles match the observed native layout.
+ const panel='[40,618][680,1112]',heading=view('[88,758][323,798]','','content-desc="Prompt: Let&apos;s chat about" drawing-order="1"');
+ const interests=view(panel,view(panel,view(panel,'','drawing-order="0"')+heading+view('[88,846][632,1112]',
+  row('[88,846][632,978]','Books')+row('[88,1002][632,1112]','Music'))));
+ const banner='[40,399][680,578]',left='[80,439][408,538]',right='[440,432][640,528]';
+ const adjacent=view(banner,view(banner,view(banner,view(left,text(left,'A passive product explanation'))+
+  view(right,text('[507,463][573,497]','Try it')+button('[440,439][640,521]','clickable="false"'),'clickable="true"'))));
+ const feed=(content=interests,extra='')=>'<hierarchy>'+node('widget.FrameLayout','[0,0][720,1280]','package="co.hinge.app" clickable="false"',
+  view('[0,137][720,1112]',adjacent+content,'scrollable="true"')+view('[0,1112][144,1232]','','content-desc="Discover" selected="true"')+
+  button('[40,948][164,1072]','clickable="true" content-desc="Skip Sample"')+extra)+'</hierarchy>';
+ const good=read(feed());assert.equal(good.kind,'profile');assert.equal(good.reviewInterestGap,true);
+ assert.ok(good.reviewWheelPoint);assert.ok(good.reviewScrollFrame);assert.match(good.recoveryChromeKey,/^[a-f0-9]{64}$/);
+ assert.equal(good.identity,null);assert.deepEqual(good.photos,[]);assert.deepEqual(good.prompts,[]);
+ assert.equal(good.controls.like,null);assert.equal(good.controls.skip,null);assert.equal(good.reviewScrollSurface,null);
+ for(const xml of [feed(interests.replace('Prompt: Let&apos;s chat about','Unknown heading')),feed(interests.replaceAll('Option: ','Unknown: ')),
+  feed(interests+interests),feed(interests.replace('drawing-order="1"','drawing-order="1" focusable="true"')),
+  feed('').replace('</hierarchy>',interests+'</hierarchy>'),feed(interests,view('[230,470][260,510]','','content-desc="Unknown overlay"')),
+  feed(interests,node('app.Dialog','[0,0][720,1280]')),feed().replace('content-desc="Discover" selected="true"','content-desc="Standouts" selected="true"')]){
+  assert.notEqual(read(xml).reviewInterestGap,true);
+ }
+ assert.notEqual(read(feed(),{foreground:'other.app'}).reviewInterestGap,true);
+});

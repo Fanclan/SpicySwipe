@@ -493,15 +493,16 @@ class Android {
     await pending;this._guard(serial,epoch,valid);return {ok:true};
   }
 
-  async wheelDiscover(point, valid) {
+  async wheelDiscover(point, valid, direction = 'forward') {
     const epoch = this.inputEpoch;
+    if (!['forward', 'backward'].includes(direction)) throw new Error('Invalid Discover wheel direction.');
     if (!point || !Number.isInteger(point.x) || !Number.isInteger(point.y)) throw new Error('Invalid Discover wheel point.');
     if (typeof valid !== 'function') throw new Error('A current Discover validity check is required.');
     const serial = await this._selected(); this._guard(serial, epoch, valid);
     const { width, height } = await this._dimensions(serial); this._guard(serial, epoch, valid);
     if (point.x < 0 || point.x >= width || point.y < height * .1 || point.y >= height * .9) throw new Error('Discover wheel point is outside the safe display area.');
     if (await this._foreground(serial, epoch) !== 'co.hinge.app') throw Object.assign(new Error('Hinge is no longer in the foreground.'), { code: 'ANDROID_FOREGROUND_UNAVAILABLE' });
-    await this._guardedOn(serial, epoch, ['shell', 'input', 'mouse', 'scroll', String(point.x), String(point.y), '--axis', 'VSCROLL,-1'], valid);
+    await this._guardedOn(serial, epoch, ['shell', 'input', 'mouse', 'scroll', String(point.x), String(point.y), '--axis', direction === 'backward' ? 'VSCROLL,1' : 'VSCROLL,-1'], valid);
   }
 
   async scrollProfile({ fraction = .4, duration = 400, direction = 'up', surface } = {}, valid) {
