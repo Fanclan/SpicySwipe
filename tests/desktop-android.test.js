@@ -634,4 +634,8 @@ test('wheelDiscover dispatches one bounded generic mouse scroll to the foregroun
  await assert.rejects(f.android.wheelDiscover(point,()=>false),/cancel|valid|changed/i);
  pkg='other.app';await assert.rejects(f.android.wheelDiscover(point,()=>true),{code:'ANDROID_FOREGROUND_UNAVAILABLE'});
  assert.equal(commands().length,1);
+ pkg='co.hinge.app';await f.android.wheelDiscover(point,()=>true,'backward');
+ assert.deepEqual(commands().at(-1),['-s','emulator-5554','shell','input','mouse','scroll','320','375','--axis','VSCROLL,1']);
+ for(const direction of ['up','down','',null,1])await assert.rejects(f.android.wheelDiscover(point,()=>true,direction),/direction/i);
+ assert.equal(commands().length,2);
 });

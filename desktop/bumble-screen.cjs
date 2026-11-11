@@ -254,7 +254,9 @@ module.exports=function readBumble(xml,options,h){
     const staticText=n=>n.enabled&&fullyVisible(n)&&n.a.clickable!=='true'&&(!n.a['content-desc']||n.a['content-desc']===n.a.text);
     if(headers.length===1&&match&&Number(match[2])>=18&&Number(match[2])<=120&&panel?.a.class==='android.view.View'&&panel.parent===content&&fullyVisible(panel)&&staticText(header)){
      const details=texts.filter(n=>n!==header&&n.parent===panel&&staticText(n)&&label(n).length>=3&&bounds(n).y>=bounds(header).y+bounds(header).height).map(label);
-     if(details.length){
+     // Some complete summary videos expose only their own name/age header.
+     // Keep their identity static; changing video frames cannot prove a new person.
+     if(details.length||texts.length===1){
       result.name=match[1];result.context.name=result.name;result.identity=hash(['bumble-main-video',result.name,header.a.text,[...new Set(details)].sort()]);
       result.profileDiscriminator=hash(['bumble-static-profile',result.name,Number(match[2])]);result.reason='';
      }

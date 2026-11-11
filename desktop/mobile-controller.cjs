@@ -52,14 +52,14 @@ function wheelLandmarks(frame){
  }
  return points.size>=2?points:null;
 }
-function wheelAdvanced(before,after){
+function wheelAdvanced(before,after,direction=1){
  if(!before||!after||before.ownerKey!==after.ownerKey||before.chromeKey!==after.chromeKey)return false;
  const a=wheelLandmarks(before),b=wheelLandmarks(after),offsets=[],rows=new Set();
  if(!a||!b)return false;
  for(const [key,start] of a){
   const end=b.get(key);if(!end)continue;
   if(start.x!==end.x||start.width!==end.width||start.height!==end.height)return false;
-  offsets.push(start.y-end.y);rows.add(start.y);
+  offsets.push((start.y-end.y)*direction);rows.add(start.y);
  }
  return rows.size>=2&&Math.min(...offsets)>=4&&Math.max(...offsets)-Math.min(...offsets)<=2;
 }
@@ -120,6 +120,15 @@ class MobileController{
    if(!r||!hint.runId||!hint.attempted||hint.promptScan!=='spent'||hint.promptMovesRemaining!==0||
       !/^[a-f0-9]{64}$/.test(r.chromeKey)||typeof r.opened!=='boolean'||(r.bound!==undefined&&r.bound!==true)||
       (r.candidate!==undefined&&!/^[a-f0-9]{64}$/.test(r.candidate))||(r.opened&&!r.candidate))throw Error('Invalid rejected photo prompt recovery.');
+  }
+  if(hint?.backtrack!==undefined){
+   const r=hint.backtrack;
+   if(!r||!hint.runId||!hint.attempted||hint.promptScan!=='spent'||hint.promptMovesRemaining!==0||
+      Object.keys(r).sort().join(',')!=='chromeKey,originRevision,remaining,state'||
+      typeof r.originRevision!=='string'||!r.originRevision||!/^[a-f0-9]{64}$/.test(r.chromeKey)||
+      !['ready','moving','spent'].includes(r.state)||!Number.isInteger(r.remaining)||r.remaining<0||r.remaining>=promptMoveLimit||
+      (r.state==='ready'&&r.remaining===0))
+    throw Error('Invalid rejected photo backtrack.');
   }
   this.rejectedPhoto=hint||null;this.heldPromptRefresh=null;
   this.session.restore(saved.session);this.config=Config.normalize(saved.config);this.binding=saved.binding;this.lastAction=saved.pendingAction;this.reservedCount=this.session.count;this.recoveryAttempts=saved.recoveryAttempts;this.nextFeedRefreshAt=saved.nextFeedRefreshAt||0;this.nextFeedRetryAt=saved.nextFeedRetryAt||0;
@@ -289,6 +298,53 @@ class MobileController{
   }
   return waiting;
  }
+ async backtrackPrompt(s,hint,t,valid,commit,sleep){
+  const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
+  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&hint.runId&&
+   this.isManagedPhone(this.binding)&&this.binding?.avd&&this.config.swipe.allowBackground&&this.session.config.allowBackground&&
+   this.config.swipe.scrollProfile&&this.session.config.scrollProfile;
+  const official=card=>this.observedForeground==='co.hinge.app'&&card.kind==='profile'&&card.screenKey&&card.name&&
+   nameDigest(card.name)===hint.nameDigest&&!card.composerText?.trim()&&!card.controls?.composer&&!card.controls?.sendLike;
+  const route=card=>this.android.wheelDiscover&&Number.isInteger(card.reviewWheelPoint?.x)&&Number.isInteger(card.reviewWheelPoint?.y)&&
+   wheelLandmarks(card.reviewScrollFrame)&&/^[a-f0-9]{64}$/.test(card.recoveryChromeKey||'');
+  let r=hint.backtrack;
+  if(!owned()||!official(s))return null;
+  const bound=card=>card.screenKey===hint.heldRevision&&(card.identity||null)===hint.heldIdentity;
+  const hold=card=>{hint.heldRevision=card.screenKey;hint.heldIdentity=card.identity||null;this.persist()};
+  if(r?.state==='moving'){
+   // The previous movement may have happened. Observe its endpoint, never replay it.
+   r.state='spent';if(s.recoveryChromeKey===r.chromeKey)hold(s);else this.persist();return waiting;
+  }
+  if(r?.state==='spent')return null;
+  if(!bound(s)||!route(s)||(!r&&s.reviewInterestGap!==true)||(r&&s.recoveryChromeKey!==r.chromeKey))return null;
+  for(;;){
+   await this.consent(t);await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
+   if(!official(before)||!bound(before)||!route(before)||before.recoveryChromeKey!==s.recoveryChromeKey||
+      !isDeepStrictEqual(before.reviewWheelPoint,s.reviewWheelPoint)||!isDeepStrictEqual(before.reviewScrollFrame,s.reviewScrollFrame)||
+      (!r&&before.reviewInterestGap!==true))return waiting;
+   r??=hint.backtrack={originRevision:hint.heldRevision,chromeKey:s.recoveryChromeKey,remaining:promptMoveLimit,state:'ready'};
+   r.state='moving';r.remaining--;this.persist();
+   const current=()=>{try{this.assert(t,owned);return true}catch{return false}};
+   await this.android.wheelDiscover(before.reviewWheelPoint,current,'backward');
+   await this.pauseFor(450,t,sleep);s=await this.read(t);this.assert(t,owned);
+   if(!official(s)||s.recoveryChromeKey!==r.chromeKey){r.state='spent';this.persist();return waiting;}
+   const moved=s.screenKey!==before.screenKey&&wheelAdvanced(before.reviewScrollFrame,s.reviewScrollFrame,-1);
+   r.state=moved&&r.remaining?'ready':'spent';hold(s);
+   if(!moved)return waiting;
+   const prompt=uniqueNativePrompt(s);
+   if(prompt){
+    const card=await this.fresh(s,t,owned),target=uniqueNativePrompt(card);
+    if(!official(card)||card.recoveryChromeKey!==r.chromeKey||!target||!isDeepStrictEqual(target,prompt))return waiting;
+    r.state='spent';hold(card);this.selectedPhoto=null;this.selectedPrompt={...target,type:'prompt'};
+    this.reviewContext={identity:card.identity,screenKey:card.screenKey,alternate:hint,promptScan:true,expectedTarget:this.selectedPrompt,
+     context:{name:card.name,bio:card.context?.bio||'',history:[]}};
+    const current=()=>owned()||(valid()&&this.session.epoch===epoch&&this.lastAction?.kind==='like'&&
+     this.lastAction.runId===hint.runId&&this.lastAction.identity===card.identity);
+    await this.act('like',t,current,commit,card);return {retryAfter:1000,phase:'checking next profile'};
+   }
+   if(!r.remaining||!route(s)){r.state='spent';this.persist();return waiting;}
+  }
+ }
  async waitForDiscover(s,t,valid,sleep){
   const session=this.session,epoch=session.epoch,runId=session.runId,pending=this.lastAction,avd=this.binding?.avd;
   const waiting={retryAfter:30000,phase:'waiting for Discover'};
@@ -375,6 +431,7 @@ class MobileController{
     return waiting;
    }
    const held=this.exhaustedReview(t);
+   if(held){const backtrack=await this.backtrackPrompt(observed,held,t,valid,commit,sleep);if(backtrack)return backtrack;}
    if(held&&(held.promptRecovery||this.heldPromptRefresh?.hint===held)){
     const recovery=await this.recoverRefreshedPrompt(observed,held,t,valid,commit,sleep);
     if(recovery)return recovery;

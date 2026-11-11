@@ -260,10 +260,66 @@ test('native unlabeled Bumble main video derives stable identity from its own su
  for(const cards of [footerCard(unlabeledVideoSummary(),2)+card('Queued',1),card('Queued',1)+footerCard(unlabeledVideoSummary(),2)])assert.equal(read(nativeFooterFeed(cards)).identity,s.identity);
 });
 
+test('native summary video with only its own adult header has stable profile evidence',()=>{
+ const summary=unlabeledVideoSummary({detail:''}),xml=nativeFooterFeed(footerCard(summary)),s=read(xml);
+ assert.equal(s.name,'Example');assert.ok(s.identity);assert.ok(s.profileDiscriminator);assert.deepEqual(s.photos,[]);
+ assert.equal(s.controls.like.direction,'right');assert.equal(s.controls.skip.direction,'left');
+ assert.equal(read(xml,{photoIdentity:'fedcba9876543210'}).identity,s.identity);
+ assert.equal(read(xml.replace('00:05','00:59')).identity,s.identity);
+ assert.equal(s.profileDiscriminator,read(nativeFooterFeed(footerCard(unlabeledVideoSummary()))).profileDiscriminator);
+ assert.notEqual(read(xml.replace('Example, 29','Different, 29')).identity,s.identity);
+ for(const cards of [footerCard(summary,2)+card('Queued',1),card('Queued',1)+footerCard(summary,2)])assert.equal(read(nativeFooterFeed(cards)).identity,s.identity);
+});
+
+test('header-only summary video rejects ambiguous, foreign, incomplete or misplaced evidence',()=>{
+ const summary=unlabeledVideoSummary({detail:''}),header=footerNode('android.widget.TextView','[74,1903][379,1972]','text="Example, 29" clickable="false"');
+ const bad=[
+  summary.replace('Example, 29','Example, 17'),summary.replace('Example, 29','Example, 121'),summary.replace('Example, 29','Example, twenty nine'),
+  summary.replace(header,''),summary.replace(header,header+header),
+  summary.replace(header,footerNode('android.view.View','[74,1903][379,1972]','',header)),
+  summary.replace(header,header.replace('clickable="false"','clickable="true"')),
+  summary.replace(header,header.replace('enabled="true"','enabled="false"')),
+  summary.replace(header,header.replace('text="Example, 29"','text="Example, 29" visible-to-user="false"')),
+  summary.replace(header,header.replace('text="Example, 29"','text="Example, 29" content-desc="Different, 29"')),
+  summary.replace(header,header.replace('[74,1903][379,1972]','[74,2200][379,2269]')),
+  summary.replace('videoView_videoContainer','unknownPlayer'),
+  summary.replace('resource-id="com.bumble.app:id/videoView_videoContainer"','resource-id="com.bumble.app:id/videoView_videoContainer" visible-to-user="false"'),
+  summary.replace('bounds="[21,231][1059,2162]" resource-id="com.bumble.app:id/videoView_videoContainer"','bounds="[21,300][1059,2162]" resource-id="com.bumble.app:id/videoView_videoContainer"'),
+  summary.replace('encountersGridItem_summaryContainer','encountersGridItem_photoContainer'),
+  summary.replace(header,footerNode('android.widget.TextView','[74,1800][379,1850]','text="Unrelated text"')+header),
+  summary+summary,
+ ];
+ for(const [i,content]of bad.entries()){const s=read(nativeFooterFeed(footerCard(content)));assert.equal(s.identity,null,'sample '+i);assert.equal(s.controls.like,null,'sample '+i);}
+ assert.equal(read(nativeFooterFeed(footerCard(summary,1)+footerCard('',2))).identity,null);
+ const xml=nativeFooterFeed(footerCard(summary));
+ assert.equal(read(xml,{foreground:'co.hinge.app'}).kind,'blocked');
+ for(const extra of ['<node package="com.android.systemui"/>',footerNode('android.app.Dialog','[74,500][900,1200]'),footerNode('android.view.View','[74,500][900,1200]','clickable="true" text="Buy"')])assert.equal(read(xml.replace('</hierarchy>',extra+'</hierarchy>')).kind,'blocked');
+});
+
+test('a new header-only video reconciles the earlier Bumble Like without another action',async()=>{
+ const Controller=require('../desktop/mobile-controller.cjs'),old=read(feed(evidenceCard('Previous'))),xml=nativeFooterFeed(footerCard(unlabeledVideoSummary({detail:''})));
+ let reads=0;const noInput=()=>assert.fail('reconciliation must only observe the new card');
+ const c=new Controller({platform:'bumble',android:{serial:'fixture',inputEpoch:0,hierarchy:async()=>{reads++;return {xml,foreground:'com.bumble.app'};},scrollProfile:noInput,tapControl:noInput,swipeProfile:noInput,refreshFeed:noInput},readScreen,wait:async()=>{}});
+ c.lastAction={identity:old.identity,name:old.name,profileDiscriminator:old.profileDiscriminator};c.session.count=7;
+ assert.equal(await c.reconcilePending(c.lastAction,c.token(),()=>true),true);
+ assert.equal(reads,2);assert.equal(c.lastAction,null);assert.equal(c.session.count,7);assert.equal(c.session.endsAt,null);
+});
+
+test('header-only video cannot clear a same-name same-age Bumble guard or a changing next card',async()=>{
+ const Controller=require('../desktop/mobile-controller.cjs'),complete=nativeFooterFeed(footerCard(unlabeledVideoSummary())),headerOnly=nativeFooterFeed(footerCard(unlabeledVideoSummary({detail:''})));
+ for(const changing of [false,true]){
+  const old=read(changing?feed(evidenceCard('Previous')):complete),guard={identity:old.identity,name:old.name,profileDiscriminator:old.profileDiscriminator};let reads=0;
+  const noInput=()=>assert.fail('guard reconciliation must not act');
+  const c=new Controller({platform:'bumble',android:{serial:'fixture',inputEpoch:0,hierarchy:async()=>({xml:++reads===2&&changing?nativeFooterFeed(footerCard(unlabeledVideoSummary({name:'Another',detail:''}))):headerOnly,foreground:'com.bumble.app'}),scrollProfile:noInput,tapControl:noInput,swipeProfile:noInput},readScreen,wait:async()=>{}});
+  c.lastAction=guard;c.session.count=7;
+  assert.equal(await c.reconcilePending(guard,c.token(),()=>true),false);assert.equal(c.lastAction,guard);assert.equal(c.session.count,7);
+ }
+});
+
 test('unlabeled Bumble video requires complete unique native player and static header evidence',()=>{
  const summary=unlabeledVideoSummary(),xml=nativeFooterFeed(footerCard(summary));
  const badSummaries=[
-  unlabeledVideoSummary({detail:''}),unlabeledVideoSummary({age:17}),
+  unlabeledVideoSummary({age:17}),
   summary.replace('encountersGridItem_summaryContainer','encountersGridItem_photoContainer'),
   summary.replace('videoView_videoContainer','unknownPlayer'),
   summary.replace('class="android.widget.FrameLayout"','class="android.view.View"'),
