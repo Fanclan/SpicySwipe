@@ -74,6 +74,24 @@ function photoRevealDirection(photo) {
  }
  return null;
 }
+function ownedPhotoConfirmation(photo,comment,buttons) {
+ const p=bounds(photo),form=comment.parent,card=form?.parent,f=form&&bounds(form),c=card&&bounds(card);
+ const inert=n=>n?.a.class==='android.view.View'&&n.enabled&&n.visible&&
+  !['clickable','scrollable','long-clickable','checkable','checked','focusable','focused','selected','password'].some(k=>n.a[k]==='true');
+ const inside=(inner,outer)=>inner&&outer&&inner.x>=outer.x&&inner.y>=outer.y&&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
+ if(!p||!photo.enabled||!fullyVisible(photo)||photo.a.clickable==='true'||!inert(form)||!inert(card)||!f||!c||
+   !inside(p,c)||f.x!==c.x||f.width!==c.width||f.y!==p.y+p.height||f.y+f.height!==c.y+c.height||
+   !inside(bounds(comment),f)||!fullyVisible(comment)||buttons.some(n=>n.parent!==form||!inside(bounds(n),f)))return false;
+ // Compose may expose the unclipped original top in inner wrappers. The outer
+ // photo subtree is still the exact visible image and is a sibling of the form.
+ let wrapper=photo.parent;
+ for(;wrapper&&wrapper!==card;wrapper=wrapper.parent){
+  const w=bounds(wrapper);
+  if(!inert(wrapper)||!w||w.x!==p.x||w.width!==p.width||w.y>p.y||w.y<c.y||w.y+w.height!==p.y+p.height)return false;
+  if(wrapper.parent===card)return w.y===p.y&&w.height===p.height;
+ }
+ return false;
+}
 function visibleVerticalMedia(item, owner) {
  const box = bounds(item);
  if (!box || !item.visible) return null;
@@ -522,7 +540,10 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
    return fullyVisible(n)&&editor&&b.x===editor.x&&b.width===editor.width&&b.y+b.height<=editor.y&&wrapper?.a.class==='android.view.View'&&w&&w.x===b.x&&w.y===b.y&&w.width===b.width&&w.height===b.height&&card?.a.class==='android.view.View'&&card===form?.parent&&form.a.class==='android.view.View'&&f?.y===b.y+b.height;
   });
   if(confirmation.length+promptConfirmation.length!==1)return block('The selected confirmation content is ambiguous.');
-  if(promptConfirmation.length&&[...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')].some(n=>n.parent!==comment[0].parent))return block('The prompt Like controls must belong to its comment form.');
+  const formButtons=[...priority,...ordinary,...find('Send a Rose'),...find('Send a Rose with message')];
+  if(confirmation.length&&!ownedPhotoConfirmation(confirmation[0],comment[0],formButtons))return block('The selected photo and Like controls must belong to one native comment card.');
+  if(confirmation.length&&visible.some(n=>/EditText$/.test(n.a.class||'')||n.a.password==='true'))return block('An unfamiliar editor requires user attention.');
+  if(promptConfirmation.length&&formButtons.some(n=>n.parent!==comment[0].parent))return block('The prompt Like controls must belong to its comment form.');
   const photoBounds=confirmation.length?bounds(confirmation[0]):null;
   const photoCaptionControl=n=>{
    const b=bounds(n),p=photoBounds;
@@ -574,6 +595,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   result.reason=result.controls.sendLike?'':'Like submission requires verified comment contents and an unambiguous ordinary Like button.';
   result.photos = confirmation.map(n => ({ key: hash(['photo', label(n),bounds(n)]), bounds: bounds(n), like: null }));
   result.prompts = promptConfirmation.map(n=>({key:hash(['prompt',label(n),bounds(n)]),text:label(n),bounds:bounds(n),like:null}));
+  if(confirmation.length)result.nativePhotoForm=true;
   return result;
  }
  const allowedLabels = new Set([...profileContentLabels, 'Undo last skip', 'More', 'Selfie Verified', 'Dating Preferences']);
