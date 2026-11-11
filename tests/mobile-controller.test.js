@@ -3039,3 +3039,240 @@ test('refresh-only recovery never relaunches when its cooldown reservation canno
  assert.equal(refreshes,0);assert.equal(x.c.heldPromptRefresh,null);assert.deepEqual(x.c.rejectedPhoto,x.hint);
  assert.equal(x.saved().nextFeedRefreshAt,0);assert.equal(x.commits(),0);
 });
+
+async function previewProofFixture({held=false}={}){
+ const V=require('../desktop/mobile-vision.cjs'),{photoPicture,scene}=require('./fixtures/hinge-preview-image.cjs');
+ const sourceBox={x:40,y:451,width:640,height:640},formBox={x:72,y:137,width:576,height:271};
+ const skip={...control('Skip Example'),bounds:{x:40,y:948,width:124,height:124}};
+ const opener={...control('Like photo prompt'),bounds:{x:564,y:975,width:96,height:96}},send={...control('Send like'),bounds:{x:200,y:800,width:300,height:80}};
+ const source=screen({identity:'preview-entry',screenKey:'entry',photos:[{key:'photo',bounds:sourceBox,like:opener}],prompts:[],
+  controls:{skip,like:null,sendLike:null,composer:null,comment:null},recoveryChromeKey:'c'.repeat(64)});
+ const form=screen({kind:'like',identity:'preview-form',screenKey:'form',photos:[{key:'preview',bounds:formBox,like:null}],prompts:[],
+  controls:{sendLike:send,composer:control('composer'),comment:control('Edit comment')},composerTextVerified:true,composerText:''});
+ const sourceProof=V.previewPhotoEvidence(photoPicture(sourceBox),sourceBox,'profile',[skip.bounds,opener.bounds]);
+ const formProof=V.previewPhotoEvidence(photoPicture(formBox),formBox,'like',[]);
+ assert.ok(V.hasSourcePreviewProof(sourceProof));assert.ok(V.samePreviewPhoto(sourceProof,formProof));
+ const wrongProof=()=>V.previewPhotoEvidence(photoPicture(formBox,(u,v)=>scene(1-u,v)),formBox,'like',[]);
+ let saved,commits=0,refreshes=0,currentFormProof=formProof,currentSourceProof=sourceProof;
+ const taps=[];const x=setup(source,{readScreen:xml=>structuredClone(xml),isManagedPhone:()=>true,checkpointStore:{read:()=>null,write:cp=>{saved=structuredClone(cp)}},
+  readEvidence:async s=>({hashes:s.photos.map(()=>s.kind==='like'?'ffffffffffffffff':'0123456789abcdef'),
+   previewEvidence:s.photos.map(()=>s.kind==='like'?currentFormProof:currentSourceProof)})});
+ await x.c.request('config',{mode:'like',autoOpeners:false,autoSend:false,scrollMin:0,scrollMax:0,
+  swipe:{likeRatio:1,maxSwipes:1000,sessionMinutes:null,allowBackground:true,breaksEnabled:false,browsePhotos:false,scrollProfile:true}});
+ Object.assign(x.c.session,{status:'running',runId:'d'.repeat(32),count:96,endsAt:null,config:{...x.c.config.swipe}});
+ x.c.binding={serial:x.android.serial,avd:'preview-phone'};x.c.reservedCount=96;
+ x.android.deviceIdentity=async()=>({...x.c.binding});
+ if(held)x.c.rejectedPhoto={nameDigest:require('node:crypto').createHash('sha256').update(source.name).digest('hex'),
+  sourceIdentity:'rejected-source',visual:'123456789abcdef0',entryIdentity:source.identity,entryVisual:'0123456789abcdef',
+  heldIdentity:'old-endpoint',heldRevision:'old-held-revision',attempted:true,runId:x.c.session.runId,endsAt:null,count:96,
+  serial:x.android.serial,avd:x.c.binding.avd,promptScan:'spent',promptMovesRemaining:0,entryPromptScan:true};
+ x.c.persist();const original=structuredClone(x.c.rejectedPhoto);
+ x.android.refreshFeed=async(_p,valid,_wait,beforeStop)=>{await beforeStop();assert.equal(valid(),true);refreshes++;x.set(source)};
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);taps.push(bounds);issued?.();
+  x.set(taps.length===1?form:screen({kind:'empty',identity:null,photos:[],prompts:[],controls:{}}));};
+ const step=()=>{const epoch=x.c.session.epoch;return x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(epoch),
+  ()=>{commits++;x.c.session.count++},async()=>true,x.c.token())};
+ return {...x,source,form,sourceBox,formBox,sourceProof,formProof,wrongProof,opener,send,taps,step,original,
+  saved:()=>saved,commits:()=>commits,refreshes:()=>refreshes,
+  setFormProof:value=>currentFormProof=value,setSourceProof:value=>currentSourceProof=value};
+}
+
+test('preview-proof repairs an ordinary blank photo preview without exposing private evidence or changing its screen revision',async()=>{
+ const x=await previewProofFixture();const before=await x.c.read(x.c.token());
+ assert.equal(JSON.stringify(x.c.snapshot()).includes('previewEvidence'),false);
+ await x.step();assert.deepEqual(x.taps,[x.opener.bounds,x.send.bounds]);assert.equal(x.commits(),1);
+ assert.equal(x.c.session.count,97);assert.equal(x.saved().session.count,97);assert.equal(x.c.lastAction,null);
+ assert.equal(before.photos[0].visual,'0123456789abcdef');
+});
+
+test('preview-proof gives a spent entry exactly one durably reserved opener after acknowledged inventory refresh',async()=>{
+ const x=await previewProofFixture({held:true});await x.step();assert.equal(x.refreshes(),1);assert.deepEqual(x.taps,[]);
+ const tap=x.android.tapControl;x.android.tapControl=async(...args)=>{
+  if(!x.taps.length){const h=x.saved().rejectedPhoto;assert.equal(h.previewVerification.version,1);
+   const {previewVerification,...old}=h;assert.deepEqual(old,x.original);assert.equal(x.saved().session.count,96)}
+  return tap(...args);
+ };
+ await x.step();assert.deepEqual(x.taps,[x.opener.bounds,x.send.bounds]);assert.equal(x.commits(),1);
+ assert.equal(x.saved().session.count,97);assert.equal(x.saved().rejectedPhoto,undefined);
+});
+
+test('preview-proof checkpoint extension is optional, exact and cannot invent a fresh or malformed allowance',async()=>{
+ const x=await previewProofFixture({held:true}),cp=x.saved();x.c.restoreCheckpoint(cp);
+ assert.deepEqual(x.c.checkpoint().rejectedPhoto,cp.rejectedPhoto);
+ const good={version:1,sourceRevision:'known-entry',chromeKey:'c'.repeat(64)};
+ const restored=structuredClone(cp);restored.rejectedPhoto.previewVerification=good;
+ x.c.restoreCheckpoint(JSON.parse(JSON.stringify(restored)));assert.deepEqual(x.c.checkpoint().rejectedPhoto.previewVerification,good);
+ for(const bad of [null,false,{}, {...good,version:2},{...good,extra:true},{...good,sourceRevision:''},{...good,chromeKey:'bad'}]){
+  const altered=structuredClone(cp);altered.rejectedPhoto.previewVerification=bad;
+  assert.throws(()=>x.c.restoreCheckpoint(altered),/preview|rejected/i);
+ }
+});
+
+test('preview-proof rechecks source pixels before its opener and form pixels immediately before Send',async()=>{
+ const V=require('../desktop/mobile-vision.cjs'),{photoPicture,scene}=require('./fixtures/hinge-preview-image.cjs');
+ for(const changed of ['source','form']){
+  const x=await previewProofFixture({held:true});await x.step();let reads=0;
+  const evidence=x.c.readEvidence;
+  const different=V.previewPhotoEvidence(photoPicture(x.sourceBox,(u,v)=>scene(1-u,v)),x.sourceBox,'profile',[x.source.controls.skip.bounds,x.opener.bounds]);
+  x.c.readEvidence=async(s,...args)=>{
+   if(s.kind===(changed==='source'?'profile':'like')&&++reads===(changed==='source'?3:2)){
+    if(changed==='source')x.setSourceProof(different);else x.setFormProof(x.wrongProof());
+   }
+   return evidence(s,...args);
+  };
+  await x.step();assert.equal(x.taps.length,changed==='source'?0:1,changed);assert.equal(x.commits(),0,changed);
+  assert.equal(x.saved().session.count,96);assert.equal(x.saved().pendingAction,null);
+  assert.equal(x.saved().rejectedPhoto.previewVerification.version,1);
+ }
+});
+
+test('preview-proof rejects unverified, wrong-recipient, message, Rose and nonblank forms without a Send',async()=>{
+ for(const mode of ['wrong-image','wrong-name','unverified','typed','Rose','message','prompt','missing-composer']){
+  const x=await previewProofFixture({held:true});await x.step();const altered=structuredClone(x.form);
+  if(mode==='wrong-image')x.setFormProof(x.wrongProof());
+  if(mode==='wrong-name')altered.name='Other';
+  if(mode==='unverified')altered.composerTextVerified=false;
+  if(mode==='typed')altered.composerText='unsent';
+  if(mode==='Rose')altered.controls.sendLike.label='Send a Rose';
+  if(mode==='message')altered.controls.sendLike.label='Send like with message';
+  if(mode==='prompt')altered.prompts=[{key:'different',text:'Different item'}];
+  if(mode==='missing-composer')altered.controls.composer=null;
+  x.android.tapControl=async(bounds,valid)=>{assert.equal(valid(),true);x.taps.push(bounds);x.set(altered)};
+  await x.step();await x.step();assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
+  assert.equal(x.saved().session.count,96);assert.equal(x.saved().pendingAction,null);
+ }
+});
+
+test('preview-proof never rearms a lost or interrupted opener, including checkpoint restore',async()=>{
+ for(const mode of ['lost','pause']){
+  const x=await previewProofFixture({held:true});await x.step();
+  x.android.tapControl=async(bounds,valid)=>{assert.equal(valid(),true);x.taps.push(bounds);x.set(x.form);
+   if(mode==='pause')await x.c.request('pause');
+   else throw Object.assign(Error('lost opener acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  };
+  if(mode==='pause')await assert.rejects(x.step());else await x.step();
+  const saved=x.saved(),{previewVerification,...old}=saved.rejectedPhoto;
+  assert.equal(previewVerification.version,1);assert.deepEqual(old,x.original);assert.equal(saved.session.count,96);
+  x.c.restoreCheckpoint(JSON.parse(JSON.stringify(saved)));x.c.session.status='running';x.set(x.source);
+  x.c.heldPromptRefresh={hint:x.c.rejectedPhoto,epoch:x.c.session.epoch,until:x.c.session.now()+300000};
+  await x.step();await x.step();assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
+  assert.deepEqual(x.c.rejectedPhoto.previewVerification,previewVerification);
+ }
+});
+
+test('preview-proof requires fresh refresh acknowledgment and unchanged native ownership, budget and settings',async()=>{
+ for(const mode of ['no-ack','expired-ack','wrong-epoch','wrong-hint','custom','background','session-background','paused','cap','deadline','draft','pending','messages','ratio','different-entry']){
+  const x=await previewProofFixture({held:true});await x.step();
+  if(mode==='no-ack')x.c.heldPromptRefresh=null;
+  if(mode==='expired-ack')x.c.heldPromptRefresh.until=0;
+  if(mode==='wrong-epoch')x.c.heldPromptRefresh.epoch++;
+  if(mode==='wrong-hint')x.c.heldPromptRefresh.hint={...x.c.rejectedPhoto};
+  if(mode==='custom')x.c.isManagedPhone=()=>false;
+  if(mode==='background')x.c.config.swipe.allowBackground=false;
+  if(mode==='session-background')x.c.session.config.allowBackground=false;
+  if(mode==='paused')x.c.session.status='paused';
+  if(mode==='cap')x.c.session.config.maxSwipes=96;
+  if(mode==='deadline')x.c.session.endsAt=x.c.rejectedPhoto.endsAt=x.c.session.now()-1;
+  if(mode==='draft')x.c.draft={text:'unsent'};
+  if(mode==='pending')x.c.lastAction={kind:'like',identity:'previous',name:'Example'};
+  if(mode==='messages')x.c.config.autoSend=true;
+  if(mode==='ratio')x.c.session.config.likeRatio=.5;
+  if(mode==='different-entry')x.set({...x.source,identity:'other-entry'});
+  const t=x.c.token(),observed=await x.c.read(t),hint=x.c.rejectedPhoto;
+  await x.c.verifyHeldEntryPreview(observed,hint,t,()=>true,()=>assert.fail('No counted action'));
+  assert.deepEqual(x.taps,[],mode);assert.equal(x.c.rejectedPhoto.previewVerification,undefined,mode);
+ }
+});
+
+test('preview-proof keeps the old receipt when persistence fails before its one opener',async()=>{
+ const x=await previewProofFixture({held:true});await x.step();const before=x.saved(),write=x.c.checkpointStore.write;
+ x.c.checkpointStore.write=cp=>{if(cp.rejectedPhoto?.previewVerification)throw Error('Storage failed');write(cp)};
+ await assert.rejects(x.step(),/Storage failed/);assert.deepEqual(x.taps,[]);assert.equal(x.commits(),0);
+ assert.deepEqual(x.saved().rejectedPhoto,before.rejectedPhoto);assert.equal(x.saved().session.count,96);
+});
+
+test('preview-proof honors consent and configuration changes while the preview is open',async()=>{
+ for(const mode of ['consent','config','run','input']){
+  const x=await previewProofFixture({held:true});await x.step();const tap=x.android.tapControl;
+  x.android.tapControl=async(...args)=>{await tap(...args);
+   if(mode==='consent')x.settings({sidebarConsentGiven:false,mobileConfig:{}});
+   if(mode==='config')x.c.config.autoSend=true;
+   if(mode==='run')x.c.session.runId='new-run';
+   if(mode==='input')x.android.cancelInput();
+  };
+  await x.step().catch(()=>{});assert.equal(x.taps.length,1,mode);assert.equal(x.commits(),0,mode);
+  assert.equal(x.saved().pendingAction,null,mode);assert.equal(x.saved().session.count,96,mode);
+ }
+});
+
+test('preview-proof final Like reserves the next original slot once and retains an uncertain Send guard',async()=>{
+ const x=await previewProofFixture({held:true});await x.step();
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);x.taps.push(bounds);
+  if(!issued){x.set(x.form);return}
+  assert.equal(x.saved().session.count,97);assert.equal(x.saved().pendingAction.kind,'like');
+  assert.equal(x.saved().rejectedPhoto,undefined);issued();throw Object.assign(Error('Send acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ await x.step();await x.step();assert.equal(x.taps.length,2);assert.equal(x.commits(),1);
+ assert.equal(x.c.session.count,97);assert.equal(x.saved().session.count,97);assert.equal(x.c.lastAction.kind,'like');
+});
+
+test('preview-proof keeps old screen hashes and rechecks final native overlay ownership before attaching private evidence',async()=>{
+ const x=await previewProofFixture(),t=x.c.token(),first=await x.c.read(t),evidence=x.c.readEvidence;
+ x.c.readEvidence=async(...args)=>{const ev=await evidence(...args);delete ev.previewEvidence;return ev};
+ const old=await x.c.read(t);assert.equal(first.screenKey,old.screenKey);assert.deepEqual(first.photos,old.photos);
+ assert.equal(JSON.stringify(x.c.checkpoint()).includes('previewEvidence'),false);
+ const V=require('../desktop/mobile-vision.cjs'),{photoPicture}=require('./fixtures/hinge-preview-image.cjs');
+ const unbound=V.previewPhotoEvidence(photoPicture(x.sourceBox),x.sourceBox,'profile',[]);
+ x.c.readEvidence=async(...args)=>({...await evidence(...args),previewEvidence:[unbound]});
+ const blocked={...x.source,controls:{...x.source.controls,skip:{...x.source.controls.skip,bounds:{x:240,y:940,width:100,height:100}}}};
+ x.set(blocked);await x.step();assert.deepEqual(x.taps,[]);assert.equal(x.commits(),0);
+});
+
+test('preview-proof lets existing interrupted recovery retirement finish before admitting a new entry verification',async()=>{
+ const x=await previewProofFixture({held:true});await x.step();
+ x.c.rejectedPhoto.promptRecovery={chromeKey:x.source.recoveryChromeKey,opened:false,
+  continuation:{sourceRevision:'older-source',state:'moving',remaining:4}};
+ await x.step();assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.state,'spent');
+ assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.remaining,4);
+ assert.equal(x.c.rejectedPhoto.previewVerification,undefined);assert.deepEqual(x.taps,[]);
+});
+
+test('preview-proof actual session worker consumes the thousandth slot and cannot open a thousand-and-first card',async()=>{
+ const x=await previewProofFixture({held:true}),rid=x.c.session.runId;
+ x.c.session.count=x.c.reservedCount=x.c.rejectedPhoto.count=999;x.c.persist();
+ let waits=0;x.c.session.wait=async()=>{if(++waits>12)throw Error('The held preview never completed')};
+ x.c.session.status='paused';x.c.session.start(x.c.config.swipe);
+ await new Promise(resolve=>setImmediate(resolve));await x.c.drain();
+ assert.equal(x.c.session.status,'complete',x.c.session.error);assert.equal(x.c.session.completionReason,'limit');
+ assert.equal(x.c.session.runId,rid);assert.equal(x.c.session.count,1000);assert.equal(x.saved().session.count,1000);
+ assert.equal(x.c.lastAction,null);assert.deepEqual(x.taps,[x.opener.bounds,x.send.bounds]);
+ await x.step();assert.equal(x.taps.length,2);
+});
+
+test('preview-proof ordinary Send remains bound to its exact reservation after a checkpoint-write race',async()=>{
+ for(const mode of ['config','binding','run','count','deadline']){
+  const x=await previewProofFixture(),write=x.c.checkpointStore.write;let changed=false;
+  x.c.checkpointStore.write=cp=>{write(cp);if(cp.pendingAction?.kind==='like'&&!changed){changed=true;
+   if(mode==='config')x.c.config.autoSend=true;
+   if(mode==='binding')x.c.binding={...x.c.binding,avd:'another-phone'};
+   if(mode==='run')x.c.session.runId='another-run';
+   if(mode==='count')x.c.session.count++;
+   if(mode==='deadline')x.c.session.endsAt=x.c.session.now()+3600000;
+  }};
+  await x.step().catch(()=>{});assert.equal(changed,true,mode);
+  assert.deepEqual(x.taps,[x.opener.bounds],mode);assert.equal(x.commits(),0,mode);
+  assert.equal(x.c.lastAction?.kind,'like',mode);
+ }
+});
+
+test('preview-proof dispatch retains visibility and managed ownership after reservation',async()=>{
+ for(const held of [false,true]){
+  const x=await previewProofFixture({held});
+  if(held)await x.step();else{x.c.config.swipe.allowBackground=false;x.c.session.config.allowBackground=false;}
+  const write=x.c.checkpointStore.write;let changed=false;
+  x.c.checkpointStore.write=cp=>{write(cp);if(cp.pendingAction?.kind==='like'&&!changed){changed=true;
+   if(held)x.c.isManagedPhone=()=>false;else x.c.visible=false;
+  }};
+  await x.step().catch(()=>{});assert.equal(changed,true);assert.deepEqual(x.taps,[x.opener.bounds]);assert.equal(x.commits(),0);
+ }
+});

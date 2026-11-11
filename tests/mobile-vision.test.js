@@ -1,7 +1,89 @@
 'use strict';
 const {test}=require('node:test');const assert=require('node:assert/strict');const {evidence}=require('../desktop/mobile-vision.cjs');
+const previewFixture=require('./fixtures/hinge-preview-image.cjs');
 const screen={kind:'like',photos:[],controls:{comment:{bounds:{x:10,y:10,width:200,height:80}}}};
 function picture(columns=0){const bytes=Buffer.alloc(200*80*4,255);for(let x=30;x<30+columns;x++)for(let y=20;y<50;y++)for(let c=0;c<3;c++)bytes[(y*200+x)*4+c]=20;const crop={getSize:()=>({width:200,height:80}),toBitmap:()=>bytes,toPNG:()=>Buffer.from('synthetic')};return {getSize:()=>({width:300,height:200}),crop:()=>crop};}
+
+const previewSourceBox={x:40,y:451,width:640,height:640};
+const previewFormBox={x:72,y:137,width:576,height:271};
+function previewProof(box,kind,paint=previewFixture.scene,overlays=[]){
+ return require('../desktop/mobile-vision.cjs').previewPhotoEvidence(previewFixture.photoPicture(box,paint),box,kind,overlays);
+}
+test('private preview proof normalizes the full source to the fresh deep clip without serializing pixels',()=>{
+ const {hasSourcePreviewProof,samePreviewPhoto}=require('../desktop/mobile-vision.cjs');
+ const source=previewProof(previewSourceBox,'profile'),form=previewProof(previewFormBox,'like');
+ assert.equal(hasSourcePreviewProof(source),true);assert.equal(hasSourcePreviewProof(form),false);
+ assert.equal(samePreviewPhoto(source,form),true);
+ assert.deepEqual(JSON.parse(JSON.stringify(source)),{version:1,kind:'profile'});
+ assert.deepEqual(Object.keys(source),['version','kind']);assert.ok(Object.isFrozen(source));
+ assert.equal(samePreviewPhoto(JSON.parse(JSON.stringify(source)),form),false);
+ assert.equal(samePreviewPhoto(source,JSON.parse(JSON.stringify(form))),false);
+});
+test('private preview proof rejects changed content, wrong anchors, mirrors and every changed window',()=>{
+ const {samePreviewPhoto}=require('../desktop/mobile-vision.cjs'),scene=previewFixture.scene;
+ const source=previewProof(previewSourceBox,'profile');
+ for(const paint of [(u,v)=>scene(1-u,v),(u,v)=>scene(u,v-.265),
+  (u,v)=>u<.44&&v<.75?scene(1-u,v):scene(u,v),
+  (u,v)=>u>.48&&v<.75?scene(1-u,v):scene(u,v),
+  (u,v)=>v>.75?scene(1-u,v):scene(u,v)]){
+  assert.equal(samePreviewPhoto(source,previewProof(previewFormBox,'like',paint)),false);
+ }
+ for(const paint of [()=>[80,90,100],(u,v)=>[u,v,v].map(n=>Math.round(60+90*n)),
+  (u,v)=>scene(u,((v-.56)% .265+.265)% .265+.56)]){
+  assert.equal(samePreviewPhoto(previewProof(previewSourceBox,'profile',paint),previewProof(previewFormBox,'like',paint)),false);
+ }
+});
+test('private preview proof refuses overlays on its fixed windows and anchors but avoids the old Skip window',()=>{
+ const {hasSourcePreviewProof}=require('../desktop/mobile-vision.cjs');
+ const skip={x:40,y:948,width:124,height:124},like={x:564,y:975,width:96,height:96};
+ assert.equal(hasSourcePreviewProof(previewProof(previewSourceBox,'profile',undefined,[skip,like])),true);
+ for(const overlay of [{x:91,y:809,width:8,height:8},{x:354,y:809,width:8,height:8},
+  {x:232,y:937,width:8,height:8},{x:91,y:470,width:8,height:8}]){
+  assert.equal(previewProof(previewSourceBox,'profile',undefined,[overlay]),null);
+ }
+});
+test('private preview source freshness binds exact whole-crop pixels and bounds',()=>{
+ const {samePreviewSourceFrame}=require('../desktop/mobile-vision.cjs'),scene=previewFixture.scene;
+ const source=previewProof(previewSourceBox,'profile');
+ assert.equal(samePreviewSourceFrame(source,previewProof(previewSourceBox,'profile')),true);
+ assert.equal(samePreviewSourceFrame(source,previewProof(previewSourceBox,'profile',(u,v)=>scene(u,v).map(n=>Math.min(255,n+1)))),false);
+ assert.equal(samePreviewSourceFrame(source,previewProof({...previewSourceBox,x:41},'profile')),false);
+ assert.equal(samePreviewSourceFrame(source,previewProof(previewFormBox,'like')),false);
+});
+test('private preview proof rechecks native Skip and Like overlays after identity reconstruction',()=>{
+ const {previewSourceOverlaysClear}=require('../desktop/mobile-vision.cjs');
+ const source=previewProof(previewSourceBox,'profile');
+ const skip={x:40,y:948,width:124,height:124},like={x:564,y:975,width:96,height:96};
+ assert.equal(previewSourceOverlaysClear(source,[skip,like]),true);
+ assert.equal(previewSourceOverlaysClear(source,[{x:232,y:937,width:20,height:20},like]),false);
+ assert.equal(previewSourceOverlaysClear(source,[skip,{x:354,y:809,width:20,height:20}]),false);
+ assert.equal(previewSourceOverlaysClear(source,[null,like]),false);
+ assert.equal(previewSourceOverlaysClear(source,[]),false);
+ assert.equal(previewSourceOverlaysClear(previewProof(previewFormBox,'like'),[skip,like]),false);
+});
+test('private preview proof refuses unmeasured geometry and upscaling',()=>{
+ const {samePreviewPhoto}=require('../desktop/mobile-vision.cjs');
+ for(const box of [{...previewSourceBox,height:639},{...previewSourceBox,x:-1},{...previewSourceBox,width:159,height:159}]){
+  const picture=previewFixture.photoPicture(previewSourceBox);
+  assert.equal(require('../desktop/mobile-vision.cjs').previewPhotoEvidence(picture,box,'profile'),null);
+ }
+ for(const height of [250,300,576])assert.equal(previewProof({...previewFormBox,height},'like'),null);
+ assert.equal(samePreviewPhoto(previewProof({x:40,y:40,width:320,height:320},'profile'),previewProof(previewFormBox,'like')),false);
+});
+test('private preview evidence leaves saved legacy revision and scroll evidence unchanged',async()=>{
+ const expected=[
+  {kind:'profile',hashes:['162ead455a9a96d6'],patchDigests:['8eb5a04193bc957d12034c61e743a3fd5ca515de61e102dc4be1ea680c7dd793'],squareHashes:[null],scrollPhoto:false},
+  {kind:'like',hashes:['9a5a96a6a2b5a528'],patchDigests:['9622e4272fb6f6d8e6b07cb7fce2998b8d38a9651f662db755c6e581d65d38de'],squareHashes:[null],scrollPhoto:false}
+ ];
+ for(const [index,[kind,bounds]]of[['profile',previewSourceBox],['like',previewFormBox]].entries()){
+  const screen={platform:'hinge',kind,controls:{skip:kind==='profile'?{bounds:{x:40,y:948,width:124,height:124}}:null},
+   photos:[{bounds,like:kind==='profile'?{bounds:{x:564,y:975,width:96,height:96}}:null}]};
+  const value=await evidence(previewFixture.photoPicture(bounds),screen);
+  assert.ok(value.previewEvidence[0]);
+  assert.deepEqual({kind,hashes:value.hashes,patchDigests:value.patchEvidence.map(p=>p?.digest||null),
+   squareHashes:value.squareHashes,scrollPhoto:!!value.scrollPhoto},expected[index]);
+ }
+});
 test('capture still runs for photo cards, confirmations, unrecognized screens and other platforms',async()=>{
  const {captureEvidence}=require('../desktop/mobile-vision.cjs');
  const profile={platform:'bumble',kind:'profile',controls:{},photos:[]};

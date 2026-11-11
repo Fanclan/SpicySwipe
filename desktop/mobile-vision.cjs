@@ -89,6 +89,69 @@ function sameClippedPhoto(original,confirmation) {
  const textured=original.windows.filter((w,i)=>comparisons[i].textured);
  return textured.some((w,i)=>textured.slice(i+1).some(other=>!matchingWindow(w,other).close));
 }
+// Preview evidence is deliberately separate from legacy revision/scroll patches.
+// Its opaque handles serialize only metadata; native pixels live in this WeakMap.
+const previewFrames=new WeakMap();
+const previewWindows=[[.08,.56,.35,.19],[.49,.56,.35,.19],[.30,.76,.35,.15]];
+const previewAnchors=[[.08,.03,.35,.19],[.08,.295,.35,.19]];
+function previewWindowsFor(picture,box,source){
+ const windows=previewWindows.map(rect=>sampleWindow(picture,box,...rect));
+ if(windows.some(value=>!value))return null;
+ if(source&&previewAnchors.some(rect=>{
+  const other=sampleWindow(picture,box,...rect);
+  return !other||matchingWindow(windows[0],other).close;
+ }))return null;
+ return windows;
+}
+function previewOverlaysClear(box,kind,overlays){
+ return Array.isArray(overlays)&&!overlays.some(overlay=>!overlay||
+  !['x','y','width','height'].every(key=>Number.isSafeInteger(overlay[key]))||overlay.width<=0||overlay.height<=0||
+  [...previewWindows,...(kind==='profile'?previewAnchors:[])].some(rect=>{
+   const p=patchBounds(box,...rect);
+   return p.x<overlay.x+overlay.width&&overlay.x<p.x+p.width&&p.y<overlay.y+overlay.height&&overlay.y<p.y+p.height;
+  }));
+}
+function previewPhotoEvidence(picture,box,kind,overlays=[]){
+ try{
+  if(!picture||!box||!['profile','like'].includes(kind)||!Array.isArray(overlays)||
+     !['x','y','width','height'].every(key=>Number.isSafeInteger(box[key])))return null;
+  const size=picture.getSize();
+  if(box.x<0||box.y<0||box.width<160||box.width>1600||box.height<=0||
+     box.x+box.width>size.width||box.y+box.height>size.height)return null;
+  if(kind==='profile'?box.height!==box.width:box.height/box.width<.45||box.height/box.width>.50)return null;
+  if(!previewOverlaysClear(box,kind,overlays))return null;
+  const crop=picture.crop(box),local={x:0,y:0,width:box.width,height:box.height};
+  const windows=previewWindowsFor(crop,local,kind==='profile');
+  if(!windows||!sameClippedPhoto({kind:'profile',windows},{kind:'like',windows}))return null;
+  const bytes=crop.toBitmap();
+  if(bytes.length!==box.width*box.height*4)return null;
+  const handle=Object.freeze({version:1,kind});
+  previewFrames.set(handle,{kind,crop,box:{...box},windows,
+   digest:crypto.createHash('sha256').update(bytes).digest('hex')});
+  return handle;
+ }catch{return null}
+}
+function hasSourcePreviewProof(proof){return previewFrames.get(proof)?.kind==='profile';}
+function previewSourceOverlaysClear(proof,overlays){
+ const value=previewFrames.get(proof);
+ return Boolean(value?.kind==='profile'&&Array.isArray(overlays)&&overlays.length===2&&previewOverlaysClear(value.box,value.kind,overlays));
+}
+function samePreviewSourceFrame(first,second){
+ const a=previewFrames.get(first),b=previewFrames.get(second);
+ return Boolean(a?.kind==='profile'&&b?.kind==='profile'&&a.digest===b.digest&&
+  ['x','y','width','height'].every(key=>a.box[key]===b.box[key]));
+}
+function samePreviewPhoto(source,confirmation){
+ const a=previewFrames.get(source),b=previewFrames.get(confirmation);
+ if(a?.kind!=='profile'||b?.kind!=='like'||b.box.width>a.box.width)return false;
+ try{
+  // Scale the complete source first. Independently rounded small crops can
+  // otherwise reverse edge gradients between native display resolutions.
+  const side=b.box.width,scaled=a.crop.resize({width:side,height:side,quality:'good'});
+  const windows=previewWindowsFor(scaled,{x:0,y:0,width:side,height:side},true);
+  return Boolean(windows&&sameClippedPhoto({kind:'profile',windows},{kind:'like',windows:b.windows}));
+ }catch{return false}
+}
 // This evidence belongs only to two consecutive native Discover observations.
 function scrollPhotoEvidence(picture,photo,fullProof,overlay){
  const box=photo.bounds;
@@ -151,6 +214,9 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
   squareHashes=(screen.photos||[]).map(p=>p.revealDirection==='down'?squareFingerprint(picture,p.bounds):null);
  }
  const result={hashes,patchEvidence,squareHashes};
+ if(screen.platform==='hinge')result.previewEvidence=(screen.photos||[]).map(photo=>
+  previewPhotoEvidence(picture,photo.bounds,screen.kind,
+   screen.kind==='profile'?[screen.controls?.skip?.bounds,photo.like?.bounds].filter(Boolean):[]));
  if(screen.platform==='hinge'&&screen.kind==='profile'&&screen.photos?.length===1){
   result.scrollPhoto=scrollPhotoEvidence(picture,screen.photos[0],patchEvidence[0],screen.controls?.skip?.bounds);
  }
@@ -168,4 +234,5 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  }
  return result;
 }
-module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,sameScrollPhoto,samePhotoFrame,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};
+module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,sameScrollPhoto,samePhotoFrame,overlapsPhotoPatch,
+ previewPhotoEvidence,hasSourcePreviewProof,previewSourceOverlaysClear,samePreviewSourceFrame,samePreviewPhoto,captureEvidence,evidence,withoutCaret};
