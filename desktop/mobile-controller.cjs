@@ -165,22 +165,24 @@ class MobileController{
   this.assert(t,valid);if(s.kind!=='empty')return s;
   return this.refreshKnownFeed(s,t,valid);
  }
- async refreshKnownFeed(s,t,valid,held=null){
+ async refreshKnownFeed(s,t,valid,held=null,refreshOnly=false){
   this.assert(t,valid);
   const loading=s.kind==='feedLoading'&&this.platform==='hinge'&&this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft;
-  const heldScreen=card=>this.exhaustedReview(t)===held&&this.heldInventoryScreen(card,held);
+  const heldScreen=card=>this.exhaustedReview(t)===held&&(refreshOnly?this.refreshOnlyHeldScreen(card,held,t):this.heldInventoryScreen(card,held));
   const supported=held?heldScreen(s):loading||s.kind==='empty'||this.resumableLike(s);
   if(!supported)throw transientError('Cannot reopen the feed from this screen.');
   if(!loading&&this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
   const revalidate=async()=>{
+   if(refreshOnly){await this.consent(t);this.assert(t,valid);}
    const current=await this.fresh(s,t,valid);this.assert(t,valid);
    if(loading&&this.observedForeground!=='co.hinge.app')throw transientError('Discover left the foreground before refresh.','MOBILE_SCREEN_CHANGED');
-   if(held&&!heldScreen(current))throw transientError('The held Discover profile changed before refresh.','MOBILE_SCREEN_CHANGED');
+   if(held&&(!heldScreen(current)||(refreshOnly&&current.recoveryChromeKey!==s.recoveryChromeKey)))throw transientError('The held Discover profile changed before refresh.','MOBILE_SCREEN_CHANGED');
   };
   await this.verifyBinding(t);await revalidate();
   // Reserve the cooldown durably before relaunch, including failed or interrupted attempts.
   this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
+  if(refreshOnly)this.heldPromptRefresh=null;
   this.reviewContext=null;this.selectedPhoto=null;this.draft=null;this.screen=null;
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
   // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
@@ -193,10 +195,22 @@ class MobileController{
   await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal),beforeStop);
   this.assert(t,valid);
   // Unlike a cooldown reservation, this receipt follows an acknowledged native relaunch.
-  if(held)this.heldPromptRefresh={hint:held,epoch:this.session.epoch,until:this.nextFeedRefreshAt};
+  if(held&&!refreshOnly)this.heldPromptRefresh={hint:held,epoch:this.session.epoch,until:this.nextFeedRefreshAt};
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
-   if(s.kind!=='blocked')return s;
+   if(s.kind!=='blocked'){
+    // A drifted endpoint permits inventory refresh only. It cannot grant another
+    // review unless the relaunch independently returns a strictly recorded card.
+    const known=card=>this.heldInventoryScreen(card,held)&&(exactRejectedSource(card,held)||exactRejectedEntry(card,held));
+    if(refreshOnly&&known(s)){
+     await this.consent(t);await this.verifyBinding(t);const current=await this.fresh(s,t,valid);this.assert(t,valid);
+     await this.consent(t);this.assert(t,valid);
+     if(this.refreshOnlyHeldOwner(held,t)&&known(current)&&this.session.now()<this.nextFeedRefreshAt)
+      this.heldPromptRefresh={hint:held,epoch:this.session.epoch,until:this.nextFeedRefreshAt};
+     return current;
+    }
+    return s;
+   }
   }
   return s;
  }
@@ -216,13 +230,26 @@ class MobileController{
   const named=s.controls?.skip?.label==='Skip '+s.name||(!s.identity&&!s.controls?.skip&&s.context?.name===s.name);
   return (named&&s.screenKey===hint.heldRevision&&hint.heldIdentity===(s.identity||null))||exactRejectedSource(s,hint)||exactRejectedEntry(s,hint);
  }
- async checkHeldInventory(s,hint,t,valid,sleep){
+ refreshOnlyHeldOwner(hint,t){
+  return Boolean(hint?.runId&&this.exhaustedReview(t)===hint&&this.binding?.avd&&this.isManagedPhone(this.binding)&&
+   this.config.swipe.allowBackground&&this.session.config.allowBackground&&!this.config.autoOpeners&&!this.config.autoSend);
+ }
+ refreshOnlyHeldScreen(s,hint,t){
+  return this.refreshOnlyHeldOwner(hint,t)&&this.observedForeground==='co.hinge.app'&&s.platform==='hinge'&&s.kind==='profile'&&
+   Boolean(s.screenKey&&s.name&&hint.heldIdentity)&&s.identity===hint.heldIdentity&&nameDigest(s.name)===hint.nameDigest&&
+   /^[a-f0-9]{64}$/.test(s.recoveryChromeKey||'')&&s.controls?.skip?.label==='Skip '+s.name&&
+   s.photos?.length===1&&photoFingerprint(s.photos[0].visual)&&!s.photos[0].like&&!s.prompts?.length&&!s.controls?.like&&!s.controls?.sendLike&&
+   !s.controls?.composer&&!s.composerText?.trim();
+ }
+ async checkHeldInventory(s,hint,t,valid,sleep,refreshOnly=false){
   const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
-  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint;
+  const settings=refreshOnly?JSON.stringify([this.config,this.session.config]):null;
+  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&
+   (!refreshOnly||(this.refreshOnlyHeldOwner(hint,t)&&JSON.stringify([this.config,this.session.config])===settings));
   if(this.session.now()<this.nextFeedRefreshAt||!await sleep(30000,waiting.phase))return waiting;
   this.assert(t,owned);await this.consent(t);this.assert(t,owned);
   let after;
-  try{after=await this.refreshKnownFeed(s,t,owned,hint)}catch(error){
+  try{after=await this.refreshKnownFeed(s,t,owned,hint,refreshOnly)}catch(error){
    this.assert(t,valid);
    if(error.code==='MOBILE_SCREEN_CHANGED')return {retryAfter:1000,phase:'checking next profile'};
    if(transientRead.has(error.code))return waiting;
@@ -504,10 +531,23 @@ class MobileController{
    }
    const held=this.exhaustedReview(t);
    if(held){const backtrack=await this.backtrackPrompt(observed,held,t,valid,commit,sleep);if(backtrack)return backtrack;}
+   let unchangedRecovery=true;
    if(held&&(held.promptRecovery||this.heldPromptRefresh?.hint===held)){
+    const state=()=>JSON.stringify([held,this.session.checkpoint(),this.config,this.binding,this.lastAction,this.draft]);
+    const before=state();
     const recovery=await this.recoverRefreshedPrompt(observed,held,t,valid,commit,sleep);
-    if(recovery)return recovery;
+    unchangedRecovery=state()===before;
+    if(recovery){
+     // Existing retirement, binding and verified prompt work keep precedence.
+     // Only an unchanged waiting result may fall through to inventory refresh.
+     const current=this.screen;
+     if(!unchangedRecovery||recovery.phase!=='waiting for another profile'||!current||
+        this.heldInventoryScreen(current,held)||!this.refreshOnlyHeldScreen(current,held,t))return recovery;
+     observed=current;
+    }
    }
+   if(held&&unchangedRecovery&&!this.heldInventoryScreen(observed,held)&&this.refreshOnlyHeldScreen(observed,held,t))
+    return await this.checkHeldInventory(observed,held,t,valid,sleep,true);
    if(held&&this.heldInventoryScreen(observed,held))return await this.checkHeldInventory(observed,held,t,valid,sleep);
    if(observed.kind==='empty'){
     try{observed=await this.refreshEmpty(observed,t,valid)}catch(error){

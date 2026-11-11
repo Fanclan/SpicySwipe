@@ -2864,3 +2864,178 @@ test('exact held clipped content without a usable Like retains bounded backtrack
   assert.equal(hint.promptMovesRemaining,0,mode);assert.deepEqual(x.taps,[],mode);
  }
 });
+
+async function driftedHeldRefresh(){
+ const x=await refreshedPromptFixture(),cp=x.c.checkpoint();
+ Object.assign(cp.session,{runId:'c'.repeat(32),count:95,endsAt:null,nextBreakAt:100,breakUntil:null});
+ for(const config of [cp.session.config,cp.config.swipe])Object.assign(config,{maxSwipes:1000,sessionMinutes:null,allowBackground:true});
+ Object.assign(cp.rejectedPhoto,{runId:cp.session.runId,count:95,endsAt:null,heldIdentity:'held-clipped-photo',heldRevision:'original-held-revision',entryPromptScan:true});
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+ const card={...x.source,identity:'held-clipped-photo',screenKey:'changed-native-revision',prompts:[],
+  photos:[{...x.failedPhoto,key:'clipped-photo',visual:'123456789abcdf0f',visualSquare:null,bounds:{x:40,y:137,width:640,height:299},like:null,revealDirection:'down'}],
+  controls:{...x.source.controls,like:null},reviewWheelPoint:null,reviewScrollFrame:null,reviewScrollSurface:null,recoveryDrag:null};
+ x.set(card);x.c.nextFeedRefreshAt=0;
+ let commits=0;
+ const step=()=>{const epoch=x.c.session.epoch;return x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(epoch),
+  ()=>{commits++;x.c.session.count++},async()=>true,x.c.token())};
+ return {...x,card,hint:structuredClone(x.c.rejectedPhoto),step,commits:()=>commits};
+}
+test('refresh-only recovery reaches an expired held revision without rebinding or granting another review pass',async()=>{
+ const x=await driftedHeldRefresh();let refreshes=0;
+ x.android.refreshFeed=async(_p,valid,_w,beforeStop)=>{
+  assert.equal(valid(),true);assert.ok(x.saved().nextFeedRefreshAt>Date.now());
+  assert.deepEqual(x.saved().rejectedPhoto,x.hint);await beforeStop();refreshes++;
+ };
+ await x.step();await x.step();
+ assert.equal(refreshes,1);assert.deepEqual(x.saved().rejectedPhoto,x.hint);
+ assert.equal(x.c.heldInventoryScreen(x.card,x.c.rejectedPhoto),false);
+ assert.equal(x.c.heldPromptRefresh,null);assert.equal(x.commits(),0);assert.deepEqual(x.moves,[]);assert.deepEqual(x.taps,[]);
+ assert.equal(x.c.session.count,95);assert.equal(x.c.session.config.maxSwipes,1000);assert.equal(x.c.session.endsAt,null);
+});
+test('refresh-only recovery grants a receipt only after two fresh strict source or entry observations',async()=>{
+ for(const target of ['source','entry','unrecognized','changed-second-read']){
+  const x=await driftedHeldRefresh();let refreshes=0,afterReads=0;
+  const entry={...x.source,identity:'entry-photo',screenKey:'entry-revision',photos:[{...x.source.photos[0],visual:'ffff0000ffff0000',like:null}]};
+  if(target==='entry')Object.assign(x.c.rejectedPhoto,{entryIdentity:entry.identity,entryVisual:entry.photos[0].visual});
+  const observed=target==='entry'?entry:target==='unrecognized'?{...x.card,identity:'unrecognized',screenKey:'other'}:x.source;
+  const read=x.android.hierarchy;x.android.hierarchy=async()=>{if(refreshes&&++afterReads===2&&target==='changed-second-read')x.set({...x.source,screenKey:'drifted-after-refresh'});return read()};
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++;x.set(observed)};
+  const original=structuredClone(x.c.rejectedPhoto);await x.step();assert.equal(refreshes,1,target);
+  assert.deepEqual(x.c.rejectedPhoto,original,target);assert.equal(x.commits(),0,target);assert.deepEqual(x.moves,[],target);assert.deepEqual(x.taps,[],target);
+  if(target==='source'||target==='entry'){assert.ok(afterReads>=2,target);assert.equal(x.c.heldPromptRefresh?.hint,x.c.rejectedPhoto,target)}
+  else assert.equal(x.c.heldPromptRefresh,null,target);
+ }
+});
+test('refresh-only recovery can use a strictly reobserved source through the existing ordinary prompt checks',async()=>{
+ const x=await driftedHeldRefresh();let refreshes=0;
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++;x.set(x.source)};
+ await x.step();await x.step();
+ assert.equal(refreshes,1);assert.equal(x.moves.length,1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+ assert.equal(x.commits(),1);assert.equal(x.c.session.count,96);
+});
+test('refresh-only recovery keeps the cooldown and every spent allowance when refresh acknowledgment is lost',async()=>{
+ const x=await driftedHeldRefresh();let refreshes=0;
+ Object.assign(x.c.rejectedPhoto,{backtrack:{originRevision:'older-endpoint',chromeKey:x.card.recoveryChromeKey,remaining:0,state:'spent'},
+  promptRecovery:{chromeKey:x.card.recoveryChromeKey,opened:false,continuation:{sourceRevision:'older-source',remaining:0,state:'spent'}}});
+ const original=structuredClone(x.c.rejectedPhoto);
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++;throw Object.assign(Error('Lost acknowledgment'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();const saved=x.saved();assert.equal(refreshes,1);assert.equal(x.c.heldPromptRefresh,null);
+ assert.deepEqual(saved.rejectedPhoto,original);assert.ok(saved.nextFeedRefreshAt>Date.now());
+ x.c.restoreCheckpoint(saved);x.c.session.status='running';await x.step();await x.step();
+ assert.equal(refreshes,1);assert.equal(x.c.heldPromptRefresh,null);assert.deepEqual(x.c.rejectedPhoto,original);assert.equal(x.commits(),0);
+});
+test('refresh-only recovery refuses changed ownership, intent, budget and actionable or unknown content',async()=>{
+ for(const mode of ['unmanaged','background','session-background','run','count','avd','paused','cap','deadline','pending','draft','consent',
+  'null-identity','identity','name','chrome','skip','two-photos','no-photo','photo-evidence','photo-like','prompt','control-like','send-like','composer','text','foreign']){
+  const x=await driftedHeldRefresh();let refreshes=0;const card=structuredClone(x.card);
+  if(mode==='unmanaged')x.c.isManagedPhone=()=>false;
+  if(mode==='background')x.c.config.swipe.allowBackground=false;
+  if(mode==='session-background')x.c.session.config.allowBackground=false;
+  if(mode==='run')x.c.session.runId='changed-run';
+  if(mode==='count')x.c.session.count++;
+  if(mode==='avd')x.c.binding.avd='other';
+  if(mode==='paused')x.c.session.status='paused';
+  if(mode==='cap')x.c.session.config.maxSwipes=95;
+  if(mode==='deadline')x.c.session.endsAt=0;
+  if(mode==='pending')x.c.lastAction={kind:'like',name:card.name,identity:card.identity,runId:x.c.session.runId,refreshAttempted:true};
+  if(mode==='draft')x.c.draft={text:'user draft'};
+  if(mode==='consent')x.settings({sidebarConsentGiven:false});
+  if(mode==='null-identity')card.identity=null;
+  if(mode==='identity')card.identity='different';
+  if(mode==='name')card.name='Different';
+  if(mode==='chrome')card.recoveryChromeKey='unverified';
+  if(mode==='skip')card.controls.skip=control('Skip Different');
+  if(mode==='two-photos')card.photos.push({...card.photos[0]});
+  if(mode==='no-photo')card.photos=[];
+  if(mode==='photo-evidence')card.photos[0].visual=null;
+  if(mode==='photo-like')card.photos[0].like=control('Like photo');
+  if(mode==='prompt')card.prompts=[{...x.prompt,like:null}];
+  if(mode==='control-like')card.controls.like=control('Like');
+  if(mode==='send-like')card.controls.sendLike=control('Send like');
+  if(mode==='composer')card.controls.composer=control('Edit comment');
+  if(mode==='text')card.composerText='user draft';
+  x.set(card);if(mode==='foreign')x.android.hierarchy=async()=>({xml:card,foreground:'other.app'});
+  x.android.refreshFeed=async()=>{refreshes++};x.android.scrollProfile=x.android.wheelDiscover=x.android.tapControl=async()=>{};
+  const t=x.c.token(),observed=await x.c.read(t);
+  await x.c.refreshKnownFeed(observed,t,()=>true,x.c.rejectedPhoto,true).catch(()=>{});
+  assert.equal(refreshes,0,mode);assert.equal(x.c.heldPromptRefresh,null,mode);
+ }
+});
+test('refresh-only recovery revalidates the current revision and scope before refresh and immediately before stop',async()=>{
+ for(const mode of ['fresh-revision','prestop-revision','prestop-chrome','prestop-background','prestop-pending','prestop-draft','prestop-ownership','prestop-consent']){
+  const x=await driftedHeldRefresh();let launched=0,reads=0;const read=x.android.hierarchy;
+  x.android.hierarchy=async()=>{if(++reads===2&&mode==='fresh-revision')x.set({...x.card,screenKey:'changed-again'});return read()};
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{
+   if(mode==='prestop-revision')x.set({...x.card,screenKey:'changed-again'});
+   if(mode==='prestop-chrome')x.set({...x.card,recoveryChromeKey:'d'.repeat(64)});
+   if(mode==='prestop-background')x.c.config.swipe.allowBackground=false;
+   if(mode==='prestop-pending')x.c.lastAction={identity:x.card.identity,name:x.card.name};
+   if(mode==='prestop-draft')x.c.draft={text:'not blank'};
+   if(mode==='prestop-ownership')x.android.inputEpoch++;
+   if(mode==='prestop-consent')x.settings({sidebarConsentGiven:false});
+   await beforeStop();launched++;
+  };
+  await x.step().catch(()=>{});assert.equal(launched,0,mode);assert.equal(x.c.heldPromptRefresh,null,mode);
+  assert.deepEqual(x.c.rejectedPhoto,x.hint,mode);assert.equal(x.commits(),0,mode);
+ }
+});
+test('refresh-only recovery cannot grant a source receipt after post-relaunch ownership or consent changes',async()=>{
+ for(const mode of ['managed','background','session-background','config','binding','pause','cap','deadline','pending','draft','consent']){
+  const x=await driftedHeldRefresh();let refreshed=false,reads=0;
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshed=true;x.set(x.source)};
+  const read=x.android.hierarchy;x.android.hierarchy=async()=>{
+   if(refreshed&&++reads===2){
+    if(mode==='managed')x.c.isManagedPhone=()=>false;
+    if(mode==='background')x.c.config.swipe.allowBackground=false;
+    if(mode==='session-background')x.c.session.config.allowBackground=false;
+    if(mode==='config')x.c.config.swipe.delaySeconds++;
+    if(mode==='binding')x.c.binding.avd='other';
+    if(mode==='pause')x.c.session.pause();
+    if(mode==='cap')x.c.session.config.maxSwipes=95;
+    if(mode==='deadline')x.c.session.endsAt=0;
+    if(mode==='pending')x.c.lastAction={identity:x.source.identity,name:x.source.name};
+    if(mode==='draft')x.c.draft={text:'user draft'};
+    if(mode==='consent')x.settings({sidebarConsentGiven:false});
+   }
+   return read();
+  };
+  await x.step().catch(()=>{});assert.equal(refreshed,true,mode);assert.equal(reads,2,mode);
+  assert.equal(x.c.heldPromptRefresh,null,mode);assert.deepEqual(x.c.rejectedPhoto,x.hint,mode);
+  assert.equal(x.commits(),0,mode);assert.deepEqual(x.moves,[],mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+test('refresh-only recovery leaves interrupted continuation retirement to the existing recovery path',async()=>{
+ const x=await driftedHeldRefresh();let refreshes=0;
+ x.c.rejectedPhoto.promptRecovery={chromeKey:x.card.recoveryChromeKey,opened:false,
+  continuation:{sourceRevision:'old-source',remaining:3,state:'moving'}};
+ x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{
+  const hint=x.saved().rejectedPhoto;
+  assert.equal(hint.promptRecovery.continuation.state,'spent');assert.equal(hint.promptRecovery.continuation.remaining,3);
+  await beforeStop();refreshes++;
+ };
+ await x.step();assert.equal(refreshes,1);assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.state,'spent');
+ assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.remaining,3);assert.equal(x.commits(),0);
+ assert.deepEqual(x.moves,[]);assert.deepEqual(x.taps,[]);
+});
+test('refresh-only recovery preserves existing binding priority and falls through only unchanged recovery receipts',async()=>{
+ for(const mode of ['unopened','candidate','bound','opened','spent']){
+  const x=await driftedHeldRefresh();let refreshes=0;
+  const r={chromeKey:x.card.recoveryChromeKey,opened:mode==='opened'};
+  if(mode==='candidate')r.candidate='a'.repeat(64);
+  if(mode==='bound'||mode==='opened')r.bound=true;
+  if(mode==='spent')r.continuation={sourceRevision:'old-source',remaining:0,state:'spent'};
+  x.c.rejectedPhoto.promptRecovery=r;const original=structuredClone(x.c.rejectedPhoto);
+  x.android.refreshFeed=async(_p,_v,_w,beforeStop)=>{await beforeStop();refreshes++};await x.step();
+  if(mode==='unopened'||mode==='candidate'){
+   assert.equal(refreshes,0,mode);assert.equal(r.bound,true,mode);assert.equal(x.c.rejectedPhoto.heldRevision,x.card.screenKey,mode);
+  }else{assert.equal(refreshes,1,mode);assert.deepEqual(x.c.rejectedPhoto,original,mode);assert.equal(x.c.heldPromptRefresh,null,mode)}
+  assert.equal(x.commits(),0,mode);assert.deepEqual(x.moves,[],mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+test('refresh-only recovery never relaunches when its cooldown reservation cannot be persisted',async()=>{
+ const x=await driftedHeldRefresh();let refreshes=0;const write=x.c.checkpointStore.write;
+ x.c.checkpointStore.write=value=>{if(value.nextFeedRefreshAt>Date.now())throw Error('Disk full');write(value)};
+ x.android.refreshFeed=async()=>{refreshes++};await x.step().catch(()=>{});
+ assert.equal(refreshes,0);assert.equal(x.c.heldPromptRefresh,null);assert.deepEqual(x.c.rejectedPhoto,x.hint);
+ assert.equal(x.saved().nextFeedRefreshAt,0);assert.equal(x.commits(),0);
+});
