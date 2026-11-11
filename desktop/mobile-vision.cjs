@@ -100,10 +100,20 @@ function scrollPhotoEvidence(picture,photo,fullProof,overlay){
  const windows=patchWindows.map(rect=>sampleWindow(picture,box,...rect));
  return windows.every(Boolean)?{bounds:box,windows}:null;
 }
-function sameScrollPhoto(previous,current){
+function sameScrollPhoto(previous,current,{allowFullTranslation=false}={}){
  if(!previous||!current)return false;
  const a=previous.bounds,b=current.bounds;
- if(a.x!==b.x||a.width!==b.width||b.height>=a.height||b.y+b.height>=a.y+a.height)return false;
+ if(a.x!==b.x||a.width!==b.width||b.y+b.height>=a.y+a.height)return false;
+ // Only the explicitly bounded source continuation accepts a still-full square
+ // moving upward before it clips. Existing review paths retain clip-only semantics.
+ const translated=allowFullTranslation&&a.height===a.width&&b.height===b.width&&b.y<a.y;
+ return (translated||b.height<a.height)&&samePhotoWindows(previous,current);
+}
+function samePhotoFrame(previous,current){
+ if(!previous||!current)return false;
+ return ['x','y','width','height'].every(k=>previous.bounds[k]===current.bounds[k])&&samePhotoWindows(previous,current);
+}
+function samePhotoWindows(previous,current){
  // All three visible windows must agree, contain texture and differ from the other windows.
  return previous.windows.every((w,i)=>{
   const match=matchingWindow(w,current.windows[i]);
@@ -158,4 +168,4 @@ async function evidence(picture,screen,{signal,ocr=readPngText,fromBitmap}={}){
  }
  return result;
 }
-module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};
+module.exports={fingerprint,squareFingerprint,photoPatchEvidence,sameClippedPhoto,sameScrollPhoto,samePhotoFrame,overlapsPhotoPatch,captureEvidence,evidence,withoutCaret};

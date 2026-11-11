@@ -139,3 +139,24 @@ test('adjacent Discover crops require distinct textured bottom windows, a verifi
  }
  assert.equal(sameScrollPhoto(smaller,larger),false);
 });
+
+
+test('full-square forward translation is opt-in and still requires discriminating private pixel windows',async()=>{
+ const {sameScrollPhoto,samePhotoFrame}=require('../desktop/mobile-vision.cjs');
+ const frame=async(bounds,paint=scene)=>{
+  const square={...bounds,y:bounds.y+bounds.height-bounds.width,height:bounds.width};
+  return (await evidence(renderedPhoto(square,paint),{platform:'hinge',kind:'profile',controls:{},photos:[{bounds,revealDirection:'down'}]})).scrollPhoto;
+ };
+ const start={x:40,y:451,width:640,height:640},translated={...start,y:285};
+ const first=await frame(start),second=await frame(translated),clipped=await frame({...translated,y:347,height:412});
+ assert.equal(sameScrollPhoto(first,second),false);
+ assert.equal(sameScrollPhoto(first,second,{allowFullTranslation:true}),true);
+ assert.equal(sameScrollPhoto(second,clipped,{allowFullTranslation:true}),true);
+ for(const bad of [first,await frame({...start,y:461}),await frame({...translated,x:41}),
+  await frame(translated,(u,v)=>scene(1-u,v))])assert.equal(sameScrollPhoto(first,bad,{allowFullTranslation:true}),false);
+ assert.equal(sameScrollPhoto(clipped,await frame({...clipped.bounds,y:300}),{allowFullTranslation:true}),false);
+ assert.equal(samePhotoFrame(second,await frame(translated)),true);
+ assert.equal(samePhotoFrame(second,first),false);
+ assert.equal(samePhotoFrame(clipped,await frame(clipped.bounds,(u,v)=>scene(u,v).map(c=>c+20))),false);
+ assert.equal(samePhotoFrame(clipped,await frame(clipped.bounds)),true);
+});

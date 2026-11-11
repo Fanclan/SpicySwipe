@@ -3,7 +3,7 @@ const {createHash,randomUUID}=require('node:crypto');
 const {isDeepStrictEqual}=require('node:util');
 const Session=require('../shared/session.js');
 const Config=require('./mobile-config.cjs');
-const {sameClippedPhoto,sameScrollPhoto,overlapsPhotoPatch}=require('./mobile-vision.cjs');
+const {sameClippedPhoto,sameScrollPhoto,samePhotoFrame,overlapsPhotoPatch}=require('./mobile-vision.cjs');
 // Keep comparison samples out of renderer snapshots, event streams and saved sessions.
 const photoPatches = new WeakMap();
 const scrollPhotos = new WeakMap();
@@ -120,6 +120,11 @@ class MobileController{
    if(!r||!hint.runId||!hint.attempted||hint.promptScan!=='spent'||hint.promptMovesRemaining!==0||
       !/^[a-f0-9]{64}$/.test(r.chromeKey)||typeof r.opened!=='boolean'||(r.bound!==undefined&&r.bound!==true)||
       (r.candidate!==undefined&&!/^[a-f0-9]{64}$/.test(r.candidate))||(r.opened&&!r.candidate))throw Error('Invalid rejected photo prompt recovery.');
+   const continuation=r.continuation;
+   if(continuation!==undefined&&(!continuation||Object.keys(continuation).sort().join(',')!=='remaining,sourceRevision,state'||
+      typeof continuation.sourceRevision!=='string'||!continuation.sourceRevision||!['moving','spent'].includes(continuation.state)||
+      !Number.isInteger(continuation.remaining)||continuation.remaining<0||continuation.remaining>6))
+    throw Error('Invalid rejected photo continuation.');
   }
   if(hint?.backtrack!==undefined){
    const r=hint.backtrack;
@@ -238,6 +243,17 @@ class MobileController{
   const refresh=this.heldPromptRefresh;
   const acknowledged=refresh?.hint===hint&&refresh.epoch===epoch&&this.session.now()<refresh.until;
   let r=hint.promptRecovery,before;
+  if(r?.continuation){
+   // Visual motion evidence is deliberately not persisted. Interrupted chains retire.
+   if(r.continuation.state==='moving'){
+    r.continuation.state='spent';
+    if(s.recoveryChromeKey===r.chromeKey){hint.heldIdentity=s.identity||null;hint.heldRevision=s.screenKey;r.bound=true;}
+    this.persist();
+   }
+   return null;
+  }
+  if(r&&!r.opened&&!r.bound&&!r.candidate&&acknowledged&&restored(s)&&s.recoveryChromeKey===r.chromeKey&&s.reviewScrollSurface)
+   return this.continueSourcePrompt(s,hint,r,t,valid,commit,sleep,refresh);
   if(!r&&!hint.entryPromptScan&&acknowledged&&exactRejectedEntry(s,hint)&&s.reviewScrollSurface){
    // The refresh returned the separately recorded entry photo, not the rejected
    // Like target. Permit one charged prompt scan, retaining all ordinary form checks.
@@ -297,6 +313,60 @@ class MobileController{
    }
   }
   return waiting;
+ }
+ async continueSourcePrompt(s,hint,recovery,t,valid,commit,sleep,refresh){
+  const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
+  const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&hint.promptRecovery===recovery&&
+   this.isManagedPhone(this.binding)&&this.binding?.avd&&this.config.swipe.scrollProfile&&this.session.config.scrollProfile&&
+   (this.visible||(this.config.swipe.allowBackground&&this.session.config.allowBackground));
+  const official=card=>this.observedForeground==='co.hinge.app'&&card.kind==='profile'&&card.screenKey&&card.name&&
+   nameDigest(card.name)===hint.nameDigest&&card.recoveryChromeKey===recovery.chromeKey&&
+   !card.composerText?.trim()&&!card.controls?.composer&&!card.controls?.sendLike;
+  const route=card=>card.photos?.length===1&&scrollPhotos.get(card.photos[0])&&card.reviewScrollSurface&&
+   ['x','y','width','height'].every(k=>Number.isInteger(card.reviewScrollSurface[k]))&&
+   card.reviewScrollSurface.width>=96&&card.reviewScrollSurface.height>=120;
+  const acknowledged=()=>this.heldPromptRefresh===refresh&&refresh.hint===hint&&refresh.epoch===epoch&&this.session.now()<refresh.until;
+  const first=card=>owned()&&acknowledged()&&official(card)&&exactRejectedSource(card,hint)&&route(card)&&
+   !recovery.opened&&!recovery.bound&&!recovery.candidate&&!recovery.continuation;
+  if(!first(s))return null;
+  let continuation;
+  const retire=card=>{
+   continuation.state='spent';
+   if(official(card)){hint.heldRevision=card.screenKey;hint.heldIdentity=card.identity||null;recovery.bound=true;}
+   this.persist();return waiting;
+  };
+  for(;;){
+   await this.consent(t);await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
+   if(!official(before)||!route(before)||!isDeepStrictEqual(before.reviewScrollSurface,s.reviewScrollSurface)||
+      !samePhotoFrame(scrollPhotos.get(s.photos[0]),scrollPhotos.get(before.photos[0]))||
+      (!continuation&&!first(before)))return continuation?retire(before):waiting;
+   if(!continuation){
+    // The old ambiguous drag remains charged. This one chain has at most seven more moves.
+    continuation=recovery.continuation={sourceRevision:before.screenKey,remaining:7,state:'moving'};
+    this.heldPromptRefresh=null;
+   }
+   continuation.remaining--;this.persist();this.assert(t,owned);
+   const current=()=>{try{this.assert(t,owned);return true}catch{return false}};
+   await this.android.scrollProfile({surface:before.reviewScrollSurface,fraction:.2,duration:450,direction:'up'},current);
+   await this.pauseFor(450,t,sleep);s=await this.read(t);this.assert(t,owned);
+   if(!official(s)||s.photos?.length!==1||s.screenKey===before.screenKey||
+      !sameScrollPhoto(scrollPhotos.get(before.photos[0]),scrollPhotos.get(s.photos[0]),{allowFullTranslation:true}))return retire(s);
+   hint.heldRevision=s.screenKey;hint.heldIdentity=s.identity||null;recovery.bound=true;this.persist();
+   const prompt=uniqueNativePrompt(s);
+   if(prompt){
+    const card=await this.fresh(s,t,owned),target=uniqueNativePrompt(card);
+    if(!official(card)||!target||!isDeepStrictEqual(target,prompt)||card.photos?.length!==1||
+       !samePhotoFrame(scrollPhotos.get(s.photos[0]),scrollPhotos.get(card.photos[0])))return retire(card);
+    continuation.state='spent';recovery.candidate=createHash('sha256').update(JSON.stringify([card.identity,card.screenKey,target.key,target.text,target.like.key])).digest('hex');
+    recovery.opened=true;this.persist();this.selectedPhoto=null;this.selectedPrompt={...target,type:'prompt'};
+    this.reviewContext={identity:card.identity,screenKey:card.screenKey,alternate:hint,promptScan:true,expectedTarget:this.selectedPrompt,
+     context:{name:card.name,bio:card.context?.bio||'',history:[]}};
+    const current=()=>owned()||(valid()&&this.session.epoch===epoch&&this.lastAction?.kind==='like'&&
+     this.lastAction.runId===hint.runId&&this.lastAction.identity===card.identity);
+    await this.act('like',t,current,commit,card);return {retryAfter:1000,phase:'checking next profile'};
+   }
+   if(!continuation.remaining||!route(s))return retire(s);
+  }
  }
  async backtrackPrompt(s,hint,t,valid,commit,sleep){
   const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
