@@ -1,4 +1,102 @@
 'use strict';
+// Two self-contained Compose reminders. Their CTA is never an action target;
+// accept only the complete native sheet and the isolated top-right Close.
+function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,control}){
+ if(nodes.length!==visible.length)return null;
+ const children=p=>visible.filter(n=>n.parent===p),known=new Set(),labels=new Set(),expanded=new Set();
+ const is=(n,type)=>Boolean(n&&n.a.class===type);
+ const leaf=n=>children(n).length===0;
+ const sameBox=(a,b)=>a?.a.bounds===b?.a.bounds;
+ const text=(n,value)=>{
+  if(!is(n,'android.widget.TextView')||n.a.text!==value||n.a['content-desc']||!leaf(n))return false;
+  known.add(n);labels.add(n);return true;
+ };
+ const decoration=(n,description='',enlarged=false)=>{
+  const parts=children(n),inner=parts[0];
+  if(!is(n,'android.view.View')||n.a.text||(n.a['content-desc']||'')!==description||parts.length!==1||
+     !is(inner,'android.view.View')||label(inner)||!leaf(inner)||!enlarged&&!sameBox(n,inner))return null;
+  known.add(n);known.add(inner);if(description)labels.add(n);if(enlarged)expanded.add(inner);return inner;
+ };
+ const closes=visible.filter(n=>label(n)==='Close');
+ if(closes.length!==1)return null;
+ const dismiss=closes[0],sheet=dismiss.parent;
+ if(!is(dismiss,'android.widget.ImageView')||dismiss.a['content-desc']!=='Close'||dismiss.a.text||!leaf(dismiss)||
+    !is(sheet,'android.view.View'))return null;
+ known.add(dismiss);known.add(sheet);labels.add(dismiss);
+ let root=sheet,contentRoot;
+ for(const [type,id]of [['android.view.View',''],['android.view.View',''],['android.view.ViewGroup',''],
+  ['android.widget.FrameLayout','android:id/content'],['android.widget.LinearLayout',''],['android.widget.FrameLayout','']]){
+  const parent=root.parent;
+  if(!is(parent,type)||(parent.a['resource-id']||'')!==id||children(parent).length!==1)return null;
+  if(id)contentRoot=parent;
+  known.add(parent);root=parent;
+ }
+ if(root.parent?.tag!=='hierarchy')return null;
+ for(let n=sheet.parent;n?.tag==='node';n=n.parent)if(!sameBox(n,root))return null;
+ const parts=children(sheet);let heading,body,cta,scroll,content,illustrations,photo,badge,benefits;
+ if(kind==='matches'){
+  if(parts.length!==7||parts[0]!==dismiss)return null;
+  illustrations=parts.slice(1,4);[heading,body,cta]=parts.slice(4);
+  if(!illustrations.every(n=>decoration(n))||!text(heading,'You’ve got matches waiting')||
+     !text(body,'Someone’s popular! Why not see where your matches lead?'))return null;
+ }else{
+  if(parts.length!==2||parts[0]!==dismiss||!is(parts[1],'android.view.View'))return null;
+  content=parts[1];known.add(content);const contents=children(content);[scroll,cta]=contents;
+  if(contents.length!==2||!is(scroll,'android.widget.ScrollView'))return null;
+  known.add(scroll);const rows=children(scroll);[photo,badge,heading]=rows;
+  if(rows.length!==7||!is(photo,'android.widget.ImageView')||photo.a['content-desc']!=='Your profile photo'||photo.a.text||!leaf(photo)||
+     !decoration(badge,'White sparkles on titanium background',true)||!text(heading,'You’re shining with Premium+'))return null;
+  known.add(photo);labels.add(photo);benefits=[[rows[3],rows[4]],[rows[5],rows[6]]];
+  if(!benefits.every(([icon])=>decoration(icon,'',true))||
+     !text(benefits[0][1],'Don’t forget to use your 2 Spotlights')||!text(benefits[1][1],'Don’t forget to use your 2 Compliments'))return null;
+ }
+ if(!is(cta,'android.view.View'))return null;
+ known.add(cta);const choices=children(cta),[caption,button]=choices;
+ if(choices.length!==2||!text(caption,kind==='matches'?'See matches':'Get connecting')||
+    !is(button,'android.widget.Button')||label(button)||!leaf(button)||!sameBox(button,cta))return null;
+ known.add(button);const clicks=new Set([dismiss,cta]);
+ for(const n of visible){
+  if(!known.has(n)||n.a.package!=='com.bumble.app'||n.a.enabled!=='true'||!n.enabled||!bounds(n)||(!expanded.has(n)&&!fullyVisible(n))||
+     (label(n)&&!labels.has(n))||n.a.clickable!==(clicks.has(n)?'true':'false')||n.a.focusable!==(clicks.has(n)?'true':'false')||
+     n.a.scrollable!==(n===scroll?'true':'false')||n.a.hint||
+     ['focused','selected','checked','checkable','password','long-clickable','context-clickable','editable'].some(k=>n.a[k]==='true')||
+     (n.a['resource-id']||'')!==(n===contentRoot?'android:id/content':''))return null;
+ }
+ const box=bounds,inside=(a,b)=>a.x>=b.x&&a.y>=b.y&&a.x+a.width<=b.x+b.width&&a.y+a.height<=b.y+b.height;
+ const middle=(a,b)=>Math.abs(a.x+a.width/2-b.x-b.width/2)<=1;
+ const frame=box(sheet),display=box(root),close=box(dismiss),action=box(cta),title=box(heading),inset=close.y-frame.y;
+ if(frame.x!==display.x||frame.width!==display.width||frame.y<=display.y||frame.y+frame.height!==display.y+display.height||
+    frame.height<=frame.width||close.width!==close.height||close.width>frame.width/6||inset<=0||inset>close.width/2||
+    close.x+close.width+inset!==frame.x+frame.width||action.x!==frame.x+2*inset||
+    action.x+action.width!==frame.x+frame.width-2*inset||action.height!==close.height||
+    action.y+action.height!==frame.y+frame.height-3*inset||!middle(box(caption),action)||!middle(title,frame))return null;
+ if(kind==='matches'){
+  const [right,left,center]=illustrations.map(box),description=box(body);
+  if(right.x<=center.x||center.x<=left.x||right.width!==left.width||right.height!==left.height||right.y!==left.y||
+     center.width<=left.width||center.height<=left.height||center.y>=left.y||center.y+center.height<=left.y+left.height||
+     illustrations.some(n=>box(n).y<=close.y+close.height||box(n).y+box(n).height>=title.y)||
+     title.y+title.height>=description.y||description.y+description.height>=action.y||!middle(description,frame))return null;
+ }else{
+  const area=box(content),viewport=box(scroll),image=box(photo),emblem=box(badge),badgeLeaf=box(children(badge)[0]);
+  if(area.x!==action.x||area.width!==action.width||area.y<=close.y+close.height||area.y+area.height!==action.y+action.height||
+     viewport.x!==area.x||viewport.y!==area.y||viewport.width!==area.width||viewport.y+viewport.height>=action.y||
+     image.y!==viewport.y||!middle(image,viewport)||image.width>=viewport.width/2||image.height*3!==image.width*4||
+     !middle(emblem,image)||emblem.y+emblem.height/2!==image.y+image.height||title.y<=badgeLeaf.y+badgeLeaf.height)return null;
+  const icons=[badge,...benefits.map(([icon])=>icon)];
+  for(const [index,icon]of icons.entries()){
+   const outer=box(icon),inner=box(children(icon)[0]);
+   if(outer.width!==outer.height||inner.width!==close.width||inner.height!==close.height||!middle(inner,outer)||
+      inner.y+inner.height/2!==outer.y+outer.height/2||outer.width!==close.width*(index===0?5/8:1/2)||!inside(inner,viewport))return null;
+  }
+  let bottom=title.y+title.height;
+  for(const [icon,copy]of benefits){
+   const marker=box(icon),detail=box(copy),inner=box(children(icon)[0]);
+   if(marker.y!==detail.y||detail.x!==inner.x+inner.width||inner.y<=bottom||detail.y+detail.height>=viewport.y+viewport.height)return null;
+   bottom=Math.max(detail.y+detail.height,inner.y+inner.height);
+  }
+ }
+ return control(dismiss,true);
+}
 function matchNoticeDismiss(visible,sheet,{bounds,fullyVisible,label,control}){
  const app='com.bumble.app:id/',children=parent=>visible.filter(n=>n.parent===parent);
  const required=[
@@ -73,6 +171,13 @@ module.exports=function readBumble(xml,options,h){
  result.screenKey=hash(nodes.map(n=>n.a));
  if(!nodes.length||nodes.some(n=>n.a.package&&n.a.package!=='com.bumble.app'))return block('Another app or system overlay is visible. Return to Bumble.');
  const visible=nodes.filter(n=>n.visible),id=name=>visible.filter(n=>n.a['resource-id']==='com.bumble.app:id/'+name),find=text=>visible.filter(n=>label(n)===text);
+ const matchesReminder=['You’ve got matches waiting','Someone’s popular! Why not see where your matches lead?','See matches'].some(s=>find(s).length);
+ const premiumReminder=['You’re shining with Premium+','Don’t forget to use your 2 Spotlights','Don’t forget to use your 2 Compliments','Get connecting'].some(s=>find(s).length);
+ if(matchesReminder||premiumReminder){
+  const dismiss=matchesReminder!==premiumReminder&&composeReminderDismiss(nodes,visible,matchesReminder?'matches':'premium',h);
+  if(!dismiss)return block('The Bumble reminder or its Close control could not be verified.');
+  result.kind=matchesReminder?'chatReminder':'promoOffer';result.controls.dismiss=dismiss;return result;
+ }
  const matchRoots=id('mutualAttraction_topContainer');
  if(matchRoots.length||id('match_close').length||id('match_composer').length){
   const dismiss=matchRoots.length===1&&matchNoticeDismiss(visible,matchRoots[0],h);

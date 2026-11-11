@@ -3,6 +3,101 @@ const node=(attrs='',children='')=>'<node package="com.bumble.app" enabled="true
 const card=(name='Sample',order=2)=>node('drawing-order="'+order+'"',node('resource-id="com.bumble.app:id/profile_root_container"',node('resource-id="com.bumble.app:id/encountersGridProfile_list"',node('content-desc="'+name+'’s main photo"')+node('text="'+name+', 28"'))));
 const feed=(cards=card())=>'<hierarchy>'+node('resource-id="com.bumble.app:id/mainApp_root"',node('resource-id="com.bumble.app:id/encountersStackContainer"',cards)+node('selected="true"',node('content-desc="People"')))+'</hierarchy>';
 const read=(xml,extra={})=>readScreen(xml,{platform:'bumble',foreground:'com.bumble.app',photoIdentity:'0123456789abcdef',...extra});
+// Public reminder copy and synthetic native nodes only; no account pictures or names.
+function composeReminder(kind='matches'){
+ const n=(type,box,attributes={},children='')=>{
+  const a={package:'com.bumble.app',enabled:'true',class:type,bounds:box,clickable:'false',focusable:'false',scrollable:'false',...attributes};
+  return '<node '+Object.entries(a).map(([k,v])=>k+'="'+v+'"').join(' ')+'>'+children+'</node>';
+ };
+ const view=(box,children='',a={})=>n('android.view.View',box,a,children);
+ const text=(box,value)=>n('android.widget.TextView',box,{text:value});
+ const ornament=(outer,inner=outer,a={})=>view(outer,view(inner),a);
+ const full='[0,48][720,1232]',ctaBox='[32,1088][688,1184]';
+ const button=label=>view(ctaBox,text(kind==='matches'?'[264,1116][457,1157]':'[247,1116][473,1157]',label)+
+  n('android.widget.Button',ctaBox),{clickable:'true',focusable:'true'});
+ const close=n('android.widget.ImageView',kind==='matches'?'[608,418][704,514]':'[608,182][704,278]',
+  {'content-desc':'Close',clickable:'true',focusable:'true'});
+ const content=kind==='matches'
+  ? ornament('[460,562][664,834]')+ornament('[90,562][294,834]')+ornament('[274,540][514,860]')+
+    text('[94,894][627,952]','You’ve got matches waiting')+
+    text('[32,968][688,1056]','Someone’s popular! Why not see where your matches lead?')+button('See matches')
+  : view('[32,302][688,1184]',n('android.widget.ScrollView','[32,302][688,1056]',{scrollable:'true'},
+    n('android.widget.ImageView','[240,302][480,622]',{'content-desc':'Your profile photo'})+
+    ornament('[330,592][390,652]','[312,574][408,670]',{'content-desc':'White sparkles on titanium background'})+
+    text('[79,684][642,742]','You’re shining with Premium+')+
+    ornament('[64,798][112,846]','[40,774][136,870]')+text('[136,798][656,888]','Don’t forget to use your 2 Spotlights')+
+    ornament('[64,936][112,984]','[40,912][136,1008]')+text('[136,936][656,1026]','Don’t forget to use your 2 Compliments'))+button('Get connecting'));
+ const sheet=view(kind==='matches'?'[0,402][720,1232]':'[0,166][720,1232]',close+content);
+ return '<hierarchy>'+n('android.widget.FrameLayout',full,{},n('android.widget.LinearLayout',full,{},
+  n('android.widget.FrameLayout',full,{'resource-id':'android:id/content'},n('android.view.ViewGroup',full,{},view(full,view(full,sheet))))))+'</hierarchy>';
+}
+
+test('Bumble known matches and Premium+ reminders expose only their native Close',()=>{
+ for(const kind of ['matches','premium']){
+  const s=read(composeReminder(kind));assert.equal(s.kind,kind==='matches'?'chatReminder':'promoOffer');
+  assert.deepEqual(Object.keys(s.controls).filter(k=>s.controls[k]),['dismiss']);assert.equal(s.controls.dismiss.label,'Close');
+  assert.deepEqual(s.controls.dismiss.bounds,{x:608,y:kind==='matches'?418:182,width:96,height:96});
+  assert.equal(s.identity,null);assert.equal(s.context.name,'');assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);
+  const scaled=composeReminder(kind).replace(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/g,(_,a,b,c,d)=>`[${a*1.5},${b*1.5}][${c*1.5},${d*1.5}]`);
+  // The known layout can use a whole-pixel display scale; text width rounding is immaterial.
+  const rounded=scaled.replace(/\d+\.5/g,value=>String(Math.round(Number(value))));
+  assert.equal(read(rounded).kind,s.kind);
+ }
+});
+
+test('Bumble reminder Close requires the complete native tree without editors or extra actions',()=>{
+ for(const kind of ['matches','premium']){
+  const xml=composeReminder(kind),cta=kind==='matches'?'See matches':'Get connecting';
+  const append=extra=>xml.replace('</hierarchy>',extra+'</hierarchy>');
+  for(const [index,bad] of [
+   xml.replace(cta,'Subscribe'),xml.replace(cta,'Buy for $9.99'),xml.replace(cta,'Send SuperSwipe'),
+   xml.replace('content-desc="Close"','content-desc="Confirm"'),
+   xml.replace('class="android.widget.ImageView"','class="android.widget.Button"'),
+   xml.replace('clickable="true" focusable="true"','clickable="false" focusable="true"'),
+   xml.replace('clickable="true" focusable="true"','clickable="true"'),
+   xml.replace('enabled="true" class="android.widget.ImageView"','enabled="false" class="android.widget.ImageView"'),
+   xml.replace('class="android.widget.Button"','class="android.widget.EditText"'),
+   xml.replace('class="android.widget.Button"','class="android.widget.Button" resource-id="android:id/content"'),
+   xml.replace('class="android.widget.Button"','class="android.widget.Button" editable="true"'),
+   xml.replace('class="android.widget.TextView"','class="android.widget.TextView" long-clickable="true"'),
+   xml.replace('class="android.widget.TextView"','class="android.widget.TextView" context-clickable="true"'),
+   xml.replace('class="android.view.ViewGroup"','class="android.app.Dialog"'),
+   xml.replace('resource-id="android:id/content"','resource-id="com.bumble.app:id/profile_root_container"'),
+   xml.replace('package="com.bumble.app"','package="android"'),
+   xml.replace('class="android.widget.ImageView"','class="android.widget.ImageView" visible-to-user="false"'),
+   append(node('content-desc="Close" clickable="true"')),append(node('clickable="true"')),
+   append(node('class-extra="decoration"')),append(node('text="Buy now"')),append(node('visible-to-user="false" text="Hidden control"')),
+  ].entries()){
+   const s=read(bad);assert.equal(s.kind,'blocked',kind+' variant '+index);assert.ok(Object.values(s.controls).every(v=>!v));
+  }
+ }
+});
+
+test('Bumble reminder Close rejects overlapping geometry and reminder copy embedded in profiles',()=>{
+ for(const kind of ['matches','premium']){
+  const xml=composeReminder(kind),box=kind==='matches'?'[608,418][704,514]':'[608,182][704,278]';
+  for(const bad of [
+   xml.replace(box,'[608,1088][704,1184]'),xml.replace(box,kind==='matches'?'[590,418][704,514]':'[590,182][704,278]'),
+   xml.replaceAll('[32,1088][688,1184]','[608,418][704,514]'),
+   xml.replace('bounds="'+box+'"','bounds="'+box+'" selected="true"'),
+   xml.replace('bounds="'+box+'"','bounds="'+box+'" checkable="true"'),
+   xml.replace('bounds="'+box+'"','bounds="'+box+'" focused="true"'),
+   xml.replace('enabled="true"','enabled="false"'),
+   feed(card('Synthetic',2)+node('',xml.replace(/^<hierarchy>|<\/hierarchy>$/g,''))),
+  ]){const s=read(bad);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(v=>!v));}
+ }
+ for(const bad of [
+  composeReminder().replace('matches waiting','new people waiting'),
+  composeReminder().replace('Someone’s popular! Why not see where your matches lead?','Verify your identity'),
+  composeReminder().replace('[274,540][514,860]','[608,418][704,514]'),
+  composeReminder('premium').replace('2 Spotlights','3 Spotlights'),
+  composeReminder('premium').replace('2 Compliments','2 purchases'),
+  composeReminder('premium').replace('Your profile photo','Synthetic’s main photo'),
+  composeReminder('premium').replace('White sparkles on titanium background','Send a Compliment'),
+  composeReminder('premium').replace('[40,774][136,870]','[608,182][704,278]'),
+ ])assert.equal(read(bad).kind,'blocked');
+});
+
 function nativeMatchNotice(){
  const full='[0,0][720,1280]',opts='[628,68][700,140]',suggestions='[32,838][688,1072]',editor='[32,1104][688,1200]';
  const widget=(type,id,box,attributes='',children='')=>{
