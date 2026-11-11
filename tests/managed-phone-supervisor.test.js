@@ -41,6 +41,21 @@ function shutdown(child, output, timeoutMs = 2000) {
   return {stop, get closed() { return stop(); }};
 }
 
+function descendantState(pid) {
+  try { return fs.readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ')[1][0]; }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+}
+
+async function waitForDescendant(pid, {readState = descendantState, timeoutMs = 2000} = {}) {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    const state = readState(pid);
+    if (state === undefined || state === 'Z') return;
+    assert.ok(performance.now() < deadline, `Descendant ${pid} is still running after ${timeoutMs}ms; state=${state}`);
+    await delay(10);
+  }
+}
+
 function fixture(t, scenario) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-supervisor-'));
   const sdk = path.join(home, 'android-runtime/sdk');
@@ -132,6 +147,20 @@ sleep() {
 }
 
 const linux = {skip:process.platform !== 'linux'};
+test('descendant exit verification waits through live states but fails if the process stays alive', async () => {
+  for (const terminal of ['Z', undefined]) {
+    const states = ['S', 'R', terminal]; let reads = 0;
+    await waitForDescendant(123, {readState: () => states[reads++], timeoutMs: 1000});
+    assert.equal(reads, 3, 'pipe closure alone does not prove descendant exit');
+  }
+  let reads = 0;
+  await assert.rejects(waitForDescendant(123, {readState: () => { reads++; return 'S'; }, timeoutMs: 30}),
+    /Descendant 123 is still running after 30ms; state=S/);
+  assert.ok(reads > 1, 'a persistently live process must be checked until the bounded deadline');
+  const denied = Object.assign(new Error('Cannot verify process state'), {code:'EACCES'});
+  await assert.rejects(waitForDescendant(123, {readState: () => { throw denied; }}), error => error === denied);
+});
+
 test('fixture shutdown fails with diagnostics and reaps a TERM-resistant descendant', linux, async t => {
   const child = spawn('bash', ['-c', `bash -c 'trap "" TERM; echo "resistant-ready $BASHPID"; exec sleep 60' & wait`],
     {detached:true, stdio:['ignore','pipe','pipe']});
@@ -154,10 +183,8 @@ test('fixture shutdown fails with diagnostics and reaps a TERM-resistant descend
   await assert.rejects(lifecycle.closed, /shutdown timed out.*SIGKILL[\s\S]*resistant-ready/);
   assert.equal(watchdogFired, false, 'shutdown depended on the independent watchdog');
   assert.equal(didClose, true, 'shutdown left child pipes open');
-  let state;
-  try { state = fs.readFileSync('/proc/' + descendant + '/stat', 'utf8').split(') ')[1][0]; }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
-  assert.ok(state === undefined || state === 'Z', 'resistant descendant is still running');
+  // Pipes can close before the killed descendant reaches its final /proc state.
+  await waitForDescendant(descendant);
 });
 
 test('a native fault after a sustained Android boot gets a fast retry, then a failed restart backs off', linux, async t => {
