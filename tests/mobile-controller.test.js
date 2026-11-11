@@ -2543,10 +2543,10 @@ test('a manual action queued during guarded native start preflight supersedes th
  await assert.rejects(x.c.request('start',{resumeRunId:paused.session.runId,expectedResumeEpoch:paused.resumeEpoch}));
 });
 
-async function interestBacktrackFixture(){
- const x=await legacyPromptScan(),chrome='a'.repeat(64),origin='interest-gap';
+async function fragmentBacktrackFixture(){
+ const x=await legacyPromptScan(),chrome='a'.repeat(64),origin='partial-fragment';
  const card=index=>({...wheelViewport(x,-index),identity:null,photos:[],prompts:[],screenKey:index?'backward-'+index:origin,
-  reviewInterestGap:true,recoveryChromeKey:chrome,controls:{},context:{name:x.root.name,bio:'',history:[]}});
+  recoveryChromeKey:chrome,controls:{},context:{name:x.root.name,bio:'',history:[]}});
  const cp=x.saved();cp.session.runId='b'.repeat(32);cp.binding.avd='assigned';cp.config.swipe.allowBackground=cp.session.config.allowBackground=true;
  Object.assign(cp.rejectedPhoto,{runId:cp.session.runId,avd:cp.binding.avd,promptScan:'spent',promptMovesRemaining:0,entryPromptScan:true,heldRevision:origin,heldIdentity:null});
  x.c.restoreCheckpoint(cp);x.c.session.status='running';x.c.isManagedPhone=()=>true;x.android.deviceIdentity=async()=>({...cp.binding});x.set(card(0));x.c.nextFeedRefreshAt=Date.now()+600000;
@@ -2555,8 +2555,8 @@ async function interestBacktrackFixture(){
   {...x.form,identity:'independent-text',photos:[],prompts:[x.prompt],controls:{sendLike:control('Send like')}}:screen({name:'Next',identity:'next'}))};
  return {...x,card,promptCard,taps};
 }
-test('a spent interest endpoint can backtrack once to an independently verified ordinary prompt',async()=>{
- const x=await interestBacktrackFixture(),original=x.saved();let moves=0;
+test('a spent unidentified partial fragment can backtrack once to an independently verified ordinary prompt',async()=>{
+ const x=await fragmentBacktrackFixture(),original=x.saved();let moves=0;
  x.android.wheelDiscover=async(point,valid,direction)=>{
   assert.equal(valid(),true);assert.equal(direction,'backward');assert.deepEqual(point,x.card(moves).reviewWheelPoint);
   const h=x.saved().rejectedPhoto;assert.equal(h.promptMovesRemaining,0);assert.equal(h.entryPromptScan,true);
@@ -2568,7 +2568,7 @@ test('a spent interest endpoint can backtrack once to an independently verified 
 });
 test('a backtrack retires after eight moves, no motion, or uncertain motion and cannot rearm on refresh or restore',async()=>{
  for(const mode of ['limit','stationary','wrong-way','lost']){
-  const x=await interestBacktrackFixture();let moves=0,moving;
+  const x=await fragmentBacktrackFixture();let moves=0,moving;
   x.android.wheelDiscover=async()=>{moves++;moving=x.saved();if(mode==='lost')throw Object.assign(Error('Unconfirmed motion'),{code:'ANDROID_COMMAND_TIMEOUT'});
    x.set(mode==='stationary'?x.card(0):mode==='wrong-way'?{...x.card(1),reviewScrollFrame:wheelViewport(x,1).reviewScrollFrame}:x.card(moves));};
   await x.step();assert.equal(moves,mode==='limit'?8:1,mode);assert.equal(x.commits(),0);assert.deepEqual(x.taps,[]);
@@ -2578,10 +2578,12 @@ test('a backtrack retires after eight moves, no motion, or uncertain motion and 
  }
 });
 test('backtrack remains guarded by exact endpoint, chrome, native route, pending action and original session intent',async()=>{
- for(const mode of ['revision','identity','name','chrome','no-marker','no-frame','point-drift','cap','deadline','pending','draft','background','scroll']){
-  const x=await interestBacktrackFixture();let candidate=x.card(0),moves=0;
+ for(const mode of ['revision','identity','name','chrome','no-point','no-frame','few-landmarks','promotion','point-drift','cap','deadline','pending','draft','background','scroll']){
+  const x=await fragmentBacktrackFixture();let candidate=x.card(0),moves=0;
   if(mode==='revision')candidate.screenKey='other';if(mode==='identity')candidate.identity='other';if(mode==='name')candidate.name='Other';
-  if(mode==='chrome')candidate.recoveryChromeKey=null;if(mode==='no-marker')candidate.reviewInterestGap=false;if(mode==='no-frame')candidate.reviewScrollFrame=null;
+  if(mode==='chrome')candidate.recoveryChromeKey=null;if(mode==='no-point')candidate.reviewWheelPoint=null;if(mode==='no-frame')candidate.reviewScrollFrame=null;
+  if(mode==='few-landmarks')candidate.reviewScrollFrame={...candidate.reviewScrollFrame,landmarks:candidate.reviewScrollFrame.landmarks.slice(0,1)};
+  if(mode==='promotion')candidate.kind='promoOffer';
   if(mode==='cap')x.c.session.config.maxSwipes=x.c.session.count;
   if(mode==='deadline')x.c.session.endsAt=x.c.rejectedPhoto.endsAt=Date.now()-1;
   if(mode==='pending')x.c.lastAction={identity:'pending',name:'Previous'};if(mode==='draft')x.c.draft={text:'User text'};
@@ -2593,10 +2595,10 @@ test('backtrack remains guarded by exact endpoint, chrome, native route, pending
 });
 
 test('backtrack checkpoint validation preserves old receipts and rejects malformed or replenished passes',async()=>{
- const x=await interestBacktrackFixture(),old=x.saved();
+ const x=await fragmentBacktrackFixture(),old=x.saved();
  const restore=cp=>{x.c.restoreCheckpoint(cp);return x.c.checkpoint().rejectedPhoto};
  assert.deepEqual(restore(old),old.rejectedPhoto);assert.equal(Object.hasOwn(restore(old),'backtrack'),false);
- const receipt={originRevision:'interest-gap',chromeKey:'a'.repeat(64),remaining:6,state:'ready'};
+ const receipt={originRevision:'partial-fragment',chromeKey:'a'.repeat(64),remaining:6,state:'ready'};
  const withReceipt=value=>({...structuredClone(old),rejectedPhoto:{...structuredClone(old.rejectedPhoto),backtrack:value}});
  assert.deepEqual(restore(withReceipt(receipt)).backtrack,receipt);
  for(const bad of [null,false,{}, {...receipt,remaining:8},{...receipt,remaining:0},{...receipt,remaining:-1},{...receipt,remaining:1.2},
@@ -2605,7 +2607,7 @@ test('backtrack checkpoint validation preserves old receipts and rejects malform
  }
 });
 test('an acknowledged backtrack step resumes only its remaining allowance after a quiet restart',async()=>{
- const x=await interestBacktrackFixture();let moves=0,ready,reads=0;const hierarchy=x.android.hierarchy;
+ const x=await fragmentBacktrackFixture();let moves=0,ready,reads=0;const hierarchy=x.android.hierarchy;
  x.android.wheelDiscover=async()=>{moves++;x.set(x.card(moves))};
  x.android.hierarchy=async()=>{
   const r=await hierarchy();if(moves===1&&++reads===2){ready=x.saved();throw Object.assign(Error('Interrupted between steps'),{code:'MOBILE_SCREEN_CHANGED'})}return r;
@@ -2617,7 +2619,7 @@ test('an acknowledged backtrack step resumes only its remaining allowance after 
 });
 test('backtracked prompt still refuses a draft, Rose, wrong owner or different prompt form',async()=>{
  for(const mode of ['draft','Rose','owner','prompt']){
-  const x=await interestBacktrackFixture();let moves=0,taps=0;
+  const x=await fragmentBacktrackFixture();let moves=0,taps=0;
   x.android.wheelDiscover=async()=>{moves++;x.set(x.promptCard(moves))};
   x.android.tapControl=async()=>{taps++;x.set({...x.form,photos:[],prompts:[{...x.prompt,text:mode==='prompt'?'Prompt: Different. Answer: Different':x.prompt.text}],
    name:mode==='owner'?'Other':x.root.name,composerText:mode==='draft'?'Unsent user text':'',
@@ -2626,7 +2628,7 @@ test('backtracked prompt still refuses a draft, Rose, wrong owner or different p
  }
 });
 test('a profile-only backtrack counts only its ordinary Like at the original thousand-profile limit',async()=>{
- const x=await interestBacktrackFixture(),cp=x.saved();cp.session.count=cp.rejectedPhoto.count=999;
+ const x=await fragmentBacktrackFixture(),cp=x.saved();cp.session.count=cp.rejectedPhoto.count=999;
  cp.session.endsAt=cp.rejectedPhoto.endsAt=null;cp.session.config.maxSwipes=cp.config.swipe.maxSwipes=1000;
  cp.session.config.sessionMinutes=cp.config.swipe.sessionMinutes=null;cp.session.config.breaksEnabled=cp.config.swipe.breaksEnabled=false;x.c.restoreCheckpoint(cp);x.c.session.status='running';
  let moves=0;x.android.wheelDiscover=async()=>{moves++;x.set(x.promptCard(moves))};
@@ -2826,4 +2828,39 @@ test('source continuation uses smaller steps to retain the native square photo a
   card.photos[0].bounds=bounds;card.reviewScrollSurface=bounds;x.set(card);
  };
  await x.step();await x.step();assert.equal(moves,2);assert.equal(x.commits(),1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+});
+
+
+test('a new backtrack leaves actionable photo, prompt and ordinary Like controls to their existing paths',async()=>{
+ for(const mode of ['photo','prompt','like','sendLike']){
+  const x=await fragmentBacktrackFixture();let card=x.card(0),moves=0;
+  if(mode==='photo')card.photos=[{key:'recognized-photo',bounds:box,like:control('Like photo')}];
+  if(mode==='prompt')card.prompts=[x.prompt];if(mode==='like')card.controls.like=control('Like photo');
+  if(mode==='sendLike')card.controls.sendLike=control('Send like');
+  x.set(card);const t=x.c.token(),observed=await x.c.read(t),hint=x.c.rejectedPhoto;
+  hint.heldRevision=observed.screenKey;hint.heldIdentity=observed.identity||null;
+  x.android.wheelDiscover=async()=>{moves++};
+  assert.equal(await x.c.backtrackPrompt(observed,hint,t,()=>true,()=>assert.fail('No Like'),async()=>true),null,mode);
+  assert.equal(moves,0,mode);assert.equal(hint.backtrack,undefined,mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+
+test('exact held clipped content without a usable Like retains bounded backtrack priority over waiting recovery receipts',async()=>{
+ for(const mode of ['none','unopened','bound','candidate','opened','continuation']){
+  const x=await fragmentBacktrackFixture(),card={...x.card(0),identity:'known-clipped-content',
+   photos:[{key:'clipped-photo',bounds:box,like:null}],prompts:[{...x.prompt,like:null}]};
+  const hint=x.c.rejectedPhoto,receipt={chromeKey:card.recoveryChromeKey,opened:false};
+  if(mode==='bound')receipt.bound=true;
+  if(mode==='candidate')receipt.candidate='a'.repeat(64);
+  if(mode==='opened'){receipt.candidate='a'.repeat(64);receipt.opened=true;}
+  if(mode==='continuation')receipt.continuation={sourceRevision:'source',remaining:4,state:'spent'};
+  if(mode!=='none')hint.promptRecovery=receipt;
+  x.set(card);const t=x.c.token(),observed=await x.c.read(t);
+  hint.heldRevision=observed.screenKey;hint.heldIdentity=observed.identity;
+  let moves=0;x.android.wheelDiscover=async(_point,valid,direction)=>{assert.equal(valid(),true);assert.equal(direction,'backward');moves++};
+  await x.c.backtrackPrompt(observed,hint,t,()=>true,()=>assert.fail('No Like'),async()=>true);
+  assert.equal(moves,1,mode);assert.equal(hint.backtrack.state,'spent',mode);assert.equal(hint.backtrack.remaining,7,mode);
+  if(mode!=='none')assert.deepEqual(hint.promptRecovery,receipt,mode);
+  assert.equal(hint.promptMovesRemaining,0,mode);assert.deepEqual(x.taps,[],mode);
+ }
 });

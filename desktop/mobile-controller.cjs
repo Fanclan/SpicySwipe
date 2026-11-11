@@ -377,6 +377,8 @@ class MobileController{
    nameDigest(card.name)===hint.nameDigest&&!card.composerText?.trim()&&!card.controls?.composer&&!card.controls?.sendLike;
   const route=card=>this.android.wheelDiscover&&Number.isInteger(card.reviewWheelPoint?.x)&&Number.isInteger(card.reviewWheelPoint?.y)&&
    wheelLandmarks(card.reviewScrollFrame)&&/^[a-f0-9]{64}$/.test(card.recoveryChromeKey||'');
+  const needsReview=card=>!card.controls?.like&&!card.controls?.sendLike&&
+   ![...(card.photos||[]),...(card.prompts||[])].some(item=>item.like);
   let r=hint.backtrack;
   if(!owned()||!official(s))return null;
   const bound=card=>card.screenKey===hint.heldRevision&&(card.identity||null)===hint.heldIdentity;
@@ -386,12 +388,12 @@ class MobileController{
    r.state='spent';if(s.recoveryChromeKey===r.chromeKey)hold(s);else this.persist();return waiting;
   }
   if(r?.state==='spent')return null;
-  if(!bound(s)||!route(s)||(!r&&s.reviewInterestGap!==true)||(r&&s.recoveryChromeKey!==r.chromeKey))return null;
+  if(!bound(s)||!route(s)||(!r&&!needsReview(s))||(r&&s.recoveryChromeKey!==r.chromeKey))return null;
   for(;;){
    await this.consent(t);await this.verifyBinding(t);const before=await this.fresh(s,t,owned);
    if(!official(before)||!bound(before)||!route(before)||before.recoveryChromeKey!==s.recoveryChromeKey||
       !isDeepStrictEqual(before.reviewWheelPoint,s.reviewWheelPoint)||!isDeepStrictEqual(before.reviewScrollFrame,s.reviewScrollFrame)||
-      (!r&&before.reviewInterestGap!==true))return waiting;
+      (!r&&!needsReview(before)))return waiting;
    r??=hint.backtrack={originRevision:hint.heldRevision,chromeKey:s.recoveryChromeKey,remaining:promptMoveLimit,state:'ready'};
    r.state='moving';r.remaining--;this.persist();
    const current=()=>{try{this.assert(t,owned);return true}catch{return false}};

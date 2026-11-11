@@ -236,7 +236,7 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
    kids(common).filter(layer=>order(layer)===upper).length===1;
  };
  recoveryGeometry(visible,owner,display,geometry,kids,behindDiscover);
- const candidates=[], interestPanels=[], headingBackdrops=new Map(), measurementOnly=new Map();
+ const candidates=[], headingBackdrops=new Map(), measurementOnly=new Map();
  // Read-only landmarks are never input targets. The passive text and decorative
  // native Button must be the sole children of this known, selectable option.
  const rememberOption=(option,role,backdrop)=>{
@@ -251,19 +251,6 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
   const [body]=kids(card);
   if (!wrapper(card) || kids(card).length!==1 || !wrapper(body) || !bodyFitsCard(card,body)) continue;
   const nodes=kids(body), headings=nodes.filter(n=>inert(n,'android.widget.TextView') && label(n) && !kids(n).length);
-  // Interest fragments are not ordinary prompts. Recognize only this native panel
-  // as a starting point for a bounded reverse search using the existing wheel lane.
-  const interestHeading=nodes.filter(n=>inert(n,'android.view.View')&&label(n)==="Prompt: Let's chat about"&&
-   !kids(n).length&&fullyVisible(n)&&n.a.focusable!=='true');
-  const interestRows=n=>wrapper(n)&&kids(n).length>0&&kids(n).every(row=>{
-   const parts=kids(row),labels=parts.filter(p=>inert(p,'android.view.View')&&/^Option: .+/.test(label(p))&&sameBox(p,row)&&!kids(p).length);
-   return row.a.class==='android.view.View'&&row.enabled&&row.a.clickable==='true'&&row.a.scrollable!=='true'&&
-    row.a['long-clickable']!=='true'&&bounds(row)&&parts.length===4&&labels.length===1&&
-    parts.filter(p=>inert(p,'android.widget.Button')&&!label(p)&&sameBox(p,row)&&!kids(p).length).length===1&&
-    parts.filter(p=>wrapper(p)&&!kids(p).length).length===2;
-  });
-  if(nodes.length===3&&interestHeading.length===1&&nodes.filter(interestRows).length===1&&
-     nodes.filter(n=>wrapper(n)&&sameBox(n,card)&&!kids(n).length).length===1)interestPanels.push(card);
   // The adjacent native panel has one passive label on the left and one
   // selectable option on the right, within three coincident native wrappers.
   if (nodes.length===1 && wrapper(nodes[0]) && sameBox(body,nodes[0])) {
@@ -305,7 +292,6 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
  }
  const wheel=staticWheelFrame(visible,owner,display,geometry.discover,kids,headingBackdrops,measurementOnly,behindDiscover);
  if (wheel) {geometry.wheelPoint=wheel.point;geometry.scrollFrame=wheel.frame;}
- if(interestPanels.length===1&&wheel?.point&&wheel.frame&&geometry.recoveryChromeKey)geometry.interestGap=true;
  if (mediaSurface) return mediaSurface;
  if (candidates.length!==1) return null;
  geometry.newChoiceLane=candidates[0].clipped;
@@ -332,7 +318,7 @@ function discoverScrollSurfaces(visible, discover, media, skip, originalPhoto) {
   compressed:compressed.length ? mediaScrollSurface(visible, media, compressed, root, false) : undefined,
   review:discover.enabled && fullyVisible(discover) ? mediaScrollSurface(visible, media, owners, root, geometry) : null,
   recoveryChromeKey:geometry.recoveryChromeKey,recoveryDrag:geometry.recoveryDrag,
-  wheelPoint:geometry.wheelPoint,scrollFrame:geometry.scrollFrame,newChoiceLane:geometry.newChoiceLane,interestGap:geometry.interestGap
+  wheelPoint:geometry.wheelPoint,scrollFrame:geometry.scrollFrame,newChoiceLane:geometry.newChoiceLane
  };
 }
 function mediaScrollSurface(visible, media, owners, root, alternate) {
@@ -606,7 +592,6 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;
  result.reviewScrollSurface = surfaces.review;
  result.reviewNewChoiceLane = surfaces.newChoiceLane===true;
- if(surfaces.interestGap)result.reviewInterestGap=true;
  result.reviewWheelPoint = surfaces.wheelPoint || null;
  result.reviewScrollFrame = surfaces.scrollFrame || null;
  result.prompts=staticPrompts.map(n=>{
