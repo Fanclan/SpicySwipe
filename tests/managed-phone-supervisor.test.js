@@ -27,6 +27,7 @@ if [ "$SCENARIO" != failed ] && [ ! -e "$HOME/restarted" ]; then echo 1; fi
 `);
   write('android-runtime/sdk/emulator/emulator', `#!/bin/sh
 if [ "$1" = -accel-check ]; then exit 0; fi
+printf '%s\\n' "$@" > "$HOME/args-\${1#@}"
 if [ "$1" = '@${bumble}' ] || [ "$SCENARIO" = shutdown ] || [ "$SCENARIO" = city-shutdown ]; then exec /bin/sleep 60; fi
 if [ -e "$HOME/started" ]; then
   if [ "$SCENARIO" = city ]; then
@@ -89,7 +90,9 @@ sleep() {
   const closed = new Promise(resolve => child.once('close', resolve));
   const stop = () => { try { process.kill(-child.pid, 'SIGTERM'); } catch (e) { if(e.code !== 'ESRCH') throw e; } };
   t.after(async () => { stop(); await closed; fs.rmSync(home, {recursive:true, force:true}); });
-  return {stop, closed, output:() => output, async until(wanted) {
+  return {stop, closed, output:() => output,
+    args:avd => fs.readFileSync(path.join(home, 'args-' + avd), 'utf8').trim().split('\n'),
+    async until(wanted) {
     for (let i=0; i<400 && !output.includes(wanted); i++) await delay(10);
     assert.ok(output.includes(wanted), output);
   }};
@@ -103,6 +106,10 @@ test('a native fault after a sustained Android boot gets a fast retry, then a fa
   assert.match(output, /status=134 signal=6/);
   assert.match(output, /backoff SpicySwipe_Phone_API_36 2[\s\S]*status=1[\s\S]*backoff SpicySwipe_Phone_API_36 30/);
   assert.equal(output.split('Starting ' + bumble).length - 1, 1);
+  for (const [avd, gpu] of [[hinge, 'swangle'], [bumble, 'swiftshader']]) {
+    const args = f.args(avd);
+    assert.equal(args[args.indexOf('-gpu') + 1], gpu, avd + ' renderer');
+  }
 });
 
 test('a native fault before Android finishes booting keeps the long retry', linux, async t => {

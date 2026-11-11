@@ -80,12 +80,12 @@ watch_city() {
 }
 
 run_phone() {
-  local avd=$1 port=$2 guest completed booted_at booted_seconds exit_status signal retry retry_timer city_worker
+  local avd=$1 port=$2 gpu=${3:-swiftshader} guest completed booted_at booted_seconds exit_status signal retry retry_timer city_worker
   # Coolify sends TERM to the entire phone process group, including this worker.
   trap 'exit 0' TERM INT
   while true; do
-    echo "Starting $avd on emulator-$port (acceleration $accel)"
-    "$ANDROID_HOME/emulator/emulator" "@$avd" -port "$port" -accel "$accel" -gpu swiftshader \
+    echo "Starting $avd on emulator-$port (acceleration $accel, graphics $gpu)"
+    "$ANDROID_HOME/emulator/emulator" "@$avd" -port "$port" -accel "$accel" -gpu "$gpu" \
       -no-window -noaudio -no-snapshot -no-boot-anim -no-metrics &
     guest=$!
     booted_at=''
@@ -157,6 +157,6 @@ create_avd SpicySwipe_Bumble_API_36
 # Check for abandoned native PID markers while this supervisor owns both managed
 # phones and before launching either emulator into the new container namespace.
 ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-avd-locks.cjs
-run_phone SpicySwipe_Phone_API_36 5554 &
-run_phone SpicySwipe_Bumble_API_36 5556 &
+run_phone SpicySwipe_Phone_API_36 5554 swangle &
+run_phone SpicySwipe_Bumble_API_36 5556 swiftshader &
 wait
