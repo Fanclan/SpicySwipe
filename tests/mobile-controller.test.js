@@ -2634,3 +2634,196 @@ test('a profile-only backtrack counts only its ordinary Like at the original tho
  assert.equal(moves,1);assert.equal(x.c.session.count,1000);assert.equal(x.c.session.runId,cp.session.runId);assert.equal(x.c.session.endsAt,null);
  assert.equal(x.c.checkpoint().pendingAction,null);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
 });
+
+async function sourceContinuationFixture(){
+ const {evidence}=require('../desktop/mobile-vision.cjs');let foreign=false,brightness=0;
+ const picture=box=>({getSize:()=>({width:800,height:1200}),crop:rect=>({resize:({width,height})=>({toBitmap:()=>{
+  const bytes=Buffer.alloc(width*height*4,255),top=box.y+box.height-box.width;
+  for(let y=0;y<height;y++)for(let x=0;x<width;x++)for(let c=0;c<3;c++){
+   const u=(rect.x+(x+.5)*rect.width/width-box.x)/box.width,v=(rect.y+(y+.5)*rect.height/height-top)/box.width;
+   bytes[(y*width+x)*4+c]=Math.round(116+45*Math.sin(29*u+11*v+c+(foreign?2:0))+38*Math.cos(17*v-13*u+c)+26*Math.cos(51*v+35*u))+brightness;
+  }
+  return bytes;
+ }})})});
+ const x=repeatedPhotoFixture({scroll:true,readEvidence:async card=>card.kind==='profile'&&card.photos?.length===1?
+  evidence(picture(card.photos[0].bounds),card):{hashes:card.photos.map(p=>p.visual||null)}});
+ x.c.readScreen=xml=>structuredClone(xml);
+ const full={x:40,y:451,width:640,height:640},chrome='e'.repeat(64);
+ x.failedPhoto.bounds=full;x.root.controls.skip={...control('Skip '+x.root.name),bounds:{x:700,y:1100,width:50,height:50}};
+ await x.prepare();await x.reopen(x.root);
+ const cp=x.saved();cp.session.runId='continuation-run';cp.binding.avd='managed-hinge';
+ cp.config.swipe.allowBackground=cp.session.config.allowBackground=true;
+ Object.assign(cp.rejectedPhoto,{runId:cp.session.runId,avd:cp.binding.avd,attempted:true,promptScan:'spent',promptMovesRemaining:0,
+  heldRevision:'old-held-endpoint',heldIdentity:'old-held-identity',promptRecovery:{chromeKey:chrome,opened:false}});
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';x.c.isManagedPhone=()=>true;x.android.deviceIdentity=async()=>({...cp.binding});
+ const source={...x.root,screenKey:'exact-source',reviewScrollSurface:full,recoveryChromeKey:chrome,recoveryDrag:{chromeKey:chrome,surface:full}};
+ const frame=(index,prompt=false)=>{const bounds=!index?full:index===1?{x:40,y:285,width:640,height:640}:{x:40,y:347,width:640,height:412-(index-2)*8};
+  return {...source,screenKey:index?'continued-'+index:source.screenKey,reviewScrollSurface:bounds,
+   photos:[{...x.failedPhoto,bounds,revealDirection:index?'down':null,like:index?null:x.failedPhoto.like}],prompts:prompt?[x.prompt]:[]};};
+ x.set(source);x.c.nextFeedRefreshAt=0;
+ let refreshes=0,moves=0;const taps=[];
+ x.android.refreshFeed=async(_p,_valid,_wait,beforeStop)=>{await beforeStop();refreshes++;x.set(source)};
+ x.android.scrollProfile=async(opts,valid)=>{assert.equal(valid(),true);assert.equal(opts.direction,'up');moves++;x.set(frame(moves,moves===2))};
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.equal(valid(),true);taps.push(bounds);issued?.();x.set(taps.length===1?
+  {...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send like')}}:screen({name:'Next',identity:'next'}))};
+ return {...x,source,frame,taps,foreign:value=>{foreign=value},brightness:value=>{brightness=value},refreshes:()=>refreshes,moves:()=>moves};
+}
+test('an acknowledged exact source refresh permits one seven-move continuation of the same photo to an ordinary prompt',async()=>{
+ const x=await sourceContinuationFixture(),old=x.saved();let moves=0;
+ x.android.scrollProfile=async(opts,valid)=>{
+  assert.equal(valid(),true);assert.equal(opts.direction,'up');assert.equal(opts.fraction,.2);
+  if(moves===0)assert.equal(x.frame(1).photos[0].bounds.height,x.source.photos[0].bounds.height);
+  const h=x.saved().rejectedPhoto;
+  assert.equal(h.promptMovesRemaining,0);assert.equal(h.promptScan,'spent');assert.equal(h.promptRecovery.opened,false);
+  assert.equal(h.promptRecovery.continuation.state,'moving');assert.equal(h.promptRecovery.continuation.remaining,6-moves);
+  moves++;x.set(x.frame(moves,moves===2));
+ };
+ await x.step();assert.equal(moves,0);await x.step();
+ assert.equal(x.refreshes(),1);assert.equal(moves,2);assert.equal(x.commits(),1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+ assert.equal(x.c.session.runId,old.session.runId);assert.equal(x.c.session.count,old.session.count+1);
+});
+test('source continuation requires a fresh acknowledgment and two unchanged exact-source surface reads',async()=>{
+ for(const mode of ['cooldown-only','lost-refresh','expired-ack','ack-hint','ack-epoch','source','photo','chrome','surface','pending','draft','count','run','device','pause','consent','background','cap','deadline']){
+  const x=await sourceContinuationFixture();let moves=0;
+  x.android.scrollProfile=async()=>{moves++};
+  // A different run may enter ordinary review; this test isolates the continuation.
+  x.c.review=async()=>{throw Object.assign(Error('Ordinary review not under test'),{code:'MOBILE_REVIEW_INTERRUPTED'})};
+  if(mode==='cooldown-only')x.c.nextFeedRefreshAt=Date.now()+600000;
+  else if(mode==='lost-refresh')x.android.refreshFeed=async()=>{x.set(x.source);throw Object.assign(Error('Lost refresh'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+  else await x.step();
+  if(mode==='expired-ack')x.c.heldPromptRefresh.until=0;
+  if(mode==='ack-hint')x.c.heldPromptRefresh.hint={...x.c.rejectedPhoto};
+  if(mode==='ack-epoch')x.c.heldPromptRefresh.epoch--;
+  if(mode==='pending')x.c.lastAction={kind:'like',identity:x.source.identity,name:x.source.name,runId:x.c.session.runId,sessionEndsAt:x.c.session.endsAt,refreshAttempted:true};
+  if(mode==='draft')x.c.draft={text:'Unsent user text'};
+  if(mode==='count')x.c.session.count++;
+  if(mode==='run')x.c.session.runId='different-run';
+  if(mode==='device')x.android.deviceIdentity=async()=>({serial:x.android.serial,avd:'different-phone'});
+  if(mode==='pause')x.c.session.status='paused';
+  if(mode==='consent')x.c.service.request=async()=>({sidebarConsentGiven:false});
+  if(mode==='background'){x.c.visible=false;x.c.config.swipe.allowBackground=x.c.session.config.allowBackground=false;}
+  if(mode==='cap')x.c.session.config.maxSwipes=x.c.session.count;
+  if(mode==='deadline')x.c.session.endsAt=x.c.rejectedPhoto.endsAt=Date.now()-1;
+  const hierarchy=x.android.hierarchy;let reads=0;
+  if(['source','photo','chrome','surface'].includes(mode))x.android.hierarchy=async()=>{
+   const d=await hierarchy();if(mode==='surface'?++reads%2===0:++reads>=2){const card={...d.xml};
+    if(mode==='source')card.identity='changed-source';if(mode==='photo')x.foreign(true);
+    if(mode==='chrome')card.recoveryChromeKey='f'.repeat(64);
+    if(mode==='surface')card.reviewScrollSurface={...card.reviewScrollSurface,width:600};return {...d,xml:card};}return d;
+  };
+  for(let i=0;i<2;i++)await x.step().catch(()=>{});
+  assert.equal(moves,0,mode);assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+test('source continuation keeps the original ambiguous movement charged and stops permanently after seven additional moves',async()=>{
+ const x=await sourceContinuationFixture();let moves=0;
+ x.android.scrollProfile=async()=>{moves++;x.set(x.frame(moves))};
+ await x.step();await x.step();assert.equal(moves,7);assert.equal(x.commits(),0);
+ let saved=x.saved();assert.equal(saved.rejectedPhoto.promptMovesRemaining,0);assert.equal(saved.rejectedPhoto.promptRecovery.continuation.remaining,0);
+ assert.equal(saved.rejectedPhoto.promptRecovery.continuation.state,'spent');
+ x.c.restoreCheckpoint(saved);x.c.session.status='running';x.c.nextFeedRefreshAt=0;
+ x.android.scrollProfile=async()=>assert.fail('No continuation refill after another refresh');
+ await x.step();await x.step();assert.deepEqual(x.taps,[]);assert.equal(x.commits(),0);
+});
+test('source continuation stops on changed photo pixels, insufficient image evidence or backward/no motion before any prompt tap',async()=>{
+ for(const mode of ['foreign-pixels','too-small','no-photo','stationary','backward']){
+  const x=await sourceContinuationFixture();let moves=0;
+  x.android.scrollProfile=async()=>{moves++;let card=x.frame(1,true);
+   if(mode==='foreign-pixels')x.foreign(true);if(mode==='too-small')card.photos[0].bounds.height=300;
+   if(mode==='no-photo')card.photos=[];if(mode==='stationary')card=x.frame(0,true);
+   if(mode==='backward')card.photos[0].bounds={...card.photos[0].bounds,y:461,height:640};x.set(card);
+  };
+  await x.step();await x.step();assert.equal(moves,1,mode);assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+test('an interrupted source continuation is consumed across restoration and cannot reconstruct a visual chain from a revision',async()=>{
+ for(const moved of [false,true]){
+  const x=await sourceContinuationFixture();let captured,moves=0;
+  x.android.scrollProfile=async()=>{moves++;captured=x.saved();if(moved)x.set(x.frame(1,true));throw Object.assign(Error('Lost motion acknowledgment'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+  await x.step();await x.step();assert.equal(moves,1);assert.equal(captured.rejectedPhoto.promptRecovery.continuation.state,'moving');
+  x.c.restoreCheckpoint(captured);x.c.session.status='running';x.c.nextFeedRefreshAt=Date.now()+600000;
+  x.android.scrollProfile=async()=>assert.fail('Unknown movement cannot be replayed');
+  await x.step();await x.step();assert.equal(x.commits(),0);assert.deepEqual(x.taps,[]);
+  assert.equal(x.saved().rejectedPhoto.promptRecovery.continuation.state,'spent');
+ }
+});
+test('source continuation accepts only a unique ordinary prompt and unchanged blank Like form',async()=>{
+ for(const mode of ['duplicate','draft','Rose','other-prompt','unknown-composer','lost-opening']){
+  const x=await sourceContinuationFixture();let taps=0;
+  x.android.scrollProfile=async()=>{const card=x.frame(1,true);if(mode==='duplicate')card.prompts.push({...x.prompt});x.set(card)};
+  x.android.tapControl=async()=>{taps++;if(mode==='lost-opening')throw Object.assign(Error('Lost opening'),{code:'ANDROID_COMMAND_TIMEOUT'});
+   x.set({...x.form,photos:[],prompts:[{...x.prompt,text:mode==='other-prompt'?'Prompt: Other. Answer: Other':x.prompt.text}],
+    composerText:mode==='draft'?'Existing user draft':'',composerTextVerified:mode!=='unknown-composer',
+    controls:{sendLike:control(mode==='Rose'?'Send a Rose':'Send like')}});
+  };
+  await x.step();await x.step();await x.step();assert.equal(taps,mode==='duplicate'?0:1,mode);assert.equal(x.commits(),0,mode);assert.equal(x.c.lastAction,null,mode);
+ }
+});
+
+test('source continuation cannot dispatch without its durable charge or act after cancellation during movement',async()=>{
+ for(const mode of ['storage','pause','stop','input']){
+  const x=await sourceContinuationFixture();await x.step();let moves=0;
+  if(mode==='storage')x.c.checkpointStore.write=()=>{throw Error('Synthetic storage failure')};
+  x.android.scrollProfile=async()=>{moves++;x.set(x.frame(1,true));
+   if(mode==='pause'||mode==='stop')await x.c.request(mode);else x.android.inputEpoch++;
+  };
+  await x.step().catch(()=>{});assert.equal(moves,mode==='storage'?0:1,mode);assert.equal(x.commits(),0);assert.deepEqual(x.taps,[]);
+  if(mode!=='storage'){assert.equal(x.saved().rejectedPhoto.promptRecovery.continuation.state,'moving');assert.equal(x.saved().rejectedPhoto.promptRecovery.continuation.remaining,6);}
+ }
+});
+
+test('source continuation preserves old checkpoint shape and rejects forged ready or replenished receipts',async()=>{
+ const x=await sourceContinuationFixture(),old=x.saved();x.c.restoreCheckpoint(old);
+ assert.deepEqual(x.c.checkpoint().rejectedPhoto,old.rejectedPhoto);
+ const cp=structuredClone(old),good={sourceRevision:'exact-source',remaining:6,state:'moving'};
+ cp.rejectedPhoto.promptRecovery.continuation=good;x.c.restoreCheckpoint(JSON.parse(JSON.stringify(cp)));
+ assert.deepEqual(x.c.checkpoint().rejectedPhoto.promptRecovery.continuation,good);
+ for(const value of [null,false,{}, {...good,state:'ready'}, {...good,remaining:7}, {...good,remaining:-1},
+  {...good,remaining:1.5}, {...good,sourceRevision:''}, {...good,unknown:true}]){
+  const broken=structuredClone(old);broken.rejectedPhoto.promptRecovery.continuation=value;
+  assert.throws(()=>x.c.restoreCheckpoint(broken),/continuation/i);
+ }
+});
+test('a count-only source continuation preserves the original run and accounts only one Like at the thousandth profile',async()=>{
+ const x=await sourceContinuationFixture(),cp=x.saved();cp.session.count=cp.rejectedPhoto.count=999;
+ cp.session.endsAt=cp.rejectedPhoto.endsAt=null;cp.config.swipe.sessionMinutes=cp.session.config.sessionMinutes=null;
+ cp.config.swipe.maxSwipes=cp.session.config.maxSwipes=1000;cp.config.swipe.breaksEnabled=cp.session.config.breaksEnabled=false;
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';x.c.nextFeedRefreshAt=0;
+ const step=()=>x.c.sessionStep(x.c.session.config,()=>x.c.session.status==='running',()=>{x.c.session.count++},async()=>true,x.c.token());
+ await step();await step();assert.equal(x.c.session.count,1000);assert.equal(x.c.session.runId,cp.session.runId);
+ assert.equal(x.c.session.endsAt,null);assert.equal(x.c.checkpoint().pendingAction,null);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+});
+
+
+test('source continuation rechecks private stationary photo windows before another move and before opening a prompt',async()=>{
+ for(const endpoint of ['next-move','prompt']){
+  const x=await sourceContinuationFixture(),read=x.c.readEvidence;let observations=0,original,moves=0,compared=false;
+  x.c.readEvidence=async card=>{
+   const clipped=card.kind==='profile'&&card.photos?.[0]?.bounds.height===412;
+   const replacing=clipped&&++observations===2;
+   if(replacing)x.brightness(20);const current=await read(card);
+   if(clipped&&observations===1)original=current;
+   if(replacing){
+    assert.deepEqual(current.hashes,original.hashes);assert.deepEqual(current.squareHashes,original.squareHashes);
+    assert.equal(current.patchEvidence[0],null);assert.notDeepEqual(current.scrollPhoto.windows,original.scrollPhoto.windows);compared=true;
+   }
+   return current;
+  };
+  x.android.scrollProfile=async()=>{moves++;x.set(x.frame(moves+1,endpoint==='prompt'||moves>1))};
+  await x.step();await x.step();
+  assert.equal(compared,true,endpoint);assert.equal(observations,2,endpoint);assert.equal(moves,1,endpoint);assert.equal(x.commits(),0,endpoint);assert.deepEqual(x.taps,[],endpoint);
+  assert.equal(x.saved().rejectedPhoto.promptRecovery.continuation.state,'spent');
+ }
+});
+
+
+test('source continuation uses smaller steps to retain the native square photo across a full-to-clipped prompt route',async()=>{
+ const x=await sourceContinuationFixture();let moves=0;
+ x.android.scrollProfile=async opts=>{
+  assert.equal(opts.fraction,.2);moves++;
+  // A 1280px display yields about 166px of travel at .2; Discover clips at y347.
+  const card=x.frame(moves,moves===2),bounds={x:40,y:347,width:640,height:moves===1?578:412};
+  card.photos[0].bounds=bounds;card.reviewScrollSurface=bounds;x.set(card);
+ };
+ await x.step();await x.step();assert.equal(moves,2);assert.equal(x.commits(),1);assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);
+});
