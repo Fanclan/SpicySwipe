@@ -124,6 +124,48 @@ module.exports=function readBumble(xml,options,h){
   result.controls.dismiss = { label: 'Close', bounds: target, key: hash(['bumble-feedback-close', target]) };
   return result;
  }
+ // This full-screen Compose promotion contains previously liked profiles. Its
+ // tiles and Compliment controls are content, never ordinary Like targets.
+ const secondChanceTitle=find('Second time’s a charm');
+ const secondChanceBody=find('You’ve already liked these bees, why not use Compliments to help you stand out?');
+ if(secondChanceTitle.length||secondChanceBody.length){
+  const invalid=()=>block('The Bumble second-chance promotion requires attention.'),back=find('Back');
+  if(secondChanceTitle.length!==1||secondChanceBody.length!==1||back.length!==1)return invalid();
+  const heading=secondChanceTitle[0],body=secondChanceBody[0],dismiss=back[0],header=heading.parent,scroll=header?.parent,sheet=scroll?.parent;
+  const children=p=>visible.filter(n=>n.parent===p),within=(n,p)=>{for(let a=n.parent;a;a=a.parent)if(a===p)return true;return false};
+  if(sheet?.a.class!=='android.view.View'||sheet.parent?.a.class!=='androidx.compose.ui.platform.ComposeView'||
+     scroll?.a.class!=='android.view.View'||scroll.a.scrollable!=='true'||header?.a.class!=='android.view.View'||body.parent!==header||dismiss.parent!==sheet)return invalid();
+  const counter=children(sheet).filter(n=>n!==dismiss&&n!==scroll),decoration=children(header).filter(n=>n!==heading&&n!==body);
+  if(counter.length!==1||counter[0].a.class!=='android.view.View'||counter[0].a.clickable!=='true'||
+     decoration.length!==1||decoration[0].a.class!=='android.view.View'||label(decoration[0]))return invalid();
+  const counterText=children(counter[0]);
+  if(counterText.length!==1||counterText[0].a.class!=='android.widget.TextView'||!/^\d+$/.test(counterText[0].a.text||''))return invalid();
+  if(![sheet,scroll,header,heading,body,dismiss].every(n=>n.enabled&&fullyVisible(n))||
+     ![heading,body].every(n=>n.a.class==='android.widget.TextView'&&n.a.text===label(n)&&!n.a['content-desc'])||
+     dismiss.a.class!=='android.widget.ImageView'||dismiss.a['content-desc']!=='Back'||dismiss.a.text||dismiss.a.clickable!=='true')return invalid();
+  const frame=bounds(sheet),target=bounds(dismiss),viewport=bounds(scroll),titleBox=bounds(heading),bodyBox=bounds(body),headerBox=bounds(header),countBox=bounds(counter[0]);
+  if(!countBox||!fullyVisible(counter[0])||target.x!==frame.x||target.y!==frame.y||target.width!==target.height||target.width>frame.width/4||
+     target.x+target.width>countBox.x||Math.max(target.y+target.height,countBox.y+countBox.height)>viewport.y||
+     viewport.x!==frame.x||viewport.width!==frame.width||viewport.y+viewport.height!==frame.y+frame.height||
+     titleBox.y+titleBox.height>bodyBox.y)return invalid();
+  const tiles=children(scroll).filter(n=>n!==header);
+  if(!tiles.length||tiles.some(n=>n.a.class!=='android.view.View'||!bounds(n)||bounds(n).y<headerBox.y+headerBox.height))return invalid();
+  const chrome=new Set([sheet,scroll,header,heading,body,decoration[0],dismiss,counter[0],counterText[0]]);
+  for(let p=sheet.parent;p?.tag==='node';p=p.parent)chrome.add(p);
+  for(const n of visible){
+   const tile=tiles.find(p=>n===p||within(n,p));
+   if(!chrome.has(n)&&!tile)return invalid();
+   if(['focused','selected','checkable','checked','password','long-clickable'].some(k=>n.a[k]==='true')||
+      n.a.scrollable==='true'&&n!==scroll)return invalid();
+   if(tile){
+    const b=bounds(n);
+    if(!['android.view.View','android.widget.ImageView','android.widget.TextView'].includes(n.a.class)||!b||
+       b.x<viewport.x||b.x+b.width>viewport.x+viewport.width||b.y<headerBox.y+headerBox.height||
+       n.a.clickable==='true'&&n.a.class==='android.widget.TextView')return invalid();
+   }else if(n!==dismiss&&n!==counter[0]&&(n.a.clickable==='true'||label(n)&&![heading,body,counterText[0]].includes(n)))return invalid();
+  }
+  result.kind='promoOffer';result.controls.dismiss=control(dismiss,true);return result;
+ }
  // Observed native SuperSwipe offer. Only Close is exposed; purchase stays inaccessible.
  const offerTitle=find('50% off 15 SuperSwipes'),offerBody=find('Really like someone? Send a SuperSwipe and you’re sure to be seen'),price=find('Normal price $34.99'),buy=find('Only $17.49'),terms=find('Terms and Conditions'),timer=visible.filter(n=>/^Offer ends in \d{1,2}:[0-5]\d$/.test(label(n)));
  if(close.length===1&&[offerTitle,offerBody,price,buy,terms,timer].every(a=>a.length===1)){
