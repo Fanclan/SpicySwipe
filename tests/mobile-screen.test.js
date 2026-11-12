@@ -834,3 +834,50 @@ test('partial native fragments expose only verified wheel geometry and never tur
  }
  assert.equal(read(feed(),{foreground:'other.app'}).kind,'blocked');
 });
+
+test('native video review exposes only an inert scroll surface, never identity or a voting target',()=>{
+ const {videoDiscover}=require('./fixtures/hinge-video-discover.cjs');
+ for(const top of [488,347]){
+  const s=read(videoDiscover({top}));assert.equal(s.kind,'profile');assert.equal(s.identity,null);
+  assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
+  assert.deepEqual(s.reviewScrollSurface,{x:40,y:top,width:640,height:1112-top});
+  assert.deepEqual(s.scrollSurface,{x:40,y:top,width:640,height:1112-top});
+ }
+});
+
+test('native video review requires the current named inert body and an owned native video control',()=>{
+ const {videoDiscover}=require('./fixtures/hinge-video-discover.cjs'),xml=videoDiscover();
+ const changeVideo=change=>xml.replace(/<node[^>]*content-desc="Example&apos;s video"[^>]*>/,change);
+ const variants=[xml.replace("Example&apos;s video","Other&apos;s video"),xml.replace('Like video','Like photo'),
+  xml.replace('content-desc="Skip Example"','content-desc="Skip Other"'),
+  xml.replace('content-desc="Discover" enabled="true" clickable="false" long-clickable="false" scrollable="false" focusable="false" focused="false" checkable="false" selected="true"','content-desc="Discover" enabled="true" clickable="false" long-clickable="false" scrollable="false" focusable="false" focused="false" checkable="false" selected="false"'),
+  ...['clickable','long-clickable','scrollable','focusable','focused','checkable','password'].map(key=>changeVideo(tag=>tag.replace(key+'="false"',key+'="true"'))),
+  changeVideo(tag=>tag.replace('enabled="true"','enabled="false"')),
+  changeVideo(tag=>tag.replace('class="android.view.View"','class="android.widget.ImageView"'))];
+ for(const sample of variants){const s=read(sample);assert.ok(!s.scrollSurface);assert.ok(!s.reviewScrollSurface);assert.equal(s.controls.like,null);}
+});
+
+test('native video review rejects detached controls, duplicate owners and interactive or foreign overlays',()=>{
+ const {videoDiscover,node}=require('./fixtures/hinge-video-discover.cjs'),xml=videoDiscover();
+ const button=xml.match(/<node[^>]*content-desc="Like video"[^>]*><\/node>/)[0];
+ const relocated=xml.replace(button,'').replace('</hierarchy>',button+'</hierarchy>');
+ const overlay=node('','[300,520][420,1080]').replace('clickable="false"','clickable="true"');
+ const editor=node('','[300,520][420,1080]').replace('class="android.view.View"','class="android.widget.EditText"');
+ const variants=[relocated,xml.replace(button,button+button),videoDiscover({extra:overlay}),videoDiscover({extra:editor}),
+  videoDiscover({extra:'<node package="other.app" class="android.view.View" bounds="[300,520][420,1080]"/>'}),
+  xml.replace(/<node[^>]*class="ycl"[^>]*>/,tag=>tag.replace('clickable="false"','clickable="true"')),
+  xml.replace('[0,488][720,1112]','[0,488][700,1112]')];
+ for(const sample of variants){const s=read(sample);assert.ok(!s.scrollSurface);assert.ok(!s.reviewScrollSurface);assert.equal(s.controls.like,null);}
+ assert.equal(read(xml,{foreground:'other.app'}).kind,'blocked');
+});
+
+
+test('native video review requires the passive player subtree and inert ancestors',()=>{
+ const {videoDiscover}=require('./fixtures/hinge-video-discover.cjs'),xml=videoDiscover();
+ const variants=[xml.replace('class="ycl"','class="android.webkit.WebView"'),
+  xml.replace('class="android.view.TextureView"','class="android.widget.EditText"'),
+  xml.replace(/<node[^>]*class="android.widget.FrameLayout"[^>]*bounds="\[40,240\]\[680,1280\]"[^>]*>/,tag=>tag.replace('focusable="false"','focusable="true"')),
+  xml.replace(/(<node[^>]*class="ycl"[^>]*bounds=")\[40,240\]\[680,1280\]/,'$1[40,500][680,1280]'),
+  xml.replace(/(<node[^>]*bounds="\[40,488\]\[680,1112\]"[^>]*>)(?=<node[^>]*content-desc="Example&apos;s video")/,tag=>tag.replace('clickable="false"','clickable="true"'))];
+ for(const sample of variants){assert.notEqual(sample,xml);const s=read(sample);assert.ok(!s.scrollSurface);assert.ok(!s.reviewScrollSurface);}
+});

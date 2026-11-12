@@ -315,6 +315,33 @@ function alternateScrollSurface(visible,owner,display,mediaSurface,geometry) {
  geometry.newChoiceLane=candidates[0].clipped;
  return candidates[0].bounds;
 }
+// A video can supply navigation evidence without supplying identity or a Like target.
+function videoScrollMedia(visible,name,skip) {
+ const kids=n=>visible.filter(child=>child.parent===n);
+ const inert=n=>n?.enabled&&n.visible&&n.a.clickable==='false'&&
+  !['long-clickable','scrollable','focusable','focused','checkable','checked','selected','password'].some(k=>n.a[k]==='true');
+ const videos=visible.filter(n=>n.a.class==='android.view.View'&&label(n)===name+"'s video");
+ if(videos.length!==1||skip.a.class!=='android.widget.Button'||skip.a.clickable!=='true'||!skip.enabled||!fullyVisible(skip))return [];
+ const [video]=videos,b=bounds(video),body=video.parent,parts=kids(body),player=parts.find(n=>n!==video);
+ if(!inert(video)||!b||!fullyVisible(video)||kids(video).length||parts.length!==2||!inert(player)||label(player)||
+    !/^(?:[\w.]+\.)?ycl$/.test(player.a.class||''))return [];
+ const frames=kids(player),frame=frames[0],textures=frame?kids(frame):[],texture=textures[0],pb=bounds(player);
+ if(frames.length!==1||frame.a.class!=='android.widget.FrameLayout'||!inert(frame)||label(frame)||
+    textures.length!==1||texture.a.class!=='android.view.TextureView'||!inert(texture)||label(texture)||kids(texture).length||
+    !pb||frame.a.bounds!==player.a.bounds||texture.a.bounds!==player.a.bounds||pb.x!==b.x||pb.width!==b.width||
+    pb.y>b.y||pb.y+pb.height<b.y+b.height)return [];
+ let owner=body;
+ for(;owner&&owner.a.scrollable!=='true';owner=owner.parent){
+  const box=bounds(owner);
+  if(owner.a.class!=='android.view.View'||!inert(owner)||label(owner)||!box||box.x!==b.x||box.width!==b.width)return [];
+ }
+ if(!owner)return [];
+ const likes=visible.filter(n=>n.a.class==='android.widget.Button'&&['Like video','Like video prompt'].includes(label(n))&&sharesPhotoCard(video,n));
+ if(likes.length!==1||!likes[0].enabled||likes[0].a.clickable!=='true'||!fullyVisible(likes[0]))return [];
+ const action=bounds(likes[0]);
+ if(action.x<b.x||action.y<b.y||action.x+action.width>b.x+b.width||action.y+action.height>b.y+b.height)return [];
+ return [video];
+}
 function discoverScrollSurfaces(visible, discover, media, skip, originalPhoto) {
  const tab = bounds(discover);
  if (!tab) return {review:null};
@@ -608,10 +635,12 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   return { key: hash(['photo', label(n), b]), bounds: b, revealDirection: photoRevealDirection(n), like: result.identity && Math.abs(b.width-b.height)<=3 && fullyVisible(n) && matching.length === 1 && fullyVisible(matching[0]) ? control(matching[0]) : null };
  });
  const originalPhoto=!prompts.length&&pictures.length===1&&result.photos[0].like?pictures[0]:null;
- const surfaces = discoverScrollSurfaces(visible,nav[0],[...pictures,...staticPrompts],skips[0],originalPhoto);
+ const videos=videoScrollMedia(visible,result.name,skips[0]);
+ const surfaces = discoverScrollSurfaces(visible,nav[0],[...pictures,...staticPrompts,...videos],skips[0],originalPhoto);
  if(surfaces.recoveryChromeKey)result.recoveryChromeKey=surfaces.recoveryChromeKey;
  if(surfaces.recoveryDrag)result.recoveryDrag=surfaces.recoveryDrag;
  if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;
+ else if(videos.length)result.scrollSurface=surfaces.review;
  result.reviewScrollSurface = surfaces.review;
  result.reviewNewChoiceLane = surfaces.newChoiceLane===true;
  result.reviewWheelPoint = surfaces.wheelPoint || null;
