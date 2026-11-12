@@ -893,6 +893,27 @@ class MobileController{
   const changeKey=observed=>observed.kind==='empty'?'empty':observed.kind==='profile'&&observed.identity&&observed.identity!==original.identity&&(observed.name!==original.name||(this.platform==='bumble'&&distinctBumbleProfile(original,observed)))?JSON.stringify([observed.identity,observed.name,observed.profileDiscriminator]):null;
   let current=await this.read(t);this.assert(t,valid);
   if(this.platform==='bumble')current=await this.dismissBumbleReminder(current,t,valid);
+  const pending=this.lastAction,session=this.session;
+  const unidentified=card=>card.kind==='profile'&&card.name&&card.name!==original.name&&!card.identity&&
+   (card.photos||[]).every(p=>p.key&&p.bounds&&!p.like&&!p.text)&&!card.prompts?.length&&Boolean(card.reviewScrollSurface)&&!card.controls?.composer&&!card.controls?.sendLike&&!card.composerText?.trim();
+  if(this.platform==='hinge'&&this.loaded&&this.checkpointStore&&pending?.kind==='like'&&unidentified(current)&&
+     this.config.swipe.scrollProfile&&session.status==='running'&&session.now()>=(this.nextFeedRefreshAt||0)){
+   const priorValid=valid,epoch=session.epoch,name=current.name;
+   const scope=()=>JSON.stringify([session.runId,session.count,this.reservedCount,session.endsAt,session.config,this.config,this.binding,pending]);
+   const expected=scope();
+   const owned=()=>priorValid()&&session.epoch===epoch&&session.status==='running'&&scope()===expected&&
+    this.lastAction===pending&&session.count===this.reservedCount&&!session.timeExpired()&&!session.reachedProfileLimit()&&
+    !this.draft&&!this.storageError&&(this.visible||(this.config.swipe.allowBackground&&session.config.allowBackground))&&
+    this.observedForeground==='co.hinge.app'&&this.screen?.kind==='profile'&&this.screen.name===name&&
+    !this.screen.controls?.composer&&!this.screen.controls?.sendLike&&!this.screen.composerText?.trim()&&
+    (Boolean(this.screen.identity)||unidentified(this.screen));
+   this.assert(t,owned);await this.consent(t);await this.verifyBinding(t);await this.fresh(current,t,owned);this.assert(t,owned);
+   // Reserve one bounded evidence pass before any motion, including interrupted
+   // passes. The existing cooldown survives restarts and never retries the Like.
+   this.nextFeedRefreshAt=session.now()+300000;this.persist();this.assert(t,owned);
+   current=await this.identifyProfile(this.screen,t,owned,true);this.assert(t,owned);
+   valid=owned; // Retain this scope through the two independent confirmation reads.
+  }
   if(current.footerScrollSurface)return false;
   // A footer has no name/photo. Recover observation by scrolling only, retaining
   // the durable action guard until two main-card observations prove transition.
@@ -1005,12 +1026,12 @@ class MobileController{
   await this.android.scrollProfile(options,()=>{try{this.assert(t,current);return true}catch{return false}});
   this.assert(t,current);return s;
  }
- async identifyProfile(s,t,valid=()=>true){
-  if(this.platform!=='hinge'||s.kind!=='profile'||s.identity||s.photos?.length||!s.name||!this.config.swipe.scrollProfile)return s;
+ async identifyProfile(s,t,valid=()=>true,requireReviewSurface=false){
+  if(this.platform!=='hinge'||s.kind!=='profile'||s.identity||(s.photos?.length&&!requireReviewSurface)||!s.name||!this.config.swipe.scrollProfile)return s;
   const name=s.name;
   for(let i=0;i<3&&!s.identity;i++){
    this.assert(t,valid);
-   await this.scrollHinge(s,{fraction:.45,duration:450,direction:'up'},t,valid);
+   await this.scrollHinge(s,{fraction:.45,duration:450,direction:'up'},t,valid,requireReviewSurface);
    await this.pauseFor(450,t);this.assert(t,valid);s=await this.read(t);this.assert(t,valid);
    if(s.kind!=='profile')throw transientError('Profile evidence review interrupted: '+(s.reason||'Unrecognized screen.'));
    if(s.name!==name)throw transientError("Profile changed during identity review.");

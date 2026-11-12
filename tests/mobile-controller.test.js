@@ -3458,3 +3458,134 @@ test('native-like transaction does not replace selected-content proof outside it
   assert.deepEqual(x.taps,[x.opener.bounds],mode);assert.equal(x.c.lastAction,null,mode);
  }
 });
+
+async function pendingIdentityFixture(){
+ let saved,now=100000;
+ const surface={x:20,y:490,width:680,height:600};
+ const next=screen({name:'Next',identity:null,screenKey:'video-first',photos:[],prompts:[],controls:{},scrollSurface:surface,reviewScrollSurface:surface});
+ const x=setup(next,{checkpointStore:{read:()=>null,write:cp=>{saved=structuredClone(cp)}}});
+ await x.c.request('status');
+ await x.c.request('config',{mode:'like',swipe:{maxSwipes:1000,sessionMinutes:null,scrollProfile:true,breaksEnabled:false}});
+ Object.assign(x.c.session,{status:'running',runId:'a'.repeat(32),count:484,endsAt:null,config:{...x.c.config.swipe}});
+ x.c.session.now=()=>now;x.c.reservedCount=484;x.c.binding={serial:x.android.serial,avd:'original-phone'};
+ x.android.deviceIdentity=async()=>({...x.c.binding});
+ x.c.lastAction={kind:'like',identity:'previous-profile',name:'Previous',runId:x.c.session.runId,sessionEndsAt:null};
+ x.c.persist();const guard=x.c.lastAction,initial=structuredClone(saved);
+ x.android.refreshFeed=async()=>assert.fail('Identity observation must not relaunch or vote');
+ const run=()=>{const epoch=x.c.session.epoch;return x.c.reconcilePending(x.c.lastAction,x.c.token(),()=>x.c.session.valid(epoch))};
+ return {...x,next,surface,guard,initial,run,saved:()=>saved,now:()=>now,advance:ms=>{now+=ms}};
+}
+
+test('pending Hinge observes a different-name video profile and clears only after two identity reads',async()=>{
+ const x=await pendingIdentityFixture(),hierarchy=x.android.hierarchy;let moves=0,identifiedReads=0;
+ x.android.hierarchy=async()=>{const raw=await hierarchy();if(raw.xml.identity==='next-evidence'){
+  identifiedReads++;assert.equal(x.c.lastAction,x.guard);assert.equal(x.saved().pendingAction.identity,'previous-profile');
+ }return raw};
+ x.android.scrollProfile=async(options,valid)=>{
+  assert.equal(valid(),true);assert.deepEqual(options.surface,x.surface);assert.ok(x.saved().nextFeedRefreshAt>x.now());
+  assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);moves++;
+  x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));
+ };
+ assert.equal(await x.run(),true);assert.equal(moves,1);assert.equal(identifiedReads,2);
+ assert.equal(x.c.lastAction,null);assert.equal(x.saved().pendingAction,null);
+ assert.equal(x.c.session.count,484);assert.equal(x.saved().session.count,484);assert.equal(x.c.session.runId,x.initial.session.runId);
+ assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge identity recovery spends at most three safe moves per durable five-minute cooldown',async()=>{
+ const x=await pendingIdentityFixture();let moves=0;
+ x.android.scrollProfile=async(options,valid)=>{assert.equal(valid(),true);assert.deepEqual(options.surface,x.surface);assert.ok(x.saved().nextFeedRefreshAt>x.now());moves++};
+ assert.equal(await x.run(),false);assert.equal(moves,3);const cp=structuredClone(x.saved());
+ assert.equal(cp.nextFeedRefreshAt,x.now()+300000);assert.deepEqual(cp.pendingAction,x.initial.pendingAction);assert.equal(cp.session.count,484);
+ assert.equal(await x.run(),false);assert.equal(moves,3);
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';assert.equal(await x.run(),false);assert.equal(moves,3);
+ x.advance(300001);assert.equal(await x.run(),false);assert.equal(moves,6);
+ assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);assert.equal(x.saved().session.count,484);assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge identity recovery rejects missing routes, editors, original names and unsafe session scope',async()=>{
+ for(const mode of ['route','same-name','photo','prompt','composer','draft','paused','expired','limit','no-store','scroll-off']){
+  const x=await pendingIdentityFixture();let moves=0;x.android.scrollProfile=async()=>moves++;
+  if(mode==='route'){x.next.scrollSurface=null;x.next.reviewScrollSurface=null;}if(mode==='same-name')x.next.name=x.guard.name;
+  if(mode==='photo')x.next.photos=[{key:'clipped'}];if(mode==='prompt')x.next.prompts=[{text:'unidentified'}];
+  if(mode==='composer')x.next.controls.composer=control('editor');if(mode==='draft')x.c.draft={text:'unsent'};
+  if(mode==='paused')x.c.session.status='paused';if(mode==='expired')x.c.session.endsAt=x.now()-1;
+  if(mode==='limit')x.c.session.config.maxSwipes=484;if(mode==='no-store')x.c.checkpointStore=null;
+  if(mode==='scroll-off')x.c.config.swipe.scrollProfile=false;
+  await x.run().catch(()=>{});assert.equal(moves,0,mode);assert.equal(x.c.lastAction,x.guard,mode);
+ }
+});
+
+test('pending Hinge identity recovery rechecks the native route and profile on every move',async()=>{
+ for(const mode of ['route','name','editor','foreground']){
+  const x=await pendingIdentityFixture();let moves=0;
+  x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);moves++;
+   const after={...x.next,screenKey:'after-move',controls:{}};
+   if(mode==='route'){delete after.scrollSurface;delete after.reviewScrollSurface;}if(mode==='name')after.name='Third';if(mode==='editor')after.controls.composer=control('editor');
+   x.set(after);if(mode==='foreground')x.android.hierarchy=async()=>({xml:after,foreground:'other.app'});
+  };
+  await assert.rejects(x.run());assert.equal(moves,1,mode);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction,mode);
+  assert.equal(x.saved().session.count,484);assert.deepEqual(x.calls,[]);
+ }
+});
+
+test('pending Hinge identity recovery retains guard and run ownership across reservation and observation',async()=>{
+ for(const boundary of ['reserve','move'])for(const mode of ['config','run','count','deadline','binding','input','guard']){
+  const x=await pendingIdentityFixture(),write=x.c.checkpointStore.write;let moves=0,changed=false;
+  const change=()=>{changed=true;
+   if(mode==='config')x.c.config.autoSend=true;if(mode==='run')x.c.session.runId='different-run';
+   if(mode==='count')x.c.session.count++;if(mode==='deadline')x.c.session.endsAt=x.now()+600000;
+   if(mode==='binding')x.c.binding={...x.c.binding,avd:'different-phone'};if(mode==='input')x.android.cancelInput();
+   if(mode==='guard')x.c.lastAction.name='Different pending owner';
+  };
+  if(boundary==='reserve')x.c.checkpointStore.write=cp=>{write(cp);if(cp.nextFeedRefreshAt>x.now()&&!changed)change()};
+  x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);moves++;if(boundary==='move')change();
+   x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));};
+  await assert.rejects(x.run());assert.equal(changed,true,boundary+mode);assert.equal(moves,boundary==='reserve'?0:1,boundary+mode);
+  assert.ok(x.c.lastAction,boundary+mode);assert.deepEqual(x.calls,[]);
+ }
+});
+
+test('pending Hinge identity recovery keeps its guard for unstable confirmation and ambiguous navigation',async()=>{
+ for(const mode of ['unstable','lost-ack','storage']){
+  const x=await pendingIdentityFixture(),hierarchy=x.android.hierarchy,write=x.c.checkpointStore.write;let moves=0,reads=0;
+  x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);moves++;
+   x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));
+   if(mode==='lost-ack')throw Object.assign(Error('Navigation acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  };
+  if(mode==='unstable')x.android.hierarchy=async()=>{const raw=await hierarchy();if(raw.xml.identity==='next-evidence'&&++reads===2)return {xml:{...raw.xml,identity:'unstable'},foreground:raw.foreground};return raw};
+  if(mode==='storage')x.c.checkpointStore.write=cp=>{if(cp.nextFeedRefreshAt>x.now())throw Error('Storage unavailable');write(cp)};
+  const result=await x.run().catch(()=>false);assert.equal(result,false);assert.equal(moves,mode==='storage'?0:1);
+  assert.ok(x.c.lastAction);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);assert.equal(x.saved().session.count,484);
+  if(mode==='lost-ack'){x.set(x.next);assert.equal(await x.run(),false);assert.equal(moves,1)}
+ }
+});
+
+test('pending Hinge identity recovery preserves a fresh zero-count run and its historical duplicate guard',async()=>{
+ const x=await pendingIdentityFixture(),old=structuredClone(x.guard);let moves=0;
+ x.c.session.runId='b'.repeat(32);x.c.session.count=x.c.reservedCount=0;x.c.persist();
+ x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);assert.deepEqual(x.c.lastAction,old);moves++;
+  x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));};
+ assert.equal(await x.run(),true);assert.equal(moves,1);assert.equal(x.c.lastAction,null);
+ assert.equal(x.saved().session.count,0);assert.equal(x.saved().session.runId,'b'.repeat(32));assert.equal(x.saved().session.config.maxSwipes,1000);
+ assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge identity recovery continues across a partial photo while retaining the safe route',async()=>{
+ const x=await pendingIdentityFixture();let moves=0;
+ const partial={...x.next,screenKey:'partial-photo',scrollSurface:undefined,photos:[{key:'partial',bounds:box,like:null,revealDirection:'up'}]};
+ x.android.scrollProfile=async(options,valid)=>{assert.equal(valid(),true);assert.deepEqual(options.surface,x.surface);moves++;
+  x.set(moves===1?partial:screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));};
+ assert.equal(await x.run(),true);assert.equal(moves,2);assert.equal(x.c.lastAction,null);assert.equal(x.saved().session.count,484);
+ assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge identity recovery can revisit a safe partial endpoint only after its saved cooldown',async()=>{
+ const x=await pendingIdentityFixture();let moves=0;
+ const partial={...x.next,screenKey:'partial-photo',scrollSurface:undefined,photos:[{key:'partial',bounds:box,like:null,revealDirection:'up'}]};
+ x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);moves++;x.set(partial)};
+ assert.equal(await x.run(),false);assert.equal(moves,3);assert.equal(await x.run(),false);assert.equal(moves,3);
+ x.advance(300001);x.android.scrollProfile=async(_options,valid)=>{assert.equal(valid(),true);moves++;
+  x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));};
+ assert.equal(await x.run(),true);assert.equal(moves,4);assert.equal(x.saved().session.count,484);assert.equal(x.c.lastAction,null);
+});
