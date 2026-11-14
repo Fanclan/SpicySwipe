@@ -307,6 +307,47 @@ test('elapsed-counter normalization preserves action, geometry and other text ch
  for(const sample of [xml.replace('Unmute video','Different control'),xml.replace('content-desc="Elapsed time: 13 seconds" clickable="false"','content-desc="Elapsed time: 13 seconds" clickable="true"'),xml.replace('text="" content-desc="Elapsed time','text="Other text" content-desc="Elapsed time')])assert.notEqual(read(sample).screenKey,read(sample.replace('13 seconds','16 seconds')).screenKey);
 });
 
+const {clippedVideoClock}=require('./fixtures/hinge-clipped-video-clock.cjs');
+test('a clipped native video timer cannot interrupt fresh verification of a stationary photo',async()=>{
+ const xml=profile.replace('</hierarchy>',clippedVideoClock()+'</hierarchy>');
+ let current=xml;
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const controller=new Controller({platform:'hinge',service:{},android:{serial:'synthetic',inputEpoch:0,
+  hierarchy:async()=>({xml:current,foreground:'co.hinge.app'}),tapControl:async()=>assert.fail('Observation must not tap')}});
+ const token=controller.token(),before=await controller.read(token);
+ assert.equal(before.kind,'profile');assert.ok(before.controls.like);
+ current=xml.replace('13 seconds','18 seconds');
+ const after=await controller.fresh(before,token);
+ assert.equal(after.identity,before.identity);assert.deepEqual(after.photos,before.photos);assert.deepEqual(after.controls,before.controls);
+ current=current.replace('Hiking &amp; coffee.','Books &amp; tea.');
+ await assert.rejects(controller.fresh(after,token),{code:'MOBILE_SCREEN_CHANGED'});
+});
+test('clipped video timer normalization requires the native player and inert bounded timer',()=>{
+ const xml=profile.replace('</hierarchy>',clippedVideoClock()+'</hierarchy>');
+ const mutate=(id,from,to)=>xml.replace(new RegExp('(<node resource-id="'+id+'"[^>]*?)'+from),(_,prefix)=>prefix+to);
+ const samples=[
+  xml.replace('Video prompt: Example activity','Unknown content'),
+  mutate('clock-texture','class="android.view.TextureView"','class="android.view.View"'),
+  mutate('clock-player','class="ycl"','class="UnknownPlayer"'),
+  mutate('clock-timer','clickable="false"','clickable="true"'),
+  mutate('clock-timer','focusable="false"','focusable="true"'),
+  mutate('clock-timer','text=""','text="Other text"'),
+  mutate('clock-timer','enabled="true"','enabled="false"'),
+  mutate('clock-controls','clickable="false"','clickable="true"'),
+  mutate('clock-overlay','clickable="false"','clickable="true"'),
+  xml.replace('[585,1063][648,1111]','[585,1063][700,1111]'),
+ ];
+ for(const [index,sample] of samples.entries()){assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,read(sample.replace('13 seconds','18 seconds')).screenKey,'Mutation '+index);}
+});
+test('clipped video clock changes retain media, geometry, controls and prompt text in screen freshness',()=>{
+ const xml=profile.replace('</hierarchy>',clippedVideoClock()+'</hierarchy>'),before=read(xml);
+ for(const sample of [xml.replace('[585,1063][648,1111]','[585,1062][648,1110]'),
+  xml.replace('Video prompt: Example activity','Video prompt: Different activity'),
+  xml.replace('Hiking &amp; coffee.','Books &amp; tea.'),xml.replace('[875,1464][1001,1590]','[875,1465][1001,1591]')]){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,before.screenKey);
+ }
+});
+
 
 test('photo ownership tolerates trailing name whitespace in native labels',()=>{
  for(const name of ['Example','Dotted İ','Two Words']){
