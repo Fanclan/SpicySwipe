@@ -456,6 +456,32 @@ function blankDiscoverShell(visible, find) {
   (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
   !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
 }
+function clippedVideoClockParents(nodes) {
+ const children=new Map();
+ for(const n of nodes){if(!children.has(n.parent))children.set(n.parent,[]);children.get(n.parent).push(n)}
+ const kids=n=>children.get(n)||[],inert=(n,type='android.view.View')=>n?.a.class===type&&n.enabled&&n.visible&&!clean(n.a.text)&&
+  !['clickable','scrollable','long-clickable','focusable','focused','checkable','checked','selected','password'].some(k=>n.a[k]==='true');
+ const sameBox=(a,b)=>a&&b&&['x','y','width','height'].every(k=>a[k]===b[k]);
+ const parents=[];
+ for(const timer of nodes){
+  if(!inert(timer)||!/^Elapsed time: \d+ seconds?$/.test(timer.a['content-desc']||'')||kids(timer).length||!fullyVisible(timer))continue;
+  const clock=timer.parent,card=clock?.parent,wrapper=card?.parent,viewport=wrapper?.parent;
+  if(!inert(clock)||label(clock)||kids(clock).length!==1||!inert(card)||label(card)||!inert(wrapper)||label(wrapper)||
+    kids(wrapper).length!==1||viewport?.a.class!=='android.view.View'||viewport.a.scrollable!=='true')continue;
+  const [body,overlay,controls]=kids(card),parts=kids(body),[media,player]=parts,frame=kids(player)[0],texture=kids(frame)[0];
+  if(kids(card).length!==3||controls!==clock||body?.a.class!=='android.view.View'||!body.enabled||!body.visible||label(body)||
+    body.a.clickable!=='true'||body.a.focusable!=='true'||['scrollable','long-clickable','focused','checkable','checked','selected','password'].some(k=>body.a[k]==='true')||
+    !inert(overlay)||label(overlay)||kids(overlay).length||parts.length!==2||!inert(media)||kids(media).length||!/^Video prompt: \S/.test(label(media))||
+    !inert(player,'ycl')||label(player)||kids(player).length!==1||!inert(frame,'android.widget.FrameLayout')||label(frame)||kids(frame).length!==1||
+    !inert(texture,'android.view.TextureView')||label(texture)||kids(texture).length)continue;
+  const box=bounds(card),port=bounds(viewport),paint=bounds(player);
+  if(!box||!port||!paint||box.width<160||box.height>=box.width/2||box.y+box.height!==port.y+port.height||port.height<=box.height||
+    ![body,overlay,wrapper,media].every(n=>sameBox(bounds(n),box))||!sameBox(bounds(frame),paint)||!sameBox(bounds(texture),paint)||
+    paint.x!==box.x||paint.width!==box.width||paint.y>box.y||paint.y+paint.height<=box.y+box.height)continue;
+  parents.push(clock);
+ }
+ return parents;
+}
 function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commentText } = {}) {
  const result = { platform, kind: 'blocked', name: '', identity: null, screenKey: null, context: { name: '', bio: '', history: '' }, photos: [], prompts: [], controls: blankControls(), composerText: '', composerTextVerified: false, emptyConversation: false, reason: '' };
  const block = reason => ({ ...result, kind: 'blocked', controls: blankControls(), reason });
@@ -466,6 +492,8 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  // A nearby playing video updates its inert accessibility timer even while the selected photo is unchanged.
  // Normalize only that observed metadata; keep all geometry, other text and actionable attributes in the hash.
  const videoContainers=new Set(nodes.filter(n=>n.a.class==='android.widget.Button'&&n.enabled&&n.visible&&n.a.clickable==='true'&&label(n)==='Unmute video'&&n.parent?.a.class==='android.view.View').map(n=>n.parent));
+ // A clipped video prompt omits Unmute. Its native texture and timer must still share the exact visible card.
+ for(const parent of clippedVideoClockParents(nodes))videoContainers.add(parent);
  result.screenKey = hash(nodes.map(n=>n.a.class==='android.view.View'&&n.a.clickable==='false'&&n.a.scrollable==='false'&&!clean(n.a.text)&&videoContainers.has(n.parent)&&/^Elapsed time: \d+ seconds?$/.test(n.a['content-desc']||'')?{...n.a,'content-desc':'Elapsed time: <playing>'}:n.a));
  if (!nodes.length || nodes.some(n => n.a.package && n.a.package !== PACKAGE)) return block('Another app or system overlay is visible. Return to Hinge.');
  if (nodes.some(n => /(?:^|\.)(?:Dialog|AlertDialog|PopupWindow)$/.test(n.a.class || '') || /:id\/(?:alertTitle|button1|permission_allow_button)$/.test(n.a['resource-id'] || ''))) return block('A dialog requires user attention.');
