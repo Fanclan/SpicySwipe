@@ -1,10 +1,11 @@
 <div align="center">
   <img src="assets/logo.svg" alt="SpicySwipe lightning logo" width="96" height="96">
-  <h1>SpicySwipeWeb</h1>
+  <h1>SpicySwipe &amp; SpicySwipeWeb</h1>
   <p><strong>One workspace. Three dating apps. Your AI.</strong></p>
-  <p>A private browser workspace for Tinder, Hinge, and Bumble, based on the SpicySwipe desktop app.</p>
+  <p>A desktop app and a private browser workspace for Tinder, Hinge, and Bumble.</p>
   <p>
-    <a href="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml"><img src="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+    <a href="https://github.com/Fanclan/SpicySwipe/actions/workflows/ci.yml"><img src="https://github.com/Fanclan/SpicySwipe/actions/workflows/ci.yml/badge.svg" alt="SpicySwipe CI status"></a>
+    <a href="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml"><img src="https://github.com/Fanclan/SpicySwipeWeb/actions/workflows/ci.yml/badge.svg" alt="SpicySwipeWeb CI status"></a>
     <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/Node.js-24_LTS-43853d" alt="Node.js 24 LTS"></a>
     <a href="License"><img src="https://img.shields.io/badge/license-personal%20%2F%20noncommercial-e87560" alt="Personal and non-commercial license"></a>
     <a href="https://fanclan.io"><img src="https://img.shields.io/badge/maintained%20by-Fanclan-292524" alt="Maintained by Fanclan"></a>
@@ -58,7 +59,14 @@ Installers do not require Node.js. They are **unsigned previews**; Mac builds ar
 
 ## Quick start
 
-For a browser workspace hosted on your own server, follow the [Coolify deployment guide](docs/WEB.md).
+Choose the edition for where you want to run the workspace. Both repositories share the desktop, Android, and extension code and its compatibility fixes.
+
+| Edition | Source | Start here |
+| --- | --- | --- |
+| **SpicySwipe desktop** | [Fanclan/SpicySwipe](https://github.com/Fanclan/SpicySwipe) | Run the desktop commands below, or build an installer. |
+| **SpicySwipeWeb browser** | [Fanclan/SpicySwipeWeb](https://github.com/Fanclan/SpicySwipeWeb) | Deploy through Coolify from `Fanclan/SpicySwipeWeb`'s `main` branch using the [web deployment guide](docs/WEB.md). |
+
+The desktop app runs locally with its native window, OS credential storage, and connected Android devices. The browser edition runs on your server and provides its workspace through an authenticated web interface. The desktop is the default when launched with `npm run desktop`; the web container enables server mode explicitly.
 
 Install [Git](https://git-scm.com/downloads) and [Node.js 24 LTS](https://nodejs.org/en/download) (24.15.0+; Node 22.22.2+ on the 22.x line is also supported), then run:
 
