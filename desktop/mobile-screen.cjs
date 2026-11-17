@@ -456,7 +456,7 @@ function blankDiscoverShell(visible, find) {
   (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
   !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
 }
-function clippedVideoClockParents(nodes) {
+function clippedVideoClockParents(nodes,photoCard=null) {
  const children=new Map();
  for(const n of nodes){if(!children.has(n.parent))children.set(n.parent,[]);children.get(n.parent).push(n)}
  const kids=n=>children.get(n)||[],inert=(n,type='android.view.View')=>n?.a.class===type&&n.enabled&&n.visible&&!clean(n.a.text)&&
@@ -474,10 +474,18 @@ function clippedVideoClockParents(nodes) {
     !inert(overlay)||label(overlay)||kids(overlay).length||parts.length!==2||!inert(media)||kids(media).length||!/^Video prompt: \S/.test(label(media))||
     !inert(player,'ycl')||label(player)||kids(player).length!==1||!inert(frame,'android.widget.FrameLayout')||label(frame)||kids(frame).length!==1||
     !inert(texture,'android.view.TextureView')||label(texture)||kids(texture).length)continue;
-  const box=bounds(card),port=bounds(viewport),paint=bounds(player);
-  if(!box||!port||!paint||box.width<160||box.height>=box.width/2||box.y+box.height!==port.y+port.height||port.height<=box.height||
-    ![body,overlay,wrapper,media].every(n=>sameBox(bounds(n),box))||!sameBox(bounds(frame),paint)||!sameBox(bounds(texture),paint)||
+  const box=bounds(card),port=bounds(viewport),paint=bounds(player),cover=bounds(overlay),selected=photoCard&&bounds(photoCard);
+  if(!box||!port||!paint||box.width<160||box.y+box.height!==port.y+port.height||port.height<=box.height||
+    ![body,wrapper,media].every(n=>sameBox(bounds(n),box))||!sameBox(bounds(frame),paint)||!sameBox(bounds(texture),paint)||
     paint.x!==box.x||paint.width!==box.width||paint.y>box.y||paint.y+paint.height<=box.y+box.height)continue;
+  const clipped=box.height<box.width/2&&sameBox(cover,box);
+  // Opening the native photo form exposes more of the lower video, whose inert
+  // overlay can be shorter than its card. Bind that timer to a separate sibling
+  // below the already-verified form; it never supplies profile or action proof.
+  const belowPhotoForm=photoCard?.parent===viewport&&photoCard!==wrapper&&selected&&
+    selected.x===box.x&&selected.width===box.width&&selected.y+selected.height<=box.y&&box.height<box.width&&
+    cover&&cover.x===box.x&&cover.y===box.y&&cover.width===box.width&&cover.height<=box.height;
+  if(!clipped&&!belowPhotoForm)continue;
   parents.push(clock);
  }
  return parents;
@@ -494,7 +502,8 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const videoContainers=new Set(nodes.filter(n=>n.a.class==='android.widget.Button'&&n.enabled&&n.visible&&n.a.clickable==='true'&&label(n)==='Unmute video'&&n.parent?.a.class==='android.view.View').map(n=>n.parent));
  // A clipped video prompt omits Unmute. Its native texture and timer must still share the exact visible card.
  for(const parent of clippedVideoClockParents(nodes))videoContainers.add(parent);
- result.screenKey = hash(nodes.map(n=>n.a.class==='android.view.View'&&n.a.clickable==='false'&&n.a.scrollable==='false'&&!clean(n.a.text)&&videoContainers.has(n.parent)&&/^Elapsed time: \d+ seconds?$/.test(n.a['content-desc']||'')?{...n.a,'content-desc':'Elapsed time: <playing>'}:n.a));
+ const screenRevision=()=>hash(nodes.map(n=>n.a.class==='android.view.View'&&n.a.clickable==='false'&&n.a.scrollable==='false'&&!clean(n.a.text)&&videoContainers.has(n.parent)&&/^Elapsed time: \d+ seconds?$/.test(n.a['content-desc']||'')?{...n.a,'content-desc':'Elapsed time: <playing>'}:n.a));
+ result.screenKey=screenRevision();
  if (!nodes.length || nodes.some(n => n.a.package && n.a.package !== PACKAGE)) return block('Another app or system overlay is visible. Return to Hinge.');
  if (nodes.some(n => /(?:^|\.)(?:Dialog|AlertDialog|PopupWindow)$/.test(n.a.class || '') || /:id\/(?:alertTitle|button1|permission_allow_button)$/.test(n.a['resource-id'] || ''))) return block('A dialog requires user attention.');
  const visible = nodes.filter(n => n.visible), find = text => visible.filter(n => label(n) === text);
@@ -650,7 +659,11 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   result.reason=result.controls.sendLike?'':'Like submission requires verified comment contents and an unambiguous ordinary Like button.';
   result.photos = confirmation.map(n => ({ key: hash(['photo', label(n),bounds(n)]), bounds: bounds(n), like: null }));
   result.prompts = promptConfirmation.map(n=>({key:hash(['prompt',label(n),bounds(n)]),text:label(n),bounds:bounds(n),like:null}));
-  if(confirmation.length)result.nativePhotoForm=true;
+  if(confirmation.length){
+   result.nativePhotoForm=true;
+   for(const parent of clippedVideoClockParents(nodes,comment[0].parent.parent))videoContainers.add(parent);
+   result.screenKey=screenRevision();
+  }
   return result;
  }
  const allowedLabels = new Set([...profileContentLabels, 'Undo last skip', 'More', 'Selfie Verified', 'Dating Preferences']);

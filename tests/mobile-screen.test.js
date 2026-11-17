@@ -308,6 +308,58 @@ test('elapsed-counter normalization preserves action, geometry and other text ch
 });
 
 const {clippedVideoClock}=require('./fixtures/hinge-clipped-video-clock.cjs');
+const {photoFormVideoClock}=require('./fixtures/hinge-photo-form-video-clock.cjs');
+test('a lower video clock cannot trap a verified blank photo form before Discover recovery',async()=>{
+ const xml=photoFormVideoClock();let current=xml,refreshes=0;
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const controller=new Controller({platform:'hinge',service:{},readEvidence:async()=>({hashes:['0123456789abcdef'],commentText:''}),
+  android:{serial:'synthetic',inputEpoch:0,hierarchy:async()=>({xml:current,foreground:'co.hinge.app'}),
+   deviceIdentity:async()=>({serial:'synthetic'}),tapControl:async()=>assert.fail('Recovery must not vote'),
+   refreshFeed:async(_platform,valid)=>{assert.ok(valid());refreshes++;current=profile;}},wait:async()=>{}});
+ controller.config.mode='like';controller.config.swipe.likeRatio=1;
+ const token=controller.token(),before=await controller.read(token);
+ assert.equal(before.kind,'like');assert.equal(before.nativePhotoForm,true);assert.equal(before.composerText,'');assert.ok(before.controls.sendLike);
+ current=xml.replace('9 seconds','12 seconds');
+ const after=await controller.fresh(before,token);
+ assert.equal(after.identity,before.identity);assert.deepEqual(after.photos,before.photos);assert.deepEqual(after.controls,before.controls);
+ await controller.refreshKnownFeed(before,token,()=>true);
+ assert.equal(refreshes,1);assert.equal(controller.screen.kind,'profile');assert.equal(controller.session.count,0);assert.equal(controller.lastAction,null);
+});
+test('lower video clock normalization requires the native photo form and the same bounded feed owner',()=>{
+ const xml=photoFormVideoClock(),options={photoIdentity:'0123456789abcdef',commentText:''};
+ const mutate=(id,from,to)=>xml.replace(new RegExp('(<node resource-id="'+id+'"[^>]*?)'+from),(_,prefix)=>prefix+to);
+ const samples=[
+  xml.replace('Edit comment','Other content'),
+  xml.replace('Video prompt: Example activity','Unknown content'),
+  mutate('form-clock-texture','class="android.view.TextureView"','class="android.view.View"'),
+  mutate('form-clock-player','class="ycl"','class="UnknownPlayer"'),
+  mutate('form-clock-timer','clickable="false"','clickable="true"'),
+  mutate('form-clock-timer','focusable="false"','focusable="true"'),
+  mutate('form-clock-timer','text=""','text="Other text"'),
+  mutate('form-clock-timer','enabled="true"','enabled="false"'),
+  mutate('form-clock-overlay','clickable="false"','clickable="true"'),
+  mutate('form-clock-controls','clickable="false"','clickable="true"'),
+  xml.replace('[585,770][648,818]','[585,770][700,818]'),
+  xml.replace('[40,738][680,978]','[40,738][680,1120]'),
+  xml.replace('bounds="[40,89][680,698]"','bounds="[40,89][680,800]"'),
+  xml.replace('scrollable="true" bounds="[0,137][720,1112]"','scrollable="false" bounds="[0,137][720,1112]"'),
+ ];
+ for(const [index,sample]of samples.entries()){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample,options).screenKey,read(sample.replace('9 seconds','12 seconds'),options).screenKey,'Mutation '+index);
+ }
+});
+test('lower video clock normalization retains changes to the actual form, controls and native media',()=>{
+ const xml=photoFormVideoClock(),options={photoIdentity:'0123456789abcdef',commentText:''},before=read(xml,options);
+ for(const sample of [xml.replace('Video prompt: Example activity','Video prompt: Another activity'),
+  xml.replace('[585,770][648,818]','[585,769][648,817]'),
+  xml.replace('[296,592][648,674]','[296,593][648,675]'),
+  xml.replace('Sample','Different'),xml.replace('Send priority like','Send a Rose'),
+  xml.replace('[40,650][680,1280]','[40,649][680,1280]')]){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample,options).screenKey,before.screenKey);
+ }
+ assert.equal(read(xml,{photoIdentity:'0123456789abcdef'}).controls.sendLike,null);
+ assert.equal(read(xml,{...options,commentText:'Unsent draft'}).controls.sendLike,null);
+});
 test('a clipped native video timer cannot interrupt fresh verification of a stationary photo',async()=>{
  const xml=profile.replace('</hierarchy>',clippedVideoClock()+'</hierarchy>');
  let current=xml;
