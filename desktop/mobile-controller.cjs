@@ -77,6 +77,8 @@ class MobileController{
  snapshot(){
   const offer=this.currentSkipOffer(),session=this.session.snapshot(),hasPendingAction=Boolean(this.lastAction);
   let reason=this.reason||'';
+  if(!this.storageError&&this.platform==='hinge'&&this.screen?.kind==='accountLimit')
+   reason=this.screen.reason+(hasPendingAction?' The last recorded Like is still unconfirmed.':'');
   if(hasPendingAction&&['complete','error'].includes(session.status)){
    // A terminal worker can still own a slot reserved before native dispatch.
    session.count=Math.max(session.count,this.reservedCount);
@@ -522,6 +524,13 @@ class MobileController{
   if(!valid())return;
   try{
    let observed=await this.read(t);this.assert(t,valid);
+   if(this.platform==='hinge'&&observed.kind==='accountLimit'){
+    // Keep any dispatched Like and its reserved budget intact. Only the user can
+    // resolve this account restriction; feed retries or repeated Likes cannot.
+    this.reason=observed.reason;this.openerArmed=false;this.skipOffer=null;this.invalidateResume();
+    if(this.lastAction)this.session.count=Math.max(this.session.count,this.reservedCount);
+    this.session.pause();this.notify();return;
+   }
    if(observed.kind==='blocked'&&this.platform==='hinge'&&this.observedForeground!=='co.hinge.app'
      &&c.allowBackground&&this.session.status==='running'&&this.isManagedPhone(this.binding)){
     return await this.recoverFromHome(t,valid);
@@ -1489,6 +1498,7 @@ class MobileController{
      return this.snapshot();
     }
     let s=await this.read(t);
+    if(this.platform==='hinge'&&s.kind==='accountLimit')throw Error(s.reason);
     if(this.platform==='bumble'){
      s=await this.dismissBumbleReminder(s,t);
      if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');

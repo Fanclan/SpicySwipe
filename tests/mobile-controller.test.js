@@ -7,6 +7,57 @@ const box={x:10,y:20,width:80,height:90};
 const control=key=>({key,label:key,bounds:box});
 const screen=(overrides={})=>({platform:'hinge',kind:'profile',name:'Example',identity:'example-prompt-one',screenKey:'first',context:{name:'Example',bio:'I enjoy hiking',history:[]},photos:[{key:'photo-one',bounds:box,like:control('photo-one')}],controls:{skip:control('skip'),like:control('photo-one'),sendLike:null,comment:null,composer:null,sendMessage:null},composerText:'',emptyConversation:false,reason:'',...overrides});
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
+const turnLimit=()=>require('../desktop/mobile-screen.cjs').readScreen(require('./fixtures/hinge-your-turn-limit.cjs').yourTurnLimit(),{foreground:'co.hinge.app'});
+
+test('Hinge account reply limit pauses the same run without reconciling or repeating its pending Like',async()=>{
+ for(const pending of [false,true]){
+  let saved;const x=setup(turnLimit(),{checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}}});
+  await x.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1}});
+  Object.assign(x.c.session,{status:'running',phase:'reviewing',runId:'account-limit-run',count:301,endsAt:null,config:x.c.config.swipe});
+  x.c.reservedCount=301;x.c.openerArmed=true;
+  const guard=x.c.lastAction=pending?{kind:'like',identity:'previous',name:'Previous',runId:'account-limit-run',sessionEndsAt:null}:null;
+  x.android.refreshFeed=async()=>assert.fail('An account limit is not a feed refresh');
+  const epoch=x.c.session.epoch;
+  await x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(epoch),()=>assert.fail('No new profile action'),async()=>true,x.c.token());
+  assert.equal(x.c.session.status,'paused');assert.equal(x.c.session.count,301);assert.equal(x.c.session.runId,'account-limit-run');
+  assert.equal(x.c.session.endsAt,null);assert.equal(x.c.lastAction,guard);assert.equal(x.c.openerArmed,false);
+  assert.equal(saved.session.status,'paused');assert.equal(saved.session.count,301);assert.deepEqual(saved.pendingAction,guard);
+  assert.match(x.c.snapshot().reason,/Your Turn Limits/);if(pending)assert.match(x.c.snapshot().reason,/unconfirmed/);
+  assert.deepEqual(x.calls,[]);
+ }
+});
+test('Hinge account reply limit rejects manual resume until the user clears it, retaining the original budget',async()=>{
+ const x=setup(turnLimit());await x.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1}});
+ Object.assign(x.c.session,{status:'paused',phase:'paused',runId:'account-limit-run',count:301,endsAt:null,config:x.c.config.swipe});
+ x.c.reservedCount=301;const guard=x.c.lastAction={kind:'like',identity:'previous',name:'Previous',runId:'account-limit-run',sessionEndsAt:null};
+ await assert.rejects(x.c.request('start',{resumeRunId:'account-limit-run'}),/Your Turn Limits/);
+ assert.equal(x.c.session.status,'paused');assert.equal(x.c.session.count,301);assert.equal(x.c.lastAction,guard);assert.deepEqual(x.calls,[]);
+ x.set(screen());x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('start',{resumeRunId:'account-limit-run'});
+ assert.equal(x.c.session.status,'running');assert.equal(x.c.session.count,301);assert.equal(x.c.session.config.maxSwipes,1000);
+ assert.equal(x.c.session.runId,'account-limit-run');assert.equal(x.c.session.endsAt,null);assert.equal(x.c.lastAction,guard);
+ x.c.session.pause();
+});
+test('Hinge account reply limit retains the reserved Like slot when its displayed count trails dispatch',async()=>{
+ let saved;const x=setup(turnLimit(),{checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}}});
+ await x.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1}});
+ Object.assign(x.c.session,{status:'running',phase:'reviewing',runId:'account-limit-run',count:300,endsAt:null,config:x.c.config.swipe});
+ x.c.reservedCount=301;x.c.lastAction={kind:'like',identity:'previous',name:'Previous',runId:'account-limit-run',sessionEndsAt:null};
+ x.c.session.controller=new AbortController();x.c.session.wait=async()=>{};
+ // Exercise the real loop: pausing must also prevent its implicit successful-step commit.
+ await x.c.session.run(x.c.session.epoch);
+ assert.equal(x.c.session.status,'paused');assert.equal(x.c.session.count,301);assert.equal(saved.session.count,301);
+ assert.deepEqual(saved.pendingAction,x.c.lastAction);assert.deepEqual(x.calls,[]);
+});
+test('an account-limit pause cannot hide a checkpoint failure or dispatch another action',async()=>{
+ const x=setup(turnLimit(),{checkpointStore:{read:()=>null,write:value=>{if(value.session.status==='paused')throw Error('Checkpoint disk unavailable');}}});
+ await x.c.request('config',{swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1}});
+ Object.assign(x.c.session,{status:'running',phase:'reviewing',runId:'account-limit-run',count:301,endsAt:null,config:x.c.config.swipe});
+ x.c.reservedCount=301;const guard=x.c.lastAction={kind:'like',identity:'previous',name:'Previous',runId:'account-limit-run',sessionEndsAt:null};
+ await x.c.sessionStep(x.c.session.config,()=>true,()=>assert.fail('No action'),async()=>true,x.c.token());
+ assert.equal(x.c.session.status,'paused');assert.equal(x.c.session.count,301);assert.equal(x.c.lastAction,guard);
+ assert.match(x.c.snapshot().reason,/Checkpoint disk unavailable/);assert.deepEqual(x.calls,[]);
+});
 
 for(const pending of [false,true]){
  test('managed Hinge reopens from HOME without changing the session or replaying an action (pending='+pending+')',async()=>{

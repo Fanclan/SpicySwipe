@@ -508,6 +508,34 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if (nodes.some(n => /(?:^|\.)(?:Dialog|AlertDialog|PopupWindow)$/.test(n.a.class || '') || /:id\/(?:alertTitle|button1|permission_allow_button)$/.test(n.a['resource-id'] || ''))) return block('A dialog requires user attention.');
  const visible = nodes.filter(n => n.visible), find = text => visible.filter(n => label(n) === text);
  if (find('No network connection').length) return block('No network connection. Restore connectivity and read the screen again.');
+ const turnTitle='Too many people are waiting for your reply';
+ const turnBody='8 or more people are waiting for your response. Reply or end the conversation with these matches, then you can send likes. Research shows this leads to more dates.';
+ if(find(turnTitle).length){
+  const expected=new Set([turnTitle,turnBody,'View matches','Learn more','Close sheet']);
+  if([...expected].some(text=>find(text).length!==1)||visible.some(n=>(label(n)&&!expected.has(label(n)))||/EditText$/.test(n.a.class||'')||n.a.password==='true'))return block('The Hinge account-limit sheet is not verified.');
+  const title=find(turnTitle)[0],body=find(turnBody)[0],close=find('Close sheet')[0],sheet=title.parent;
+  const inside=(inner,outer)=>inner&&outer&&inner.x>=outer.x&&inner.y>=outer.y&&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
+  const text=n=>n.a.class==='android.widget.TextView'&&n.enabled&&n.a.clickable==='false';
+  if(sheet?.a.class!=='android.widget.ScrollView'||body.parent!==sheet||!text(title)||!text(body)||!fullyVisible(title)||!fullyVisible(body)||
+    close.a.class!=='android.view.View'||close.a.clickable!=='true'||!close.enabled||!fullyVisible(close)||sheet.parent?.parent?.parent!==close.parent)
+   return block('The Hinge account-limit sheet is not verified.');
+  const rows=['View matches','Learn more'].map(value=>find(value)[0].parent),clicks=new Set([close,...rows]);
+  const sheetBox=bounds(sheet),closeBox=bounds(close),titleBox=bounds(title),bodyBox=bounds(body);
+  if(!sheetBox||!closeBox||closeBox.x!==sheetBox.x||closeBox.width!==sheetBox.width||closeBox.y!==sheetBox.y+sheetBox.height||
+    titleBox.y+titleBox.height>bodyBox.y||visible.some(n=>n.a.clickable==='true'&&!clicks.has(n)))return block('The Hinge account-limit controls are not verified.');
+  for(const [i,row]of rows.entries()){
+   const children=visible.filter(n=>n.parent===row),caption=find(i?'Learn more':'View matches')[0],button=children.find(n=>n.a.class==='android.widget.Button');
+   if(row?.parent!==sheet||row.a.class!=='android.view.View'||row.a.clickable!=='true'||!row.enabled||!inside(bounds(row),sheetBox)||
+     children.length!==2||!button||!button.enabled||button.a.clickable!=='false'||label(button)||!text(caption)||
+     !inside(bounds(caption),bounds(row))||!inside(bounds(button),bounds(row))||bounds(row).y<bodyBox.y+bodyBox.height)
+    return block('The Hinge account-limit controls are not verified.');
+  }
+  // This is an account restriction, not a dismissible promotion or a failed Like.
+  // Expose no navigation, messaging, dismissal or voting controls.
+  result.kind='accountLimit';result.accountLimit='hingeYourTurn';
+  result.reason='Hinge Your Turn Limits: reply to waiting matches or end conversations in Hinge, then return to Discover and resume. SpicySwipe will not reply or end conversations for you.';
+  return result;
+ }
  const offerTitle='Send a Rose instead?',offerBody='Upgrade your Like to a Rose to be seen first and increase your chance of a match.';
  if(find(offerTitle).length||find('Send Like anyway').length){
   const title=find(offerTitle),body=find(offerBody),ordinary=find('Send Like anyway'),rose=find('Send a Rose'),close=find('Close sheet');

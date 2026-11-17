@@ -7,6 +7,28 @@ const profile = fs.readFileSync(path.join(__dirname, 'fixtures/mobile/hinge-prof
 const like = fs.readFileSync(path.join(__dirname, 'fixtures/mobile/hinge-like.xml'), 'utf8');
 const read = (xml, options = {}) => readScreen(xml, { platform: 'hinge', foreground: 'co.hinge.app', ...options });
 const {nativePhotoForm}=require('./fixtures/hinge-native-photo-form.cjs');
+const {yourTurnLimit}=require('./fixtures/hinge-your-turn-limit.cjs');
+
+test('Hinge Your Turn Limits reports the account action without exposing any controls',()=>{
+ const s=read(yourTurnLimit());
+ assert.equal(s.kind,'accountLimit');assert.equal(s.accountLimit,'hingeYourTurn');
+ assert.match(s.reason,/reply|conversation/i);assert.match(s.reason,/resume/i);
+ assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);
+ assert.ok(Object.values(s.controls).every(v=>v===null));
+});
+test('Your Turn Limits must be the exact native account sheet, never profile text or a different gate',()=>{
+ const xml=yourTurnLimit();
+ const variants=[xml.replace('8 or more people','9 or more people'),xml.replace('View matches','Buy more Likes'),
+  xml.replace('Too many people are waiting for your reply','Another account limit'),
+  xml.replace('class="android.widget.ScrollView"','class="android.view.View"'),
+  xml.replace('resource-id="turn-title" class="android.widget.TextView"','resource-id="turn-title" class="android.widget.EditText"'),
+  xml.replace('resource-id="turn-body" class="android.widget.TextView" package="co.hinge.app" enabled="true" clickable="false"','resource-id="turn-body" class="android.widget.TextView" package="co.hinge.app" enabled="true" clickable="true"'),
+  xml.replace('content-desc="Close sheet"','content-desc="Close other"'),
+  xml.replace('</hierarchy>','<node class="android.widget.EditText" package="co.hinge.app" bounds="[0,0][720,200]"/></hierarchy>'),
+  xml.replace('</hierarchy>','<node class="android.view.View" package="co.hinge.app" clickable="true" bounds="[0,0][720,200]"/></hierarchy>'),
+  xml.replaceAll('co.hinge.app','com.example.other')];
+ for(const candidate of variants){assert.notEqual(candidate,xml);const s=read(candidate);assert.notEqual(s.kind,'accountLimit');assert.ok(Object.values(s.controls).every(v=>v===null));}
+});
 
 test('native photo form ownership recognizes shallow and deep clipped previews without pixel matching',()=>{
  for(const height of [181,271,400]){
