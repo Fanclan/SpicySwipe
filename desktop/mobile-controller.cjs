@@ -179,13 +179,15 @@ class MobileController{
   this.assert(t,valid);
   const loading=s.kind==='feedLoading'&&this.platform==='hinge'&&this.session.status==='running'&&this.isManagedPhone(this.binding)&&!this.draft;
   const heldScreen=card=>this.exhaustedReview(t)===held&&(refreshOnly?this.refreshOnlyHeldScreen(card,held,t):this.heldInventoryScreen(card,held));
-  const supported=held?heldScreen(s):loading||s.kind==='empty'||this.resumableLike(s);
+  const unidentifiedPhoto=this.refreshablePhotoForm(s);
+  const supported=held?heldScreen(s):loading||s.kind==='empty'||this.resumableLike(s)||unidentifiedPhoto;
   if(!supported)throw transientError('Cannot reopen the feed from this screen.');
   if(!loading&&this.lastAction)throw Error('An uncertain pending action must be resolved before refreshing the feed.');
   if(this.session.now()<(this.nextFeedRefreshAt||0))return s;
   const revalidate=async()=>{
    if(refreshOnly){await this.consent(t);this.assert(t,valid);}
    const current=await this.fresh(s,t,valid);this.assert(t,valid);
+   if(unidentifiedPhoto&&!this.refreshablePhotoForm(current))throw transientError('The blank photo form changed before refresh.','MOBILE_SCREEN_CHANGED');
    if(loading&&this.observedForeground!=='co.hinge.app')throw transientError('Discover left the foreground before refresh.','MOBILE_SCREEN_CHANGED');
    if(held&&(!heldScreen(current)||(refreshOnly&&current.recoveryChromeKey!==s.recoveryChromeKey)))throw transientError('The held Discover profile changed before refresh.','MOBILE_SCREEN_CHANGED');
   };
@@ -197,8 +199,8 @@ class MobileController{
   if(this.session.status==='running')this.session.phase='refreshing feed';this.notify();this.assert(t,valid);
   // A failed launcher lookup costs the cooldown only. Once force-stop can have run,
   // a lost acknowledgement must not re-arm a blank-feed refresh with a pending action.
-  const beforeStop=loading||held||s.kind==='empty'?async()=>{
-   if(held||loading)await this.verifyBinding(t);
+  const beforeStop=loading||held||unidentifiedPhoto||s.kind==='empty'?async()=>{
+   if(held||loading||unidentifiedPhoto)await this.verifyBinding(t);
    await revalidate();
    if(loading){this.loadingFeedRelaunched=true;this.persist()}
   }:undefined;
@@ -498,6 +500,16 @@ class MobileController{
   return {retryAfter:after.kind==='feedError'?30000:1000,phase:after.kind==='feedError'?'waiting to reconnect':'checking next profile'};
  }
  resumableLike(s){return this.platform==='hinge'&&this.config.mode==='like'&&this.config.swipe.likeRatio===1&&s.kind==='like'&&Boolean(s.identity)&&s.composerTextVerified===true&&!s.composerText?.trim()&&Boolean(s.controls.sendLike)}
+ refreshablePhotoForm(s){
+  const photo=s.photos?.[0],b=photo?.bounds;
+  // A blank, owned but unidentifiable preview permits navigation only. Its
+  // missing image evidence never becomes an identity or a Send permission.
+  return this.platform==='hinge'&&this.config.mode==='like'&&this.config.swipe.likeRatio===1&&!this.lastAction&&!this.draft&&
+   s.platform==='hinge'&&s.kind==='like'&&s.nativePhotoForm===true&&Boolean(s.name&&s.screenKey)&&!s.identity&&
+   s.composerTextVerified===true&&s.composerText===''&&Boolean(s.controls?.comment&&s.controls?.composer)&&!s.controls?.sendLike&&
+   s.photos?.length===1&&!s.prompts?.length&&photo.visual===null&&photo.visualSquare===null&&
+   b?.width>=160&&b.height>0&&b.height<b.width;
+ }
  async recoverFromHome(t,valid){
   const waiting=this.lastAction?this.pendingWait():{retryAfter:30000,phase:'waiting for Hinge'};
   if(this.session.status!=='running'||this.session.now()<this.nextHomeLaunchAt)return waiting;
@@ -581,9 +593,9 @@ class MobileController{
    }
    // A previous step may have rejected this form because its profile changed.
    // Reopen Discover so every submitted Like is bound to a new verified review.
-   if(this.resumableLike(observed)){
+   if(this.resumableLike(observed)||this.refreshablePhotoForm(observed)){
     const after=await this.refreshKnownFeed(observed,t,valid);this.assert(t,valid);
-    return this.resumableLike(after)
+    return (this.resumableLike(after)||this.refreshablePhotoForm(after))
      ? {retryAfter:Math.max(1000,this.nextFeedRefreshAt-this.session.now()),phase:'waiting to reopen Discover'}
      : {retryAfter:1000,phase:'checking next profile'};
    }
@@ -1351,6 +1363,15 @@ class MobileController{
    // Native keyboard/form animation can briefly expose conflicting background controls.
    // Reread once, retaining every identity, comment and control check below.
    if(s.kind==='blocked'&&s.reason==='An unfamiliar Like control requires user attention.'){await this.pauseFor(750,t);this.assert(t,valid);s=await this.read(t);}
+   if(nativeSource&&selection?.entry&&!selection.alternate&&!this.scopedPhotoRejection(t)&&this.refreshablePhotoForm(s)&&s.name===original.name){
+    this.assert(t,previewOwner);s=await this.fresh(s,t,previewOwner);this.assert(t,previewOwner);
+    if(!this.refreshablePhotoForm(s)||s.name!==original.name)throw transientError('The unidentifiable photo form changed.');
+    // The acknowledged opener binds this rejection to the reviewed source, not
+    // the unreadable crop. Reuse the durable alternate-review budget unchanged.
+    this.rejectedPhoto={nameDigest:nameDigest(original.name),sourceIdentity:original.identity,visual:photo.visual,entryIdentity:selection.entry.identity,entryVisual:selection.entry.visual,
+     heldIdentity:null,heldRevision:null,attempted:false,runId:this.session.runId,endsAt:this.session.endsAt,count:this.session.count,serial:t.serial,avd:this.binding.avd||null};
+    this.persist();throw transientError('The cropped photo has insufficient detail. Reopening Discover to review another item on this profile.','MOBILE_PHOTO_MISMATCH');
+   }
    this.supported(s,['like']);
    for(let attempt=0;!s.controls.sendLike&&s.composerTextVerified===true&&attempt<2;attempt++){await this.pauseFor(750,t);s=await this.read(t);this.supported(s,['like']);}
    if(selection?.promptScan||selection?.preferredPrompt){
@@ -1504,7 +1525,7 @@ class MobileController{
      if(!['profile','empty'].includes(s.kind))throw Error(s.reason||'Open Bumble People first.');
      if(this.config.mode!=='like')throw Error('Bumble comments are not verified. Choose plain Likes.');
     }else if(!['empty','feedError'].includes(s.kind)&&!(s.kind==='feedLoading'&&this.isManagedPhone(this.binding))&&
-             !this.resumableLike(s)&&!(resuming&&this.heldReviewEndpoint(s,t))){
+             !this.resumableLike(s)&&!this.refreshablePhotoForm(s)&&!(resuming&&this.heldReviewEndpoint(s,t))){
      s=await this.identifyProfile(s,t);this.supported(s,['profile']);
     }
     if(!this.visible&&!this.config.swipe.allowBackground)throw Error('Show the app before starting this session.');

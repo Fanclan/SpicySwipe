@@ -3336,6 +3336,98 @@ async function nativeLikeFixture({held=false}={}){
  return x;
 }
 
+async function lowDetailPreviewFixture(){
+ const x=await nativeLikeFixture();
+ x.form.identity=null;x.form.photos[0].bounds.height=271;x.form.controls.sendLike=null;
+ x.c.readEvidence=async s=>({hashes:s.photos.map(()=>s.kind==='like'?null:'0123456789abcdef')});
+ x.source.reviewScrollSurface={x:200,y:451,width:300,height:440};
+ x.android.refreshFeed=async(_platform,valid)=>{assert.equal(valid(),true);x.set(x.source)};
+ return x;
+}
+test('a low-detail native preview records its verified source rejection and advances through another prompt on the same card',async()=>{
+ const x=await lowDetailPreviewFixture();await x.step();
+ const rejected=structuredClone(x.saved().rejectedPhoto);
+ assert.ok(rejected);assert.equal(rejected.sourceIdentity,x.source.identity);assert.equal(rejected.visual,'0123456789abcdef');
+ assert.equal(rejected.entryIdentity,x.source.identity);assert.equal(rejected.attempted,false);assert.equal(x.saved().pendingAction,null);
+ assert.equal(x.commits(),0);assert.deepEqual(x.taps,[x.opener.bounds]);
+ await x.step();assert.equal(x.c.screen.kind,'profile');assert.deepEqual(x.taps,[x.opener.bounds]);
+ const prompt={key:'alternate-prompt',text:'Prompt: Weekend. Answer: Hiking',bounds:box,like:control('Like prompt')};
+ let moves=0;x.android.scrollProfile=async(opts,valid)=>{assert.ok(valid());assert.equal(opts.direction,'up');
+  assert.deepEqual(opts.surface,x.source.reviewScrollSurface);assert.equal(x.saved().rejectedPhoto.attempted,true);moves++;
+  x.set({...x.source,screenKey:'same-card-prompt',prompts:[prompt]});};
+ x.android.tapControl=async(bounds,valid,issued)=>{assert.ok(valid());x.taps.push(bounds);issued?.();
+  x.set(x.taps.length===2?{...x.form,identity:'prompt-form',screenKey:'prompt-form',photos:[],prompts:[{...prompt,like:null}],controls:{sendLike:x.send}}:
+   screen({kind:'empty',identity:null,photos:[],controls:{}}));return {ok:true};};
+ await x.step();assert.equal(moves,1);assert.deepEqual(x.taps,[x.opener.bounds,prompt.like.bounds,x.send.bounds]);
+ assert.equal(x.commits(),1);assert.equal(x.saved().session.count,97);assert.equal(x.c.lastAction,null);assert.equal(x.saved().rejectedPhoto,undefined);
+});
+test('a restored low-detail blank form permits only feed recovery before a new source review',async()=>{
+ const x=await lowDetailPreviewFixture();await x.step();const cp=x.saved();assert.ok(cp.rejectedPhoto);
+ x.c.restoreCheckpoint(cp);x.c.session.wait=()=>new Promise(()=>{});
+ await x.c.request('start',{resumeRunId:cp.session.runId});
+ assert.equal(x.c.session.count,96);assert.deepEqual(x.c.rejectedPhoto,cp.rejectedPhoto);assert.deepEqual(x.taps,[x.opener.bounds]);
+ await x.step();assert.equal(x.c.screen.kind,'profile');assert.deepEqual(x.taps,[x.opener.bounds]);
+ assert.equal(x.commits(),0);assert.equal(x.saved().pendingAction,null);x.c.session.pause();
+});
+test('an orphan low-detail form cannot submit or invent a rejection receipt and only reopens Discover',async()=>{
+ const x=await lowDetailPreviewFixture();x.set(x.form);let refreshes=0;
+ x.android.refreshFeed=async(_p,valid)=>{assert.ok(valid());refreshes++;x.set(x.source);};
+ await assert.rejects(x.c.act('like',x.c.token()),/identity|profile/i);assert.equal(x.saved().rejectedPhoto,undefined);
+ await x.step();assert.equal(refreshes,1);assert.deepEqual(x.taps,[]);assert.equal(x.commits(),0);assert.equal(x.saved().rejectedPhoto,undefined);
+});
+test('low-detail source rejection requires unchanged native form ownership and recipient on its final read',async()=>{
+ for(const mode of ['name','owner','typed']){
+  const x=await lowDetailPreviewFixture(),hierarchy=x.android.hierarchy;let formReads=0;
+  x.android.hierarchy=async()=>{const raw=await hierarchy();if(raw.xml===x.form&&++formReads===2){
+   const changed=structuredClone(x.form);if(mode==='name')changed.name='Other';if(mode==='owner')changed.nativePhotoForm=false;if(mode==='typed')changed.composerText='Unsent text';
+   return {...raw,xml:changed};}return raw;};
+  await x.step();assert.equal(x.saved().rejectedPhoto,undefined,mode);assert.deepEqual(x.taps,[x.opener.bounds],mode);assert.equal(x.commits(),0,mode);
+ }
+});
+test('low-detail form refresh rechecks blank contents and native ownership after launcher lookup before stopping the app',async()=>{
+ for(const mode of ['typed','owner','pending','draft']){
+  const x=await lowDetailPreviewFixture();x.set(x.form);let stops=0,guarded=false;
+  x.android.refreshFeed=async(_p,valid,_wait,beforeStop)=>{
+   guarded=typeof beforeStop==='function';assert.ok(valid());
+   if(mode==='typed')x.form.composerText='New draft';if(mode==='owner')x.form.nativePhotoForm=false;
+   if(mode==='pending')x.c.lastAction={identity:'previous',name:'Previous'};if(mode==='draft')x.c.draft={text:'New draft'};
+   if(beforeStop)await beforeStop();stops++;
+  };
+  await x.step().catch(()=>{});assert.equal(guarded,true,mode);assert.equal(stops,0,mode);assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+  assert.equal(x.saved().rejectedPhoto,undefined,mode);
+ }
+});
+test('low-detail form recovery refuses pending actions, drafts, unverified fields and unrelated native forms',async()=>{
+ for(const mode of ['pending','draft','typed','unverified','owner','prompt','extra-photo','full-size','unknown-photo','composer']){
+  const x=await lowDetailPreviewFixture();x.set(x.form);let refreshes=0;
+  if(mode==='pending')x.c.lastAction={identity:'previous',name:'Previous'};
+  if(mode==='draft')x.c.draft={text:'Unsent draft'};
+  if(mode==='typed')x.form.composerText='Existing draft';if(mode==='unverified')x.form.composerTextVerified=false;
+  if(mode==='owner')x.form.nativePhotoForm=false;if(mode==='prompt')x.form.prompts=[{text:'Prompt'}];
+  if(mode==='extra-photo')x.form.photos.push({...x.form.photos[0],key:'other'});
+  if(mode==='full-size')x.form.photos[0].bounds.height=576;
+  if(mode==='unknown-photo')x.c.readEvidence=async s=>({hashes:s.photos.map(()=> '0123456789abcdef')});
+  if(mode==='composer')x.form.controls.composer=null;
+  x.android.refreshFeed=async()=>{refreshes++};
+  await x.step().catch(()=>{});assert.equal(refreshes,0,mode);assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+  assert.equal(x.saved().rejectedPhoto,undefined,mode);
+ }
+});
+test('low-detail rejection cannot rearm a spent alternative, survive a lost opener as new permission, or bypass checkpoint failure',async()=>{
+ for(const mode of ['spent','unacknowledged','storage']){
+  const x=await lowDetailPreviewFixture();let prior;
+  if(mode==='spent'){
+   const held=await nativeLikeFixture({held:true});prior=structuredClone(held.c.rejectedPhoto);
+   x.c.rejectedPhoto=prior;x.c.heldPromptRefresh={hint:prior,epoch:x.c.session.epoch,until:Date.now()+300000};
+  }
+  if(mode==='unacknowledged'){const tap=x.android.tapControl;x.android.tapControl=async(...args)=>{await tap(...args);return undefined;};}
+  if(mode==='storage'){const write=x.c.checkpointStore.write;x.c.checkpointStore.write=cp=>{if(cp.rejectedPhoto)throw Error('Disk unavailable');write(cp);};}
+  await x.step().catch(()=>{});assert.equal(x.commits(),0,mode);assert.equal(x.saved().pendingAction,null,mode);
+  if(mode==='spent'){assert.equal(x.c.rejectedPhoto,prior);assert.equal(x.c.rejectedPhoto.attempted,true);}
+  else assert.equal(x.saved().rejectedPhoto,undefined,mode);
+ }
+});
+
 test('native-like transaction accepts an owned shallow or differently rendered photo form in a persisted all-profile run',async()=>{
  for(const height of [181,271,576]){
   const x=await nativeLikeFixture();x.form.photos[0].bounds.height=height;

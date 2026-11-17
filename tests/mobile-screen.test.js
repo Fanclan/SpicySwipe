@@ -69,6 +69,14 @@ test('native photo form ownership never supplies ordinary action or blank-text v
  assert.equal(read(xml,{photoIdentity:'0123456789abcdef',commentText:'Unsent draft'}).controls.sendLike,null);
  for(const candidate of [xml.replace('Send priority like','Send a Rose'),xml.replace('Send priority like','Purchase Like'),xml.replace('Send priority like','Send priority like with message')])assert.equal(read(candidate,{photoIdentity:'0123456789abcdef',commentText:''}).controls.sendLike,null);
 });
+test('an anonymous low-detail native crop grants only blank-form recovery, never identity or Like permission',async()=>{
+ const xml=nativePhotoForm({height:271}),Controller=require('../desktop/mobile-controller.cjs');
+ const c=new Controller({platform:'hinge',service:{},android:{serial:'synthetic',inputEpoch:0,hierarchy:async()=>({xml,foreground:'co.hinge.app'})},
+  readEvidence:async()=>({hashes:[null],squareHashes:[null],commentText:''})});
+ c.config.mode='like';c.config.swipe.likeRatio=1;
+ const s=await c.read(c.token());assert.equal(s.kind,'like');assert.equal(s.nativePhotoForm,true);assert.equal(s.identity,null);
+ assert.equal(s.photos[0].visual,null);assert.equal(s.controls.sendLike,null);assert.equal(c.resumableLike(s),false);assert.equal(c.refreshablePhotoForm(s),true);
+});
 
 test('native photo form ownership cannot survive extra editors, sibling sends, or foreign overlays',()=>{
  const xml=nativePhotoForm(),extra=content=>xml.replace('</hierarchy>',content+'</hierarchy>');
