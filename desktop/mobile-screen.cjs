@@ -456,7 +456,7 @@ function blankDiscoverShell(visible, find) {
   (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
   !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
 }
-function clippedVideoClockParents(nodes,photoCard=null) {
+function clippedVideoClockParents(nodes,photoCard=null,reviewVideo=null) {
  const children=new Map();
  for(const n of nodes){if(!children.has(n.parent))children.set(n.parent,[]);children.get(n.parent).push(n)}
  const kids=n=>children.get(n)||[],inert=(n,type='android.view.View')=>n?.a.class===type&&n.enabled&&n.visible&&!clean(n.a.text)&&
@@ -485,7 +485,15 @@ function clippedVideoClockParents(nodes,photoCard=null) {
   const belowPhotoForm=photoCard?.parent===viewport&&photoCard!==wrapper&&selected&&
     selected.x===box.x&&selected.width===box.width&&selected.y+selected.height<=box.y&&box.height<box.width&&
     cover&&cover.x===box.x&&cover.y===box.y&&cover.width===box.width&&cover.height<=box.height;
-  if(!clipped&&!belowPhotoForm)continue;
+  // A verified, named video can provide a safe observation lane while a taller
+  // video prompt below it keeps playing. Its clock is not profile evidence.
+  let videoCard=reviewVideo;
+  while(videoCard&&videoCard.parent!==viewport)videoCard=videoCard.parent;
+  const video=reviewVideo&&bounds(reviewVideo);
+  const belowReviewVideo=videoCard&&videoCard!==wrapper&&inert(videoCard)&&!label(videoCard)&&video&&
+    video.x===box.x&&video.width===box.width&&video.y+video.height<=box.y&&box.height<box.width&&
+    cover&&cover.x===box.x&&cover.y===box.y&&cover.width===box.width&&cover.height<=box.height;
+  if(!clipped&&!belowPhotoForm&&!belowReviewVideo)continue;
   parents.push(clock);
  }
  return parents;
@@ -706,6 +714,10 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  const originalPhoto=!prompts.length&&pictures.length===1&&result.photos[0].like?pictures[0]:null;
  const videos=videoScrollMedia(visible,result.name,skips[0]);
  const surfaces = discoverScrollSurfaces(visible,nav[0],[...pictures,...staticPrompts,...videos],skips[0],originalPhoto);
+ if(!result.identity&&!pictures.length&&!staticPrompts.length&&videos.length===1&&surfaces.review){
+  for(const parent of clippedVideoClockParents(nodes,null,videos[0]))videoContainers.add(parent);
+  result.screenKey=screenRevision();
+ }
  if(surfaces.recoveryChromeKey)result.recoveryChromeKey=surfaces.recoveryChromeKey;
  if(surfaces.recoveryDrag)result.recoveryDrag=surfaces.recoveryDrag;
  if (surfaces.compressed !== undefined) result.scrollSurface = surfaces.compressed;

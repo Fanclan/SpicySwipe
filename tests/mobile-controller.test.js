@@ -3635,6 +3635,28 @@ test('pending Hinge observes a different-name video profile and clears only afte
  assert.deepEqual(x.calls,[]);
 });
 
+test('pending Hinge can observe through a ticking lower video while retaining its guard until two identified reads',async()=>{
+ for(const stable of [true,false]){
+  const x=await pendingIdentityFixture(),{videoPairClock}=require('./fixtures/hinge-video-pair-clock.cjs');
+  const parse=require('../desktop/mobile-screen.cjs').readScreen;
+  let seconds=0,moves=0,identifiedReads=0;
+  x.c.readScreen=(xml,options)=>typeof xml==='string'?parse(xml,options):xml;
+  x.android.hierarchy=async()=>{
+   if(!moves)return {xml:videoPairClock(seconds++),foreground:'co.hinge.app'};
+   identifiedReads++;assert.equal(x.c.lastAction,x.guard);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);
+   return {xml:screen({name:'Example',identity:!stable&&identifiedReads===2?'changed':'next-evidence',screenKey:'identified'}),foreground:'co.hinge.app'};
+  };
+  x.android.scrollProfile=async(options,valid)=>{
+   assert.equal(valid(),true);assert.deepEqual(options.surface,{x:40,y:137,width:640,height:436});
+   assert.equal(options.direction,'up');assert.ok(x.saved().nextFeedRefreshAt>x.now());
+   assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);moves++;
+  };
+  assert.equal(await x.run(),stable);assert.equal(moves,1);assert.equal(identifiedReads,2);
+  assert.equal(x.c.lastAction,stable?null:x.guard);assert.equal(x.saved().session.count,484);
+  assert.deepEqual(x.calls,[]);
+ }
+});
+
 test('pending Hinge identity recovery spends at most three safe moves per durable five-minute cooldown',async()=>{
  const x=await pendingIdentityFixture();let moves=0;
  x.android.scrollProfile=async(options,valid)=>{assert.equal(valid(),true);assert.deepEqual(options.surface,x.surface);assert.ok(x.saved().nextFeedRefreshAt>x.now());moves++};

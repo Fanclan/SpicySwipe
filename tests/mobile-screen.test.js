@@ -339,6 +339,50 @@ test('elapsed-counter normalization preserves action, geometry and other text ch
 
 const {clippedVideoClock}=require('./fixtures/hinge-clipped-video-clock.cjs');
 const {photoFormVideoClock}=require('./fixtures/hinge-photo-form-video-clock.cjs');
+const {videoPairClock}=require('./fixtures/hinge-video-pair-clock.cjs');
+test('a lower playing video clock does not invalidate the named video observation above it',()=>{
+ const before=read(videoPairClock(0)),after=read(videoPairClock(6));
+ assert.equal(before.kind,'profile');assert.equal(before.identity,null);
+ assert.deepEqual(before.photos,[]);assert.deepEqual(before.prompts,[]);
+ assert.ok(Object.values(before.controls).every(value=>value===null));
+ assert.deepEqual(before.reviewScrollSurface,{x:40,y:137,width:640,height:436});
+ assert.deepEqual(after,before);
+});
+test('video-pair clock normalization retains ownership, native player and inert timer requirements',()=>{
+ const xml=videoPairClock();
+ const mutate=(id,from,to)=>xml.replace(new RegExp('(<node resource-id="'+id+'"[^>]*?)'+from),(_,prefix)=>prefix+to);
+ const samples=[
+  xml.replace('Example&apos;s video','Other&apos;s video'),xml.replace('Skip Example','Skip Other'),
+  xml.replace('Like video prompt','Unknown control'),xml.replace('Video prompt: Example activity','Unknown content'),
+  xml.replace('selected="true"','selected="false"'),
+  mutate('first-body','clickable="false"','clickable="true"'),
+  mutate('lower-texture','class="android.view.TextureView"','class="android.view.View"'),
+  mutate('lower-player','class="ycl"','class="UnknownPlayer"'),
+  mutate('lower-timer','clickable="false"','clickable="true"'),
+  mutate('lower-timer','focusable="false"','focusable="true"'),
+  mutate('lower-timer','text=""','text="Other text"'),
+  mutate('lower-timer','enabled="true"','enabled="false"'),
+  mutate('lower-overlay','clickable="false"','clickable="true"'),
+  mutate('lower-controls','clickable="false"','clickable="true"'),
+  xml.replace('[585,645][648,693]','[585,645][700,693]'),
+  xml.replace('[40,613][680,853]','[40,613][680,1113]'),
+  xml.replace('scrollable="true"','scrollable="false"'),
+ ];
+ for(const [index,sample]of samples.entries()){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,read(sample.replace('0 seconds','6 seconds')).screenKey,'Mutation '+index);
+ }
+});
+test('video-pair clock normalization keeps meaningful native text, geometry and controls fresh',()=>{
+ const xml=videoPairClock(),before=read(xml);
+ for(const sample of [xml.replace('Video prompt: Example activity','Video prompt: Different activity'),
+  xml.replace('[585,645][648,693]','[585,644][648,692]'),
+  xml.replace('[564,457][660,553]','[564,456][660,552]'),
+  xml.replace('[40,525][680,1280]','[40,524][680,1280]'),
+  xml.replaceAll('Example','Different'),xml.replace('Like video prompt','Like video'),
+  xml.replace('[40,613][680,853]','[40,613][680,852]')]){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,before.screenKey);
+ }
+});
 test('a lower video clock cannot trap a verified blank photo form before Discover recovery',async()=>{
  const xml=photoFormVideoClock();let current=xml,refreshes=0;
  const Controller=require('../desktop/mobile-controller.cjs');
