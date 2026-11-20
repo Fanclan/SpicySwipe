@@ -951,11 +951,39 @@ class MobileController{
   // A changed photo cannot prove a new person, but it must not prevent a read-only refresh.
   const stalledProfile=current.kind==='profile'&&Boolean(current.identity)&&current.name===original.name;
   const stalledLike=this.platform==='hinge'&&current.kind==='like'&&current.name===original.name&&current.composerTextVerified===true&&!current.composerText?.trim();
-  if(!stalledProfile&&!stalledLike)return false;
-  await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);
-  this.skipOffer=null;this.lastAction.refreshAttempted=true;this.nextFeedRefreshAt=this.session.now()+300000;this.persist();
+  // A video endpoint can have neither identity nor any safe scrolling route.
+  // Native Discover chrome grants navigation only; it never proves a new person.
+  const routeLess=card=>card.kind==='profile'&&card.name&&card.name!==original.name&&!card.identity&&
+   /^[a-f0-9]{64}$/.test(card.recoveryChromeKey)&&!card.photos?.length&&!card.prompts?.length&&
+   !card.reviewScrollSurface&&!card.reviewWheelPoint&&!card.recoveryDrag&&
+   !Object.values(card.controls||{}).some(Boolean)&&!card.composerText?.trim();
+  const routeLessOwner=()=>this.platform==='hinge'&&this.loaded&&this.checkpointStore&&pending?.kind==='like'&&
+   this.isManagedPhone(this.binding)&&session.status==='running'&&session.count===this.reservedCount&&
+   !session.timeExpired()&&!session.reachedProfileLimit()&&this.config.mode==='like'&&
+   this.config.swipe.likeRatio===1&&session.config.likeRatio===1&&!this.config.autoOpeners&&!this.config.autoSend&&
+   !this.draft&&!this.storageError&&(this.visible||(this.config.swipe.allowBackground&&session.config.allowBackground));
+  let beforeStop;
+  if(routeLess(current)&&routeLessOwner()){
+   const priorValid=valid,epoch=session.epoch,name=current.name,chrome=current.recoveryChromeKey;
+   const scope=()=>JSON.stringify([session.runId,session.count,this.reservedCount,session.endsAt,session.config,this.config,this.binding,pending]);
+   const expected=scope(),owned=()=>priorValid()&&session.epoch===epoch&&this.lastAction===pending&&scope()===expected&&routeLessOwner();
+   beforeStop=async()=>{
+    this.assert(t,owned);await this.consent(t);await this.verifyBinding(t);
+    const observed=await this.read(t);this.assert(t,owned);
+    // Timers may change screenKey. Revalidate native ownership instead; a newly
+    // identified card aborts relaunch and returns to ordinary two-read reconciliation.
+    if(this.observedForeground!=='co.hinge.app'||!routeLess(observed)||observed.name!==name||observed.recoveryChromeKey!==chrome)
+     throw transientError('The unidentified Discover endpoint changed before refresh.','MOBILE_SCREEN_CHANGED');
+   };
+   await beforeStop();valid=owned;
+  }else{
+   if(!stalledProfile&&!stalledLike)return false;
+   await this.verifyBinding(t);await this.fresh(current,t,valid);this.assert(t,valid);
+   this.lastAction.refreshAttempted=true;
+  }
+  this.skipOffer=null;this.nextFeedRefreshAt=this.session.now()+300000;this.persist();this.assert(t,valid);
   if(this.session.status==='running'){this.session.phase='checking swipe result';this.notify()}
-  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal));this.assert(t,valid);
+  await this.android.refreshFeed(this.platform,()=>{try{this.assert(t,valid);return true}catch{return false}},ms=>this.wait(ms,t.signal),beforeStop);this.assert(t,valid);
   let candidate=null;
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);let observed=await this.read(t);this.assert(t,valid);

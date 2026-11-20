@@ -35,9 +35,15 @@ function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,co
  for(let n=sheet.parent;n?.tag==='node';n=n.parent)if(!sameBox(n,root))return null;
  const parts=children(sheet);let heading,body,cta,scroll,content,illustrations,photo,badge,benefits;
  if(kind==='matches'){
-  if(parts.length!==7||parts[0]!==dismiss)return null;
-  illustrations=parts.slice(1,4);[heading,body,cta]=parts.slice(4);
-  if(!illustrations.every(n=>decoration(n))||!text(heading,'You’ve got matches waiting')||
+  if(![6,7].includes(parts.length)||parts[0]!==dismiss)return null;
+  illustrations=parts.slice(1,-3);[heading,body,cta]=parts.slice(-3);
+  // The two-picture variant uses passive leaf Views; the older three-picture
+  // stack wraps each decoration. Neither shape may expose photo actions.
+  if(illustrations.length===2){
+   if(!illustrations.every(n=>is(n,'android.view.View')&&!label(n)&&leaf(n)))return null;
+   illustrations.forEach(n=>known.add(n));
+  }else if(!illustrations.every(n=>decoration(n)))return null;
+  if(!text(heading,'You’ve got matches waiting')||
      !text(body,'Someone’s popular! Why not see where your matches lead?'))return null;
  }else{
   if(parts.length!==2||parts[0]!==dismiss||!is(parts[1],'android.view.View'))return null;
@@ -71,10 +77,18 @@ function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,co
     action.x+action.width!==frame.x+frame.width-2*inset||action.height!==close.height||
     action.y+action.height!==frame.y+frame.height-3*inset||!middle(box(caption),action)||!middle(title,frame))return null;
  if(kind==='matches'){
-  const [right,left,center]=illustrations.map(box),description=box(body);
-  if(right.x<=center.x||center.x<=left.x||right.width!==left.width||right.height!==left.height||right.y!==left.y||
-     center.width<=left.width||center.height<=left.height||center.y>=left.y||center.y+center.height<=left.y+left.height||
-     illustrations.some(n=>box(n).y<=close.y+close.height||box(n).y+box(n).height>=title.y)||
+  const description=box(body);
+  if(illustrations.length===2){
+   const [left,right]=illustrations.map(box);
+   if(left.y!==right.y||left.width!==right.width||left.height!==right.height||left.width*3!==frame.width||
+      left.height*3!==left.width*4||right.x-left.x-left.width!==inset||
+      left.x+right.x+right.width!==2*frame.x+frame.width)return null;
+  }else{
+   const [right,left,center]=illustrations.map(box);
+   if(right.x<=center.x||center.x<=left.x||right.width!==left.width||right.height!==left.height||right.y!==left.y||
+      center.width<=left.width||center.height<=left.height||center.y>=left.y||center.y+center.height<=left.y+left.height)return null;
+  }
+  if(illustrations.some(n=>box(n).y<=close.y+close.height||box(n).y+box(n).height>=title.y)||
      title.y+title.height>=description.y||description.y+description.height>=action.y||!middle(description,frame))return null;
  }else{
   const area=box(content),viewport=box(scroll),image=box(photo),emblem=box(badge),badgeLeaf=box(children(badge)[0]);

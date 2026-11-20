@@ -3754,3 +3754,137 @@ test('pending Hinge identity recovery can revisit a safe partial endpoint only a
   x.set(screen({name:'Next',identity:'next-evidence',screenKey:'next-evidence',scrollSurface:x.surface}));};
  assert.equal(await x.run(),true);assert.equal(moves,4);assert.equal(x.saved().session.count,484);assert.equal(x.c.lastAction,null);
 });
+
+async function pendingEndpointFixture(){
+ const x=await pendingIdentityFixture(),parse=require('../desktop/mobile-screen.cjs').readScreen;
+ const {videoEndpointClock}=require('./fixtures/hinge-video-endpoint-clock.cjs');
+ let seconds=7,source=null,refreshes=0,identifiedReads=0;
+ x.c.config.swipe.likeRatio=x.c.session.config.likeRatio=1;x.c.persist();
+ x.c.isManagedPhone=b=>b?.avd==='original-phone';
+ x.c.readScreen=(xml,options)=>typeof xml==='string'?parse(xml,options):xml;
+ x.android.hierarchy=async()=>{
+  const xml=source||videoEndpointClock(seconds++);
+  if(typeof xml!=='string'&&xml.identity)identifiedReads++;
+  return {xml,foreground:'co.hinge.app'};
+ };
+ x.android.scrollProfile=async()=>assert.fail('There is no safe scrolling route');
+ x.android.refreshFeed=async(platform,valid,_wait,beforeStop)=>{
+  assert.equal(platform,'hinge');assert.equal(valid(),true);
+  assert.ok(x.saved().nextFeedRefreshAt>x.now());assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);
+  assert.equal(typeof beforeStop,'function');await beforeStop();assert.equal(valid(),true);
+  refreshes++;source=screen({name:'Example',identity:'next-evidence',screenKey:'identified'});
+ };
+ return {...x,parse,videoEndpointClock,setSource:s=>source=s,refreshes:()=>refreshes,identifiedReads:()=>identifiedReads};
+}
+
+test('pending Hinge refreshes a verified route-less video endpoint despite its ticking revision',async()=>{
+ const x=await pendingEndpointFixture();
+ const [a,b]=[7,8].map(seconds=>x.parse(x.videoEndpointClock(seconds),{foreground:'co.hinge.app'}));
+ assert.equal(a.kind,'profile');assert.equal(a.identity,null);assert.notEqual(a.screenKey,b.screenKey);
+ assert.equal(a.recoveryChromeKey,b.recoveryChromeKey);assert.match(a.recoveryChromeKey,/^[a-f0-9]{64}$/);
+ assert.equal(a.reviewScrollSurface,null);assert.equal(a.reviewWheelPoint,null);assert.ok(!a.recoveryDrag);
+ assert.deepEqual(a.photos,[]);assert.deepEqual(a.prompts,[]);assert.ok(Object.values(a.controls).every(v=>!v));
+ assert.equal(await x.run(),true);assert.equal(x.refreshes(),1);assert.equal(x.identifiedReads(),2);
+ assert.equal(x.c.lastAction,null);assert.equal(x.saved().pendingAction,null);
+ assert.equal(x.saved().session.count,484);assert.equal(x.saved().session.runId,x.initial.session.runId);
+ assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge route-less refresh keeps its guard without two matching identified observations',async()=>{
+ for(const mode of ['unidentified','same-name','unstable','blocked']){
+  const x=await pendingEndpointFixture(),refresh=x.android.refreshFeed;let reads=0;
+  x.android.refreshFeed=async(...args)=>{
+   await refresh(...args);
+   x.android.hierarchy=async()=>({foreground:'co.hinge.app',xml:mode==='unidentified'?x.videoEndpointClock(9):
+    screen({kind:mode==='blocked'?'blocked':'profile',name:mode==='same-name'?'Previous':'Example',
+     identity:mode==='unstable'&&++reads%2===0?'another-identity':'next-evidence'})});
+  };
+  assert.equal(await x.run(),false,mode);assert.equal(x.refreshes(),1,mode);
+  assert.equal(x.c.lastAction,x.guard,mode);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction,mode);
+  assert.equal(x.saved().session.count,484);assert.deepEqual(x.calls,[]);
+ }
+});
+
+test('pending Hinge route-less refresh rejects unowned screens, inputs and session scope',async()=>{
+ for(const mode of ['no-chrome','route','wheel','drag','photo','prompt','composer','comment','same-name','draft',
+  'paused','expired','limit','no-store','custom-phone','mixed-rate','comment-mode','auto-openers','auto-send','background','pending-skip']){
+  const x=await pendingEndpointFixture(),s=x.parse(x.videoEndpointClock(),{foreground:'co.hinge.app'});
+  x.setSource(s);
+  if(mode==='no-chrome')delete s.recoveryChromeKey;
+  if(mode==='route'){s.reviewScrollSurface=box;x.c.config.swipe.scrollProfile=false;}if(mode==='wheel')s.reviewWheelPoint={x:1,y:2};if(mode==='drag')s.recoveryDrag={surface:box};
+  if(mode==='photo')s.photos=[{key:'clipped',bounds:box}];if(mode==='prompt')s.prompts=[{text:'unidentified'}];
+  if(mode==='composer')s.controls.composer=control('editor');if(mode==='comment')s.composerText='unsent';
+  if(mode==='same-name')s.name=x.guard.name;if(mode==='draft')x.c.draft={text:'unsent'};
+  if(mode==='paused')x.c.session.status='paused';if(mode==='expired')x.c.session.endsAt=x.now()-1;
+  if(mode==='limit')x.c.session.config.maxSwipes=484;if(mode==='no-store')x.c.checkpointStore=null;
+  if(mode==='custom-phone')x.c.isManagedPhone=()=>false;if(mode==='mixed-rate')x.c.config.swipe.likeRatio=.5;
+  if(mode==='comment-mode')x.c.config.mode='comment';if(mode==='auto-openers')x.c.config.autoOpeners=true;
+  if(mode==='auto-send')x.c.config.autoSend=true;if(mode==='background'){x.c.visible=false;x.c.config.swipe.allowBackground=false;}
+  if(mode==='pending-skip')x.c.lastAction.kind='skip';
+  await x.run().catch(()=>{});assert.equal(x.refreshes(),0,mode);assert.equal(x.c.lastAction,x.guard,mode);assert.deepEqual(x.calls,[]);
+ }
+});
+
+test('pending Hinge route-less refresh revalidates native ownership immediately before force-stop',async()=>{
+ for(const mode of ['name','chrome','form','overlay','foreground','identity','input','binding']){
+  const x=await pendingEndpointFixture(),refresh=x.android.refreshFeed;
+  x.android.refreshFeed=async(...args)=>{
+   const s=x.parse(x.videoEndpointClock(9),{foreground:'co.hinge.app'});
+   if(mode==='name')s.name='Third';if(mode==='chrome')s.recoveryChromeKey='b'.repeat(64);
+   if(mode==='form'){s.kind='like';s.controls.comment=control('comment');}
+   if(mode==='overlay')s.kind='blocked';if(mode==='identity')s.identity='newly-identified';
+   x.setSource(s);if(mode==='foreground')x.android.hierarchy=async()=>({xml:s,foreground:'other.app'});
+   if(mode==='input')x.android.cancelInput();if(mode==='binding')x.android.deviceIdentity=async()=>({serial:'emulator-1',avd:'different-phone'});
+   await refresh(...args);
+  };
+  await assert.rejects(x.run(),undefined,mode);assert.equal(x.refreshes(),0,mode);
+  assert.equal(x.c.lastAction,x.guard,mode);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);
+  assert.ok(x.saved().nextFeedRefreshAt>x.now());assert.deepEqual(x.calls,[]);
+  if(mode==='identity'){
+   // The next observation may reconcile normally, without another relaunch.
+   assert.equal(await x.run(),true);assert.equal(x.refreshes(),0);assert.equal(x.saved().session.count,484);
+  }
+ }
+});
+
+test('pending Hinge route-less refresh holds run and guard ownership across reservation and confirmation',async()=>{
+ for(const boundary of ['reserve','confirm'])for(const mode of ['config','run','count','deadline','binding','input','guard','draft']){
+  const x=await pendingEndpointFixture(),write=x.c.checkpointStore.write,refresh=x.android.refreshFeed;let changed=false;
+  const change=()=>{changed=true;
+   if(mode==='config')x.c.config.autoSend=true;if(mode==='run')x.c.session.runId='different-run';
+   if(mode==='count')x.c.session.count++;if(mode==='deadline')x.c.session.endsAt=x.now()+600000;
+   if(mode==='binding')x.c.binding={...x.c.binding,avd:'different-phone'};if(mode==='input')x.android.cancelInput();
+   if(mode==='guard')x.c.lastAction.name='Different pending owner';if(mode==='draft')x.c.draft={text:'unsent'};
+  };
+  if(boundary==='reserve')x.c.checkpointStore.write=cp=>{write(cp);if(cp.nextFeedRefreshAt>x.now()&&!changed)change()};
+  if(boundary==='confirm')x.android.refreshFeed=async(...args)=>{await refresh(...args);change()};
+  await assert.rejects(x.run(),undefined,boundary+mode);assert.equal(changed,true);
+  assert.equal(x.refreshes(),boundary==='reserve'?0:1);assert.ok(x.c.lastAction);assert.deepEqual(x.calls,[]);
+ }
+});
+
+test('pending Hinge route-less refresh persists its cooldown even when acknowledgement is lost',async()=>{
+ const x=await pendingEndpointFixture();let attempts=0;
+ x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{
+  assert.equal(valid(),true);await beforeStop();attempts++;
+  throw Object.assign(Error('Refresh acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
+ };
+ await assert.rejects(x.run(),/acknowledgement lost/);assert.equal(attempts,1);
+ const cp=structuredClone(x.saved());assert.equal(cp.nextFeedRefreshAt,x.now()+300000);
+ assert.deepEqual(cp.pendingAction,x.initial.pendingAction);assert.equal(cp.session.count,484);
+ assert.equal(await x.run(),false);assert.equal(attempts,1);
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';assert.equal(await x.run(),false);assert.equal(attempts,1);
+ x.advance(300001);await assert.rejects(x.run(),/acknowledgement lost/);assert.equal(attempts,2);assert.deepEqual(x.calls,[]);
+});
+
+test('pending Hinge route-less refresh needs durable storage and carries a historical guard through a zero reset',async()=>{
+ for(const storage of [true,false]){
+  const x=await pendingEndpointFixture(),write=x.c.checkpointStore.write;
+  x.c.session.runId='b'.repeat(32);x.c.session.count=x.c.reservedCount=0;x.c.persist();
+  if(!storage)x.c.checkpointStore.write=cp=>{if(cp.nextFeedRefreshAt>x.now())throw Error('Storage unavailable');write(cp)};
+  assert.equal(await x.run().catch(()=>false),storage);assert.equal(x.refreshes(),storage?1:0);
+  assert.equal(x.saved().session.count,0);assert.equal(x.saved().session.runId,'b'.repeat(32));
+  assert.equal(x.saved().session.config.maxSwipes,1000);assert.deepEqual(x.saved().pendingAction,storage?null:x.initial.pendingAction);
+  assert.deepEqual(x.calls,[]);
+ }
+});
