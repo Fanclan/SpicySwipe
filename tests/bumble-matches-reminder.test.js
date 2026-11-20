@@ -7,6 +7,7 @@ const {readScreen}=require('../desktop/mobile-screen.cjs');
 const Controller=require('../desktop/mobile-controller.cjs');
 // Native shape with public reminder copy only. The two thumbnail nodes carry no photo or identity data.
 const reminder=readFileSync(join(__dirname,'fixtures/mobile/bumble-matches-pair.xml'),'utf8');
+const premiumReminder=readFileSync(join(__dirname,'fixtures/mobile/bumble-premium-chat-reminder.xml'),'utf8');
 const read=xml=>readScreen(xml,{platform:'bumble',foreground:'com.bumble.app',photoIdentity:'0123456789abcdef'});
 const scale=xml=>xml.replace(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/g,(_,a,b,c,d)=>`[${Math.round(a*1.5)},${Math.round(b*1.5)}][${Math.round(c*1.5)},${Math.round(d*1.5)}]`);
 
@@ -19,6 +20,40 @@ test('Bumble two-thumbnail native matches reminder exposes only its isolated Clo
   assert.deepEqual(screen.controls.dismiss.bounds,xml===reminder?{x:608,y:422,width:96,height:96}:{x:912,y:633,width:144,height:144});
   assert.equal(screen.identity,null);assert.equal(screen.context.name,'');
   assert.deepEqual(screen.photos,[]);assert.deepEqual(screen.prompts,[]);
+ }
+});
+
+test('Bumble Premium+ expiring-chat reminder exposes only Close and no account content',()=>{
+ for(const xml of [premiumReminder,scale(premiumReminder)]){
+  const screen=read(xml);
+  assert.equal(screen.kind,'promoOffer');
+  assert.deepEqual(Object.keys(screen.controls).filter(key=>screen.controls[key]),['dismiss']);
+  assert.equal(screen.controls.dismiss.label,'Close');
+  assert.deepEqual(screen.controls.dismiss.bounds,xml===premiumReminder?{x:608,y:182,width:96,height:96}:{x:912,y:273,width:144,height:144});
+  assert.equal(screen.identity,null);assert.equal(screen.context.name,'');
+  assert.deepEqual(screen.photos,[]);assert.deepEqual(screen.prompts,[]);
+ }
+});
+
+test('Bumble expiring-chat reminder cannot authorize messages, changed offers or interactive benefit rows',()=>{
+ const chat='You have 1 chat expiring soon. Go take a look!',spotlights='Don’t forget to use your 2 Spotlights';
+ const row=premiumReminder.match(/<node[^>]*text="You have 1 chat expiring soon\. Go take a look!"[^>]*\/>/)[0];
+ for(const [index,xml] of [
+  premiumReminder.replace(chat,'Send a message to keep your chat'),
+  premiumReminder.replace(chat,spotlights),premiumReminder.replace(spotlights,chat),
+  premiumReminder.replace(chat,'__swap__').replace(spotlights,chat).replace('__swap__',spotlights),
+  premiumReminder.replace('2 Spotlights','3 Spotlights'),
+  premiumReminder.replace('Get connecting','Send message'),premiumReminder.replace('Get connecting','Buy now'),
+  premiumReminder.replace('content-desc="Close"','content-desc="Confirm"'),
+  premiumReminder.replace('[608,182][704,278]','[608,1088][704,1184]'),
+  premiumReminder.replace(row,row.replace('clickable="false"','clickable="true"')),
+  premiumReminder.replace(row,row.replace('focusable="false"','focusable="true"')),
+  premiumReminder.replace(row,row.replace('class="android.widget.TextView"','class="android.widget.EditText"')),
+  premiumReminder.replace(row,row.replace('hint=""','hint="Message"')),
+  premiumReminder.replace(row,row+row),premiumReminder.replace(row,''),
+ ].entries()){
+  const screen=read(xml);assert.equal(screen.kind,'blocked','variant '+index);
+  assert.ok(Object.values(screen.controls).every(value=>!value));
  }
 });
 
@@ -74,21 +109,25 @@ function pendingController({after=profile('Previous'),initial=reminder,race}={})
  return {c,original,taps,observed,run:()=>c.reconcilePending(original,c.token(),()=>true)};
 }
 
-test('Bumble closes the new reminder once without clearing an unconfirmed Like or changing its count',async()=>{
- const x=pendingController(),pending=x.c.lastAction;
- assert.equal(await x.run(),false);
- assert.deepEqual(x.taps,[{x:608,y:422,width:96,height:96}]);
- assert.equal(x.c.lastAction,pending);assert.equal(x.c.session.count,86);assert.equal(x.c.reservedCount,86);
+test('Bumble closes either reminder once without clearing an unconfirmed Like or changing its count',async()=>{
+ for(const initial of [reminder,premiumReminder]){
+  const x=pendingController({initial}),pending=x.c.lastAction;
+  assert.equal(await x.run(),false);
+  assert.deepEqual(x.taps,[{x:608,y:initial===reminder?422:182,width:96,height:96}]);
+  assert.equal(x.c.lastAction,pending);assert.equal(x.c.session.count,86);assert.equal(x.c.reservedCount,86);
+ }
 });
 test('Bumble pending Like resolves only after two matching observations of a new card behind the reminder',async()=>{
- const after=profile('Following'),x=pendingController({after});
- assert.equal(await x.run(),true);assert.equal(x.c.lastAction,null);
- assert.equal(x.taps.length,1);assert.equal(x.observed.filter(xml=>xml===after).length,2);
- assert.equal(x.c.session.count,86);assert.equal(x.c.reservedCount,86);
+ for(const initial of [reminder,premiumReminder]){
+  const after=profile('Following'),x=pendingController({after,initial});
+  assert.equal(await x.run(),true);assert.equal(x.c.lastAction,null);
+  assert.equal(x.taps.length,1);assert.equal(x.observed.filter(xml=>xml===after).length,2);
+  assert.equal(x.c.session.count,86);assert.equal(x.c.reservedCount,86);
+ }
 });
 test('Bumble does not repeat Close when the reminder stays open, or tap a changed screen',async()=>{
- for(const options of [{after:reminder},{race:profile('Following')}]){
-  const x=pendingController(options),pending=x.c.lastAction;
+ for(const initial of [reminder,premiumReminder])for(const options of [{after:initial},{race:profile('Following')}]){
+  const x=pendingController({initial,...options}),pending=x.c.lastAction;
   await assert.rejects(x.run(),options.race?/Screen changed/:/popup did not close/);
   assert.equal(x.taps.length,options.race?0:1);assert.equal(x.c.lastAction,pending);
   assert.equal(x.c.session.count,86);

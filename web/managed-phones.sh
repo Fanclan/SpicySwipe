@@ -67,10 +67,22 @@ EOF
 }
 
 watch_city() {
-  local avd=$1 port=$2 guest=$3 child
+  local avd=$1 port=$2 guest=$3 child watcher_pid=$BASHPID
   # This worker owns only the current city helper or its retry timer. Reap it
   # before returning so a replacement guest cannot inherit a watcher.
-  trap 'trap "" TERM INT; for child in $(jobs -pr); do kill "$child" 2>/dev/null || true; done; wait; exit 0' TERM INT
+  # A signal can arrive in a fork before Bash resets its inherited traps/jobs.
+  # Only the registering worker may signal its jobs; explicit waits also avoid
+  # Bash's inherited-job loop in an argumentless wait (upstream bash53-010).
+  trap '
+    trap "" TERM INT
+    if [[ $BASHPID == "$watcher_pid" ]]; then
+      for child in $(jobs -pr); do
+        kill "$child" 2>/dev/null || true
+        wait "$child" || true
+      done
+    fi
+    exit 0
+  ' TERM INT
   while kill -0 "$guest" 2>/dev/null; do
     ELECTRON_RUN_AS_NODE=1 /opt/electron/electron /app/web/managed-city-location.cjs "$avd" "emulator-$port" "$guest" &
     if wait "$!"; then break; fi

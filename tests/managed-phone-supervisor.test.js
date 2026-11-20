@@ -74,7 +74,8 @@ if [ "$SCENARIO" != failed ] && [ ! -e "$HOME/restarted" ]; then echo 1; fi
   write('android-runtime/sdk/emulator/emulator', `#!/bin/sh
 if [ "$1" = -accel-check ]; then exit 0; fi
 printf '%s\\n' "$@" > "$HOME/args-\${1#@}"
-if [ "$1" = '@${bumble}' ] || [ "$SCENARIO" = shutdown ] || [ "$SCENARIO" = city-shutdown ]; then exec /bin/sleep 60; fi
+printf '%s\\n' "$$" > "$HOME/guest-\${1#@}-pid"
+if [ "$1" = '@${bumble}' ] || [ "$SCENARIO" = shutdown ] || [ "$SCENARIO" = city-shutdown ] || [ "$SCENARIO" = city-inherited ]; then exec /bin/sleep 60; fi
 if [ -e "$HOME/started" ]; then
   if [ "$SCENARIO" = city ]; then
     # Inspect the first helper at launch, even when this guest's own helper is also running.
@@ -98,8 +99,31 @@ ulimit -c 0
 kill -ABRT "$$"
 `);
   write('bash-env', `
+if [[ $SCENARIO == city-inherited ]]; then
+  trap() {
+    builtin trap "$@"
+    if [[ \${FUNCNAME[1]} == watch_city ]]; then
+      inherited_city_trap=$(builtin trap -p TERM)
+    fi
+  }
+  jobs() {
+    # Before Bash resets a fork's job table, the parent's emulator can appear
+    # here even though it is this helper's sibling, not its child.
+    if [[ \${inherited_cleanup_probe:-0} == 1 ]]; then echo "$guest";
+    else builtin jobs "$@"; fi
+  }
+fi
 function /opt/electron/electron() {
   [[ $1 == */managed-city-location.cjs && $2 == "$HINGE" ]] || return 0
+  if [[ $SCENARIO == city-inherited ]]; then
+    # Restore the captured handler to deterministically enter the short fork
+    # window before Bash resets inherited traps. All PIDs are fixture children.
+    builtin trap 'echo "inherited cleanup exited"' EXIT
+    eval "\${inherited_city_trap/#trap /builtin trap }"
+    inherited_cleanup_probe=1
+    kill -TERM "$BASHPID"
+    exit 99
+  fi
   if [[ ! -e "$HOME/first-city-attempt" ]]; then
     touch "$HOME/first-city-attempt"; echo 'city helper transient failure'; return 1
   fi
@@ -140,6 +164,7 @@ sleep() {
   });
   return {stop:lifecycle.stop, get closed() { return lifecycle.closed; }, output:() => output,
     args:avd => fs.readFileSync(path.join(home, 'args-' + avd), 'utf8').trim().split('\n'),
+    guestPid:avd => Number(fs.readFileSync(path.join(home, 'guest-' + avd + '-pid'), 'utf8')),
     async until(wanted) {
     for (let i=0; i<400 && !output.includes(wanted); i++) await delay(10);
     assert.ok(output.includes(wanted), output);
@@ -233,4 +258,17 @@ test('Coolify shutdown stops the active city watcher and never launches a replac
   await f.closed;
   assert.match(f.output(), /city helper stopped/);
   assert.doesNotMatch(f.output(), /replacement launched|backoff/);
+});
+
+test('a helper receiving an inherited city cleanup trap cannot kill its sibling emulator', linux, async t => {
+  const f = fixture(t, 'city-inherited');
+  await f.until('inherited cleanup exited');
+  const guest = f.guestPid(hinge);
+  // A signal can be acknowledged before /proc reflects the sibling's exit.
+  await delay(50);
+  const state = descendantState(guest);
+  assert.ok(state && state !== 'Z', 'Inherited cleanup killed the sibling emulator; state=' + state);
+  assert.doesNotMatch(f.output(), /stopped:|backoff|not a child of this shell/);
+  await f.closed;
+  await waitForDescendant(guest);
 });

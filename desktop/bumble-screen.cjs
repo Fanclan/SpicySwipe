@@ -53,8 +53,11 @@ function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,co
   if(rows.length!==7||!is(photo,'android.widget.ImageView')||photo.a['content-desc']!=='Your profile photo'||photo.a.text||!leaf(photo)||
      !decoration(badge,'White sparkles on titanium background',true)||!text(heading,'You’re shining with Premium+'))return null;
   known.add(photo);labels.add(photo);benefits=[[rows[3],rows[4]],[rows[5],rows[6]]];
-  if(!benefits.every(([icon])=>decoration(icon,'',true))||
-     !text(benefits[0][1],'Don’t forget to use your 2 Spotlights')||!text(benefits[1][1],'Don’t forget to use your 2 Compliments'))return null;
+  const copy=[
+   ['Don’t forget to use your 2 Spotlights','Don’t forget to use your 2 Compliments'],
+   ['You have 1 chat expiring soon. Go take a look!','Don’t forget to use your 2 Spotlights']
+  ].find(lines=>lines.every((value,index)=>benefits[index][1]?.a.text===value));
+  if(!copy||!benefits.every(([icon],index)=>decoration(icon,'',true)&&text(benefits[index][1],copy[index])))return null;
  }
  if(!is(cta,'android.view.View'))return null;
  known.add(cta);const choices=children(cta),[caption,button]=choices;
