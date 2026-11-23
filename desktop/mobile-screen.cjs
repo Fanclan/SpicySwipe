@@ -456,6 +456,23 @@ function blankDiscoverShell(visible, find) {
   (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
   !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
 }
+function emptyNativeSheet(nodes){
+ // Compose can leave only its full-window dismissal backdrop accessible.
+ // Recognize the complete observed shell for navigation recovery, never tapping.
+ const classes=['FrameLayout','FrameLayout','FrameLayout','ViewGroup','View','View','View','View'];
+ const allowed=new Set(['index','text','resource-id','class','package','content-desc','checkable','checked','clickable',
+  'enabled','focusable','focused','scrollable','long-clickable','password','selected','bounds','drawing-order','hint','visible-to-user']);
+ const frame=nodes.length===8&&bounds(nodes[0]);
+ if(!frame||nodes[0].parent?.a.rotation!=='0'||frame.x!==0||frame.y!==0||frame.width<320||frame.height<=frame.width)return false;
+ return nodes.every((n,i)=>n.parent===(i?nodes[i-1]:nodes[0].parent)&&(i>0||n.parent?.tag==='hierarchy')&&
+  n.a.class==='android.'+(i<3?'widget.':'view.')+classes[i]&&n.a.package===PACKAGE&&n.a.index==='0'&&
+  n.a['resource-id']===(i===2?'android:id/content':'')&&n.a['drawing-order']===String(i>=1&&i<=3?1:0)&&
+  n.a.bounds===nodes[0].a.bounds&&n.enabled&&n.visible&&fullyVisible(n)&&n.a.enabled==='true'&&
+  (n.a['visible-to-user']===undefined||n.a['visible-to-user']==='true')&&
+  n.a.clickable===(i===7?'true':'false')&&n.a['content-desc']===(i===7?'Close sheet':'')&&
+  n.a.text===''&&n.a.hint===''&&['checkable','checked','focusable','focused','scrollable','long-clickable','password','selected'].every(k=>n.a[k]==='false')&&
+  Object.keys(n.a).every(k=>allowed.has(k)));
+}
 function clippedVideoClockParents(nodes,photoCard=null,reviewVideo=null) {
  const children=new Map();
  for(const n of nodes){if(!children.has(n.parent))children.set(n.parent,[]);children.get(n.parent).push(n)}
@@ -515,6 +532,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if (!nodes.length || nodes.some(n => n.a.package && n.a.package !== PACKAGE)) return block('Another app or system overlay is visible. Return to Hinge.');
  if (nodes.some(n => /(?:^|\.)(?:Dialog|AlertDialog|PopupWindow)$/.test(n.a.class || '') || /:id\/(?:alertTitle|button1|permission_allow_button)$/.test(n.a['resource-id'] || ''))) return block('A dialog requires user attention.');
  const visible = nodes.filter(n => n.visible), find = text => visible.filter(n => label(n) === text);
+ if(emptyNativeSheet(nodes))return {...block('Hinge exposed an empty sheet. Waiting to restore native screen details.'),emptySheetKey:result.screenKey};
  if (find('No network connection').length) return block('No network connection. Restore connectivity and read the screen again.');
  const turnTitle='Too many people are waiting for your reply';
  const turnBody='8 or more people are waiting for your response. Reply or end the conversation with these matches, then you can send likes. Research shows this leads to more dates.';

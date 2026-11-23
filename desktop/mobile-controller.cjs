@@ -957,24 +957,32 @@ class MobileController{
    /^[a-f0-9]{64}$/.test(card.recoveryChromeKey)&&!card.photos?.length&&!card.prompts?.length&&
    !card.reviewScrollSurface&&!card.reviewWheelPoint&&!card.recoveryDrag&&
    !Object.values(card.controls||{}).some(Boolean)&&!card.composerText?.trim();
-  const routeLessOwner=()=>this.platform==='hinge'&&this.loaded&&this.checkpointStore&&pending?.kind==='like'&&
+  const emptySheet=card=>card.kind==='blocked'&&/^[a-f0-9]{64}$/.test(card.emptySheetKey)&&!card.name&&!card.identity&&
+   !card.photos?.length&&!card.prompts?.length&&!Object.values(card.controls||{}).some(Boolean)&&!card.composerText?.trim();
+  const pendingRefreshOwner=()=>this.platform==='hinge'&&this.loaded&&this.checkpointStore&&pending?.kind==='like'&&
    this.isManagedPhone(this.binding)&&session.status==='running'&&session.count===this.reservedCount&&
    !session.timeExpired()&&!session.reachedProfileLimit()&&this.config.mode==='like'&&
    this.config.swipe.likeRatio===1&&session.config.likeRatio===1&&!this.config.autoOpeners&&!this.config.autoSend&&
    !this.draft&&!this.storageError&&(this.visible||(this.config.swipe.allowBackground&&session.config.allowBackground));
-  let beforeStop;
-  if(routeLess(current)&&routeLessOwner()){
-   const priorValid=valid,epoch=session.epoch,name=current.name,chrome=current.recoveryChromeKey;
+  let beforeStop,sheetRecovery=false;
+  if((routeLess(current)||emptySheet(current))&&pendingRefreshOwner()){
+   sheetRecovery=emptySheet(current);
+   const priorValid=valid,epoch=session.epoch,name=current.name,chrome=current.recoveryChromeKey,sheet=current.emptySheetKey;
+   const sameEndpoint=card=>sheetRecovery?emptySheet(card)&&card.emptySheetKey===sheet:
+    routeLess(card)&&card.name===name&&card.recoveryChromeKey===chrome;
    const scope=()=>JSON.stringify([session.runId,session.count,this.reservedCount,session.endsAt,session.config,this.config,this.binding,pending]);
-   const expected=scope(),owned=()=>priorValid()&&session.epoch===epoch&&this.lastAction===pending&&scope()===expected&&routeLessOwner();
+   const expected=scope(),owned=()=>priorValid()&&session.epoch===epoch&&this.lastAction===pending&&scope()===expected&&pendingRefreshOwner();
    beforeStop=async()=>{
     this.assert(t,owned);await this.consent(t);await this.verifyBinding(t);
     const observed=await this.read(t);this.assert(t,owned);
     // Timers may change screenKey. Revalidate native ownership instead; a newly
     // identified card aborts relaunch and returns to ordinary two-read reconciliation.
-    if(this.observedForeground!=='co.hinge.app'||!routeLess(observed)||observed.name!==name||observed.recoveryChromeKey!==chrome)
-     throw transientError('The unidentified Discover endpoint changed before refresh.','MOBILE_SCREEN_CHANGED');
+    if(this.observedForeground!=='co.hinge.app'||!sameEndpoint(observed))
+     throw transientError('The native Hinge endpoint changed before refresh.','MOBILE_SCREEN_CHANGED');
    };
+   // An empty sheet can be a brief post-send transition. Observe a settling
+   // interval before reserving any restart; never tap its full-window backdrop.
+   if(sheetRecovery){this.assert(t,owned);await this.pauseFor(30000,t);this.assert(t,owned);}
    await beforeStop();valid=owned;
   }else{
    if(!stalledProfile&&!stalledLike)return false;
@@ -988,7 +996,7 @@ class MobileController{
   for(let i=0;i<6;i++){
    await this.pauseFor(1000,t);this.assert(t,valid);let observed=await this.read(t);this.assert(t,valid);
    if(this.platform==='bumble')observed=await this.dismissBumbleReminder(observed,t,valid);this.assert(t,valid);
-   const key=changeKey(observed);
+   const key=sheetRecovery&&observed.kind!=='profile'?null:changeKey(observed);
    if(key&&key===candidate)return resolved();
    candidate=key;
    if(observed.kind!=='blocked'&&!key)return false;

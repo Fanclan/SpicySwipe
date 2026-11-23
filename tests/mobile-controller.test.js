@@ -3888,3 +3888,109 @@ test('pending Hinge route-less refresh needs durable storage and carries a histo
   assert.deepEqual(x.calls,[]);
  }
 });
+
+async function pendingEmptySheetFixture(){
+ const x=await pendingEndpointFixture();
+ const xml=require('node:fs').readFileSync(require('node:path').join(__dirname,'fixtures/mobile/hinge-empty-sheet.xml'),'utf8');
+ const waits=[];x.c.wait=async ms=>{waits.push(ms)};
+ x.setSource(xml);return {...x,xml,waits};
+}
+test('pending Hinge refreshes an exact empty native sheet without tapping or changing its run budget',async()=>{
+ for(const zero of [false,true]){
+  const x=await pendingEmptySheetFixture();
+  if(zero){x.c.session.runId='b'.repeat(32);x.c.session.count=x.c.reservedCount=0;x.c.persist();}
+  assert.equal(await x.run(),true);assert.equal(x.refreshes(),1);assert.equal(x.identifiedReads(),2);
+  assert.equal(x.waits[0],30000);
+  assert.equal(x.c.lastAction,null);assert.equal(x.saved().pendingAction,null);assert.deepEqual(x.calls,[]);
+  assert.equal(x.saved().session.count,zero?0:484);assert.equal(x.saved().session.config.maxSwipes,1000);
+  assert.equal(x.saved().session.runId,zero?'b'.repeat(32):x.initial.session.runId);
+ }
+});
+test('pending Hinge lets a transient empty sheet settle without restarting or clearing the guard',async()=>{
+ for(const kind of ['profile','like','empty','blocked']){
+  const x=await pendingEmptySheetFixture();let waited=false;
+  x.c.wait=async ms=>{
+   if(ms!==30000)return;
+   waited=true;x.setSource(screen({kind,name:'Example',identity:'next-evidence'}));
+  };
+  await assert.rejects(x.run(),/endpoint changed/);assert.equal(waited,true);assert.equal(x.refreshes(),0);
+  assert.equal(x.c.lastAction,x.guard);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);
+  assert.equal(x.saved().nextFeedRefreshAt,x.initial.nextFeedRefreshAt);assert.deepEqual(x.calls,[]);
+  if(kind==='profile'){assert.equal(await x.run(),true);assert.equal(x.refreshes(),0);assert.equal(x.c.lastAction,null);}
+ }
+});
+test('pending Hinge empty-sheet relaunch needs identified transition proof and retains later empty-feed policy',async()=>{
+ for(const mode of ['empty','shell','same-name','unstable']){
+  const x=await pendingEmptySheetFixture(),refresh=x.android.refreshFeed;let reads=0;
+  x.android.refreshFeed=async(...args)=>{await refresh(...args);x.android.hierarchy=async()=>({foreground:'co.hinge.app',
+   xml:mode==='shell'?x.xml:screen({kind:mode==='empty'?'empty':'profile',name:mode==='same-name'?'Previous':'Example',
+    identity:mode==='unstable'&&++reads%2===0?'different-evidence':'next-evidence'})});};
+  assert.equal(await x.run(),false,mode);assert.equal(x.refreshes(),1);assert.equal(x.c.lastAction,x.guard);
+  assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);assert.equal(x.saved().session.count,484);assert.deepEqual(x.calls,[]);
+  if(mode==='empty'){assert.equal(await x.run(),true);assert.equal(x.refreshes(),1);assert.equal(x.c.lastAction,null);}
+ }
+});
+test('pending Hinge empty-sheet recovery rejects unknown content and unsafe initial session scope',async()=>{
+ for(const mode of ['text','editor','unknown-control','account-limit','draft','paused','expired','limit','no-store','custom-phone','ratio','comment','messages','background']){
+  const x=await pendingEmptySheetFixture();
+  if(mode==='text')x.setSource(x.xml.replace('text=""','text="Unknown content"'));
+  if(mode==='editor')x.setSource(x.xml.replace('class="android.view.View"','class="android.widget.EditText"'));
+  if(mode==='unknown-control')x.setSource(x.xml.replace('Close sheet','Buy now'));
+  if(mode==='account-limit')x.setSource(require('./fixtures/hinge-your-turn-limit.cjs').yourTurnLimit());
+  if(mode==='draft')x.c.draft={text:'unsent'};if(mode==='paused')x.c.session.status='paused';
+  if(mode==='expired')x.c.session.endsAt=x.now()-1;if(mode==='limit')x.c.session.config.maxSwipes=484;
+  if(mode==='no-store')x.c.checkpointStore=null;if(mode==='custom-phone')x.c.isManagedPhone=()=>false;
+  if(mode==='ratio')x.c.config.swipe.likeRatio=.5;if(mode==='comment')x.c.config.mode='comment';
+  if(mode==='messages')x.c.config.autoOpeners=true;if(mode==='background'){x.c.visible=false;x.c.config.swipe.allowBackground=false;}
+  await x.run().catch(()=>{});assert.equal(x.refreshes(),0,mode);assert.equal(x.c.lastAction,x.guard,mode);assert.deepEqual(x.calls,[]);
+ }
+});
+test('pending Hinge empty-sheet refresh rechecks its exact shell at both native-read boundaries',async()=>{
+ for(const boundary of [2,3])for(const mode of ['editor','content','foreground','identified','geometry']){
+  const x=await pendingEmptySheetFixture();let reads=0;
+  x.android.hierarchy=async()=>{
+   let xml=x.xml,foreground='co.hinge.app';
+   if(++reads>=boundary){
+    if(mode==='editor')xml=xml.replace('class="android.view.View"','class="android.widget.EditText"');
+    if(mode==='content')xml=xml.replace('text=""','text="Unsent content"');
+    if(mode==='foreground')foreground='other.app';if(mode==='identified')xml=screen({name:'Example',identity:'new-evidence'});
+    if(mode==='geometry')xml=xml.replaceAll('[0,0][720,1280]','[0,0][1080,1920]');
+   }
+   return {xml,foreground};
+  };
+  await assert.rejects(x.run(),undefined,boundary+mode);assert.equal(x.refreshes(),0,boundary+mode);
+  assert.equal(x.c.lastAction,x.guard);assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);assert.deepEqual(x.calls,[]);
+  if(boundary===3)assert.ok(x.saved().nextFeedRefreshAt>x.now());
+ }
+});
+test('pending Hinge empty-sheet refresh preserves ownership across reservation and relaunch confirmation',async()=>{
+ for(const boundary of ['reserve','confirm'])for(const mode of ['input','config','run','count','binding','guard','draft']){
+  const x=await pendingEmptySheetFixture(),write=x.c.checkpointStore.write,refresh=x.android.refreshFeed;let changed=false;
+  const change=()=>{changed=true;
+   if(mode==='input')x.android.cancelInput();if(mode==='config')x.c.config.autoSend=true;
+   if(mode==='run')x.c.session.runId='other-run';if(mode==='count')x.c.session.count++;
+   if(mode==='binding')x.c.binding.avd='other-phone';if(mode==='guard')x.c.lastAction.name='Other';if(mode==='draft')x.c.draft={text:'unsent'};
+  };
+  if(boundary==='reserve')x.c.checkpointStore.write=cp=>{write(cp);if(cp.nextFeedRefreshAt>x.now()&&!changed)change()};
+  else x.android.refreshFeed=async(...args)=>{await refresh(...args);change()};
+  await assert.rejects(x.run());assert.equal(changed,true);assert.equal(x.refreshes(),boundary==='reserve'?0:1);
+  assert.ok(x.c.lastAction);assert.deepEqual(x.calls,[]);
+ }
+});
+test('pending Hinge empty-sheet refresh reserves durable cooldown before a failed or unacknowledged restart',async()=>{
+ for(const storage of [true,false]){
+  const x=await pendingEmptySheetFixture(),write=x.c.checkpointStore.write;let attempts=0;
+  if(!storage)x.c.checkpointStore.write=cp=>{if(cp.nextFeedRefreshAt>x.now())throw Error('Storage unavailable');write(cp)};
+  x.android.refreshFeed=async(_platform,valid,_wait,beforeStop)=>{
+   assert.equal(valid(),true);await beforeStop();attempts++;throw Object.assign(Error('Refresh acknowledgement lost'),{code:'ANDROID_COMMAND_TIMEOUT'});
+  };
+  await assert.rejects(x.run());assert.equal(attempts,storage?1:0);assert.equal(x.c.lastAction,x.guard);
+  assert.deepEqual(x.saved().pendingAction,x.initial.pendingAction);assert.equal(x.saved().session.count,484);
+  if(storage){
+   const cp=structuredClone(x.saved());assert.equal(cp.nextFeedRefreshAt,x.now()+300000);
+   x.c.restoreCheckpoint(cp);x.c.session.status='running';assert.equal(await x.run(),false);assert.equal(attempts,1);
+   x.advance(300001);await assert.rejects(x.run());assert.equal(attempts,2);
+  }
+  assert.deepEqual(x.calls,[]);
+ }
+});

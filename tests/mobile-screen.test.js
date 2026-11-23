@@ -8,6 +8,46 @@ const like = fs.readFileSync(path.join(__dirname, 'fixtures/mobile/hinge-like.xm
 const read = (xml, options = {}) => readScreen(xml, { platform: 'hinge', foreground: 'co.hinge.app', ...options });
 const {nativePhotoForm}=require('./fixtures/hinge-native-photo-form.cjs');
 const {yourTurnLimit}=require('./fixtures/hinge-your-turn-limit.cjs');
+const emptySheetXml=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-empty-sheet.xml'),'utf8');
+
+test('an exact empty native sheet grants navigation evidence only, without identity or controls',()=>{
+ for(const xml of [emptySheetXml,emptySheetXml.replaceAll('[0,0][720,1280]','[0,0][1080,1920]')]){
+  const s=read(xml);assert.equal(s.kind,'blocked');assert.match(s.emptySheetKey,/^[a-f0-9]{64}$/);
+  assert.equal(s.name,'');assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);
+  assert.equal(s.composerTextVerified,false);assert.ok(Object.values(s.controls).every(v=>v===null));
+  assert.equal(read(xml,{photoIdentity:'0123456789abcdef',commentText:''}).identity,null);
+ }
+});
+
+test('empty native sheet recovery rejects extra content, editors, controls and changed ownership',()=>{
+ const leaf=emptySheetXml.match(/<node[^>]*content-desc="Close sheet"[^>]*\/>/)[0];
+ const variants=[
+  emptySheetXml.replace('content-desc="Close sheet"','content-desc="Close"'),
+  emptySheetXml.replace(leaf,leaf.replace('clickable="true"','clickable="false"')),
+  emptySheetXml.replace(leaf,leaf.replace('focusable="false"','focusable="true"')),
+  emptySheetXml.replace(leaf,leaf.replace('text=""','text="Account restriction"')),
+  emptySheetXml.replace(leaf,leaf.replace('hint=""','hint="Comment"')),
+  emptySheetXml.replace(leaf,leaf.replace('class="android.view.View"','class="android.widget.EditText"')),
+  emptySheetXml.replace(leaf,leaf.replace('bounds="[0,0][720,1280]"','bounds="[0,100][720,1280]"')),
+  emptySheetXml.replace('resource-id="android:id/content"','resource-id="other:id/content"'),
+  emptySheetXml.replace('class="android.view.ViewGroup"','class="android.widget.ScrollView"'),
+  emptySheetXml.replace('enabled="true"','enabled="false"'),
+  emptySheetXml.replace('package="co.hinge.app"','package="android"'),
+  emptySheetXml.replace(leaf,leaf.replace('/>',' visible-to-user="false"/>')),
+  emptySheetXml.replace(leaf,leaf.replace('/>',' visible-to-user="unknown"/>')),
+  emptySheetXml.replace(leaf,leaf.replace('/>',' editable="true"/>')),
+  emptySheetXml.replace(leaf,leaf.replace('/>',' tooltip-text="Unknown"/>')),
+  emptySheetXml.replace(leaf,leaf+leaf),emptySheetXml.replace(leaf,''),
+  emptySheetXml.replace('</hierarchy>',leaf+'</hierarchy>'),
+  emptySheetXml.replaceAll('[0,0][720,1280]','[0,0][1280,720]'),
+  emptySheetXml.replace('rotation="0"','rotation="1"'),
+ ];
+ for(const [index,xml]of variants.entries()){
+  assert.notEqual(xml,emptySheetXml);const s=read(xml);assert.equal(s.emptySheetKey,undefined,'variant '+index);
+  assert.ok(Object.values(s.controls).every(v=>v===null),'variant '+index);
+ }
+ assert.equal(read(emptySheetXml,{foreground:'other.app'}).emptySheetKey,undefined);
+});
 
 test('Hinge Your Turn Limits reports the account action without exposing any controls',()=>{
  const s=read(yourTurnLimit());
