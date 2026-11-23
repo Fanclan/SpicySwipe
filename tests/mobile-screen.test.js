@@ -9,6 +9,44 @@ const read = (xml, options = {}) => readScreen(xml, { platform: 'hinge', foregro
 const {nativePhotoForm}=require('./fixtures/hinge-native-photo-form.cjs');
 const {yourTurnLimit}=require('./fixtures/hinge-your-turn-limit.cjs');
 const emptySheetXml=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-empty-sheet.xml'),'utf8');
+const wrappedLoadingXml=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-loading-native-wrappers.xml'),'utf8');
+
+test('native Discover loading recognizes the observed passive wrappers without identity or actions',()=>{
+ for(const xml of [wrappedLoadingXml,wrappedLoadingXml.replace(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/g,(_,a,b,c,d)=>`[${a*2},${b*2}][${c*2},${d*2}]`)]){
+  const s=read(xml);assert.equal(s.kind,'feedLoading');assert.equal(s.identity,null);assert.equal(s.name,'');
+  assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
+ }
+});
+test('native loading wrappers reject unknown classes, interaction, editors, content and navigation changes',()=>{
+ const [wrapper,navigationWrapper]=[...wrappedLoadingXml.matchAll(/<node[^>]*class="rol"[^>]*>/g)].map(match=>match[0]);
+ const mutate=(from,to)=>wrappedLoadingXml.replace(wrapper,wrapper.replace(from,to));
+ const variants=[
+  wrappedLoadingXml.replace('class="rol"','class="unknown.wrapper"'),
+  mutate('clickable="false"','clickable="true"'),mutate('focusable="false"','focusable="true"'),
+  mutate('long-clickable="false"','long-clickable="true"'),mutate('selected="false"','selected="true"'),
+  wrappedLoadingXml.replace(wrapper,wrapper.replace('hint=""','hint="" editable="true"')),
+  wrappedLoadingXml.replace(wrapper,wrapper.replace('hint=""','hint="" context-clickable="true"')),
+  mutate('enabled="true"','enabled="false"'),mutate('text=""','text="Unsent comment"'),
+  mutate('hint=""','hint="Edit comment"'),mutate('resource-id=""','resource-id="unknown"'),
+  mutate('bounds="[0,0][720,1280]"','bounds="[0,20][720,1280]"'),
+  mutate('class="rol"','class="android.widget.EditText"'),
+  wrappedLoadingXml.replace(navigationWrapper,navigationWrapper.replace('focusable="false"','focusable="true"')),
+  wrappedLoadingXml.replace(navigationWrapper,navigationWrapper.replace('bounds="[0,1112][720,1280]"','bounds="[0,1113][720,1280]"')),
+  wrappedLoadingXml.replace(navigationWrapper,navigationWrapper.replace('class="rol"','class="ycl"')),
+  wrappedLoadingXml.replace(wrapper,wrapper.replace('class="rol"','class="ycl"')),
+  wrappedLoadingXml.replace(wrapper,wrapper+wrapper).replace('</hierarchy>','</node></hierarchy>'),
+  wrappedLoadingXml.replace('text="Discover"','text="Example profile"'),
+  wrappedLoadingXml.replace('content-desc="Profile Hub"','content-desc="Discover"'),
+  wrappedLoadingXml.replace('selected="true"','selected="false"'),
+  wrappedLoadingXml.replace('package="co.hinge.app"','package="android"'),
+  wrappedLoadingXml.replace('</hierarchy>','<node class="android.view.View" package="co.hinge.app" enabled="true" clickable="true" text="Send Like" bounds="[0,100][720,200]"/></hierarchy>'),
+ ];
+ for(const [index,xml]of variants.entries()){
+  assert.notEqual(xml,wrappedLoadingXml);const s=read(xml);assert.equal(s.kind,'blocked','variant '+index);
+  assert.ok(Object.values(s.controls).every(v=>v===null),'variant '+index);
+ }
+ assert.equal(read(wrappedLoadingXml,{foreground:'other.app'}).kind,'blocked');
+});
 
 test('an exact empty native sheet grants navigation evidence only, without identity or controls',()=>{
  for(const xml of [emptySheetXml,emptySheetXml.replaceAll('[0,0][720,1280]','[0,0][1080,1920]')]){

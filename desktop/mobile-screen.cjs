@@ -450,9 +450,29 @@ function blankDiscoverShell(visible, find) {
  const box = bounds(header);
  const tabs = discoverNavigation(text => find(text === 'Matches' && badge ? label(badge) : text), box.y + box.height);
  if (!tabs || visible.filter(n => label(n)).length !== 6) return false;
+ // The current native build wraps the content and navigation in two `rol`
+ // containers. Accept those observed inert roles, not arbitrary wrapper classes.
+ const wrappers=visible.filter(n=>n.a.class==='rol'),knownWrappers=new Set();
+ const children=n=>visible.filter(child=>child.parent===n),sameBox=(a,b)=>a?.a.bounds===b?.a.bounds;
+ const inert=n=>n?.enabled&&n.visible&&fullyVisible(n)&&!label(n)&&!n.a.hint&&!n.a['resource-id']&&n.a.editable!=='true'&&n.a['context-clickable']!=='true'&&
+  ['clickable','focusable','focused','scrollable','long-clickable','checkable','checked','selected','password'].every(k=>n.a[k]==='false');
+ const within=(node,owner)=>{for(let p=node;p;p=p.parent)if(p===owner)return true;return false};
+ if(wrappers.length){
+  if(wrappers.length!==2)return false;
+  for(const [index,wrapper]of wrappers.entries()){
+   const parts=children(wrapper),child=parts[0],parent=wrapper.parent;
+   if(!inert(wrapper)||parent?.a.class!=='android.view.View'||!inert(parent)||parts.length!==1||!inert(child)||!sameBox(wrapper,child))return false;
+   if(index===0){
+    const nested=children(child);
+    if(child.a.class!=='android.widget.FrameLayout'||nested.length!==1||nested[0].a.class!=='androidx.compose.ui.platform.ComposeView'||
+       !inert(nested[0])||!sameBox(child,nested[0])||!sameBox(wrapper,parent)||!within(header,wrapper))return false;
+   }else if(child.a.class!=='androidx.compose.ui.platform.ComposeView'||!tabs.every(tab=>within(tab,wrapper)))return false;
+   knownWrappers.add(wrapper);
+  }
+ }
  const otherTabs = new Set(tabs.slice(1));
  const containers = /^(?:android\.(?:view\.(?:View|ViewGroup)|widget\.(?:FrameLayout|LinearLayout))|(?:[\w.]+\.)?(?:ComposeView|ycl))$/;
- return visible.every(n => (n === header || containers.test(n.a.class || '')) && n.a.scrollable !== 'true' &&
+ return visible.every(n => (n === header || knownWrappers.has(n) || containers.test(n.a.class || '')) && n.a.scrollable !== 'true' &&
   (n.a.selected === 'true') === (n === tabs[0]) && (n.a.clickable === 'true') === otherTabs.has(n) &&
   !(clean(n.a.text) && clean(n.a['content-desc']) && clean(n.a.text) !== clean(n.a['content-desc'])));
 }

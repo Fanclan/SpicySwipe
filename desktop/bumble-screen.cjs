@@ -1,4 +1,9 @@
 'use strict';
+const premiumBenefitOrder=new Map([
+ ['You have 1 chat expiring soon. Go take a look!',0],
+ ['Don’t forget to use your 2 Spotlights',1],['You have 2 new Spotlights to use',1],
+ ['Don’t forget to use your 2 Compliments',2],['You have 2 new Compliments to use',2]
+]);
 // Two self-contained Compose reminders. Their CTA is never an action target;
 // accept only the complete native sheet and the isolated top-right Close.
 function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,control}){
@@ -50,14 +55,16 @@ function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,co
   content=parts[1];known.add(content);const contents=children(content);[scroll,cta]=contents;
   if(contents.length!==2||!is(scroll,'android.widget.ScrollView'))return null;
   known.add(scroll);const rows=children(scroll);[photo,badge,heading]=rows;
-  if(rows.length!==7||!is(photo,'android.widget.ImageView')||photo.a['content-desc']!=='Your profile photo'||photo.a.text||!leaf(photo)||
+  if(![7,9].includes(rows.length)||!is(photo,'android.widget.ImageView')||photo.a['content-desc']!=='Your profile photo'||photo.a.text||!leaf(photo)||
      !decoration(badge,'White sparkles on titanium background',true)||!text(heading,'You’re shining with Premium+'))return null;
-  known.add(photo);labels.add(photo);benefits=[[rows[3],rows[4]],[rows[5],rows[6]]];
-  const copy=[
-   ['Don’t forget to use your 2 Spotlights','Don’t forget to use your 2 Compliments'],
-   ['You have 1 chat expiring soon. Go take a look!','Don’t forget to use your 2 Spotlights']
-  ].find(lines=>lines.every((value,index)=>benefits[index][1]?.a.text===value));
-  if(!copy||!benefits.every(([icon],index)=>decoration(icon,'',true)&&text(benefits[index][1],copy[index])))return null;
+  known.add(photo);labels.add(photo);benefits=[];
+  for(let i=3;i<rows.length;i+=2)benefits.push([rows[i],rows[i+1]]);
+  let previous=-1;
+  if(!benefits.every(([icon,copy])=>{
+   const order=premiumBenefitOrder.get(copy.a.text);
+   if(order===undefined||order<=previous||!decoration(icon,'',true)||!text(copy,copy.a.text))return false;
+   previous=order;return true;
+  }))return null;
  }
  if(!is(cta,'android.view.View'))return null;
  known.add(cta);const choices=children(cta),[caption,button]=choices;
@@ -99,16 +106,25 @@ function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,co
      viewport.x!==area.x||viewport.y!==area.y||viewport.width!==area.width||viewport.y+viewport.height>=action.y||
      image.y!==viewport.y||!middle(image,viewport)||image.width>=viewport.width/2||image.height*3!==image.width*4||
      !middle(emblem,image)||emblem.y+emblem.height/2!==image.y+image.height||title.y<=badgeLeaf.y+badgeLeaf.height)return null;
-  const icons=[badge,...benefits.map(([icon])=>icon)];
+  const icons=[badge,...benefits.map(([icon])=>icon)];let clippedLast=false;
   for(const [index,icon]of icons.entries()){
    const outer=box(icon),inner=box(children(icon)[0]);
-   if(outer.width!==outer.height||inner.width!==close.width||inner.height!==close.height||!middle(inner,outer)||
-      inner.y+inner.height/2!==outer.y+outer.height/2||outer.width!==close.width*(index===0?5/8:1/2)||!inside(inner,viewport))return null;
+   if(inner.width!==close.width||!middle(inner,outer)||outer.width!==close.width*(index===0?5/8:1/2))return null;
+   if(benefits.length===3&&index===3&&outer.height<outer.width){
+    // Native accessibility clips the final passive row at the scroll viewport.
+    // Its expanded decorative leaf may reach the CTA's top, never enter it.
+    if(outer.y+outer.height!==viewport.y+viewport.height||inner.height>=close.height||
+       inner.y+inner.height!==action.y||inner.y+close.height/2!==outer.y+outer.width/2||!inside(inner,area)||
+       box(benefits[2][1]).y+box(benefits[2][1]).height!==viewport.y+viewport.height)return null;
+    clippedLast=true;
+   }else if(outer.width!==outer.height||inner.height!==close.height||
+      inner.y+inner.height/2!==outer.y+outer.height/2||!inside(inner,viewport))return null;
   }
   let bottom=title.y+title.height;
-  for(const [icon,copy]of benefits){
+  for(const [index,[icon,copy]]of benefits.entries()){
    const marker=box(icon),detail=box(copy),inner=box(children(icon)[0]);
-   if(marker.y!==detail.y||detail.x!==inner.x+inner.width||inner.y<=bottom||detail.y+detail.height>=viewport.y+viewport.height)return null;
+   if(marker.y!==detail.y||detail.x!==inner.x+inner.width||inner.y<bottom||index===0&&inner.y===bottom||
+      (!(clippedLast&&index===2)&&detail.y+detail.height>=viewport.y+viewport.height))return null;
    bottom=Math.max(detail.y+detail.height,inner.y+inner.height);
   }
  }
