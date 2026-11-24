@@ -7,8 +7,10 @@
   function mount(root, { request, platform = 'hinge', web = false, notify = () => {}, prepareStart = null }) {
     let current = platform, connected = false, generation = 0, pending = 0, state = {}, error = '', draftKey = '', draftSource = '', starting = false;
     let reviewedSkip = null, skipTimer = null, skipDeadline = 0;
+    let reviewedReset = null, resetSnapshotFresh = false;
     let streamConnected = !web || global.spicyDesktop?.mobileStreamConnected !== false;
     const submittedSkips = new Map();
+    const submittedResets = new Set();
     const forms = new Map(), hydrated = new Set();
     const title = () => current === 'bumble' ? 'Bumble' : 'Hinge';
     const button = (key, text, primary = false) => `<button type="button" data-mobile="${key}"${primary ? ' class="primary"' : ''}>${text}</button>`;
@@ -33,7 +35,11 @@
       <div class="ma-fields">${number('delaySeconds', 'Fixed wait (seconds)', 3, 600)}${number('minDelaySeconds', 'Minimum wait (seconds)', 3, 600)}${number('maxDelaySeconds', 'Maximum wait (seconds)', 3, 600)}${number('scrollMin', 'Minimum scrolls', 0, 10)}${number('scrollMax', 'Maximum scrolls', 0, 10)}${number('fractionMin', 'Minimum scroll distance (%)', 20, 65)}${number('fractionMax', 'Maximum scroll distance (%)', 20, 65)}${number('minPhotoSeconds', 'Minimum review dwell (seconds)', 1, 30)}${number('maxPhotoSeconds', 'Maximum review dwell (seconds)', 1, 30)}</div>
       <div class="ma-checks">${check('breaksEnabled', 'Take breaks')}${check('allowBackground', web ? 'Keep running when this tab closes' : 'Continue while app is hidden')}</div><div class="ma-fields">${number('breakEvery', 'Break after profiles', 1, 1000)}${number('breakMinSeconds', 'Minimum break (seconds)', 10, 1800)}${number('breakMaxSeconds', 'Maximum break (seconds)', 10, 1800)}</div>
       <p class="ma-hint">Background operation does not prevent computer sleep. Resume keeps your count and any end time.</p></details>
-      <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
+      <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}${button('reset-count', 'Reset counter')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
+      <div data-mobile="reset-review" class="ma-held-card" role="group" aria-labelledby="ma-reset-title" aria-describedby="ma-reset-effect" hidden>
+        <strong data-mobile="reset-title" id="ma-reset-title"></strong><p id="ma-reset-effect">Your saved session limits stay the same. This resets the counter without starting a session. Any unconfirmed Like stays protected, and Hinge restrictions still apply.</p>
+        <div class="ma-actions">${button('cancel-reset', 'Cancel')}${button('confirm-reset', 'Reset to 0')}</div>
+      </div><p data-mobile="reset-notice" class="ma-reason" role="status" tabindex="-1"></p>
       <div data-mobile="held-card" class="ma-held-card" hidden>
         <div data-mobile="skip-intro"><strong>Hinge is still showing this card</strong><p>You can keep waiting or skip the card shown on the phone.</p>${button('review-skip', 'Skip this card and continue')}</div>
         <div data-mobile="skip-review" role="group" aria-labelledby="ma-confirm-skip-title" aria-describedby="ma-confirm-skip-cost" hidden>
@@ -47,7 +53,7 @@
     const field = key => root.querySelector(`[name="${key}"]`);
     const manual=root.firstElementChild,drafts=root.lastElementChild,form=el('form');
     const tools=document.createElement('details');tools.className='ma-manual';tools.innerHTML='<summary>Manual controls and profile details</summary>';tools.append(manual,drafts);root.prepend(form);root.append(tools);
-    const sessionButtons=el('start').parentElement;form.insertBefore(sessionButtons,form.children[1]);sessionButtons.after(el('session'),el('reason'),el('held-card'),el('skip-notice'));
+    const sessionButtons=el('start').parentElement;form.insertBefore(sessionButtons,form.children[1]);sessionButtons.after(el('session'),el('reason'),el('reset-review'),el('reset-notice'),el('held-card'),el('skip-notice'));
     const intro=document.createElement('p');intro.className='ma-hint';intro.textContent='Press Start session. Device setup, profile review and plain Likes run automatically.';sessionButtons.before(intro);
     const advanced=form.querySelector('details');advanced.querySelector('summary').after(field('likeRatio').closest('label'));advanced.append(el('quick').parentElement,el('save'));
     el('preset-note').textContent='Start uses your settings below. Plain Likes are the default.';
@@ -80,9 +86,10 @@
       return config;
     }
     function clearContext() { state = {}; draftKey = ''; draftSource = ''; field('draft').value = ''; }
-    function invalidate() { generation++; pending = 0; error = ''; reviewedSkip = null; el('skip-notice').textContent = ''; clearContext(); render(); }
+    function invalidate() { generation++; pending = 0; error = ''; reviewedSkip = null; reviewedReset = null; resetSnapshotFresh = false; el('skip-notice').textContent = ''; el('reset-notice').textContent = ''; clearContext(); render(); }
     function handleState(snapshot) {
       if (!snapshot || snapshot.platform !== current) return;
+      resetSnapshotFresh = connected && streamConnected;
       state = connected ? snapshot : { ...snapshot, screen: null, draft: null, selectedPhoto: null };
       if (snapshot.config && !hydrated.has(current)) {
         if (!forms.has(current)) fill(snapshot.config);
@@ -111,6 +118,41 @@
       finally { if (token === generation) { pending = Math.max(0, pending - 1); render(); } }
     }
     const time = value => value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const resetKey = candidate => JSON.stringify([candidate.expectedRunId, candidate.expectedCount, candidate.expectedResumeEpoch]);
+    function currentResetCandidate() {
+      const session = state.session;
+      if (!connected || !streamConnected || !resetSnapshotFresh || current !== 'hinge' || state.canResetCount !== true ||
+          pending || state.busy || !['paused', 'error', 'complete', 'idle'].includes(session?.status) ||
+          typeof session.runId !== 'string' || !session.runId.trim() || !Number.isSafeInteger(session.count) || session.count <= 0 ||
+          !Number.isSafeInteger(state.resumeEpoch) || state.resumeEpoch < 0) return null;
+      const candidate = { expectedRunId: session.runId, expectedCount: session.count, expectedResumeEpoch: state.resumeEpoch, status: session.status, phase: session.phase };
+      return submittedResets.has(resetKey(candidate)) ? null : candidate;
+    }
+    function sameReviewedReset(candidate) {
+      return reviewedReset && candidate && resetKey(reviewedReset) === resetKey(candidate) &&
+        reviewedReset.status === candidate.status && reviewedReset.phase === candidate.phase;
+    }
+    function closeReset(message = '') {
+      const hadFocus = el('reset-review').contains(document.activeElement);
+      reviewedReset = null;
+      el('reset-notice').textContent = message;
+      if (hadFocus && message) el('reset-notice').focus();
+    }
+    function renderReset() {
+      const candidate = currentResetCandidate();
+      if (reviewedReset && !sameReviewedReset(candidate)) closeReset('The session changed. Review its current count before resetting.');
+      el('reset-count').hidden = current !== 'hinge';
+      el('reset-count').disabled = !candidate || Boolean(reviewedReset);
+      el('reset-review').hidden = !reviewedReset;
+      el('cancel-reset').disabled = !reviewedReset;
+      el('confirm-reset').disabled = !reviewedReset || !candidate;
+      el('reset-title').textContent = reviewedReset ? `Reset Hinge’s counter from ${reviewedReset.expectedCount} to 0?` : '';
+    }
+    function forgetReset() {
+      resetSnapshotFresh = false;
+      if (reviewedReset) closeReset('Review the current session before resetting its counter.');
+      renderReset();
+    }
     function currentSkipOffer() {
       const offer = state.pendingSkipOffer, screen = state.screen, skip = screen?.controls?.skip;
       if (!connected || !streamConnected || current !== 'hinge' || state.session?.status !== 'running' ||
@@ -153,11 +195,11 @@
       state = { ...state, pendingSkipOffer: null };
       renderSkip();
     }
-    document.addEventListener('visibilitychange', () => { if (document.hidden) forgetSkipOffer(); });
-    global.addEventListener('pagehide', forgetSkipOffer);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { forgetSkipOffer(); forgetReset(); } });
+    global.addEventListener('pagehide', () => { forgetSkipOffer(); forgetReset(); });
     if (web) global.addEventListener('spicy-mobile-stream-reset', event => {
       streamConnected = event.detail?.connected !== false;
-      forgetSkipOffer();
+      forgetSkipOffer(); forgetReset();
     });
     function render() {
       root.hidden = !['hinge', 'bumble'].includes(current);
@@ -174,7 +216,7 @@
       el('photo').textContent = s ? state.selectedPrompt ? 'Selected visible text prompt: ready' : photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
       el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'Waiting for new profiles. The session will check again automatically.' : s?.reason) || '';
       const limit = session.limit === undefined || session.status === 'idle' ? field('maxSwipes').value : session.limit;
-      const actionLabel = state.hasPendingAction && ['complete', 'error'].includes(session.status)
+      const actionLabel = state.hasPendingAction && (['complete', 'error'].includes(session.status) || (current === 'hinge' && ['idle', 'paused'].includes(session.status)))
         ? 'recorded profile actions · Last action unconfirmed'
         : 'issued profile actions';
       const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} ${actionLabel}`;
@@ -191,9 +233,10 @@
       const disable = (key, condition) => { el(key).disabled = condition; };
       disable('read', !connected || pending > 0 || state.busy || active);
       disable('review', !idle || !recognized || s.kind !== 'profile');
-      disable('start', !['hinge','bumble'].includes(current) || (!connected&&!prepareStart) || pending>0 || state.busy || active || paused);
+      const accountLimited = current === 'hinge' && s?.kind === 'accountLimit';
+      disable('start', !['hinge','bumble'].includes(current) || (!connected&&!prepareStart) || pending>0 || state.busy || active || paused || accountLimited);
       el('start').textContent=starting?'Starting…':'Start session';
-      disable('resume', !['hinge','bumble'].includes(current) || (!connected&&!prepareStart) || pending>0 || state.busy || active || !paused);
+      disable('resume', !['hinge','bumble'].includes(current) || (!connected&&!prepareStart) || pending>0 || state.busy || active || !paused || accountLimited);
       el('resume').hidden = !paused; el('start').hidden = paused;
       const promptLike = current === 'hinge' && s?.kind === 'profile' && !controls.like && s.prompts?.some(prompt => available(prompt.like));
       disable('save', !idle); disable('like', !idle || !recognized || !['profile', 'like','likeOffer'].includes(s.kind) || !(available(s.kind !== 'profile' ? controls.sendLike : controls.like) || promptLike));
@@ -209,9 +252,10 @@
       disable('send', !idle || !bound || s?.kind !== 'conversation' || !available(controls.sendMessage) || !draft.inserted || text !== draft.text || s.composerText !== text);
       for (const input of el('form').querySelectorAll('input, select, textarea')) input.disabled = active || (['autoOpeners','autoSend'].includes(input.name) && current!=='hinge') || (input.name==='autoSend'&&!field('autoOpeners').checked);
       disable('quick', active); disable('overnight', active);
-      renderSkip();
+      renderSkip(); renderReset();
     }
     root.addEventListener('input', event => {
+      if (reviewedReset) closeReset('Settings changed. Review the current session before resetting.');
       if (event.target.name && event.target.name !== 'draft') forms.set(current, collect());
       render();
     });
@@ -220,6 +264,29 @@
       const target = event.target.closest('button[data-mobile]');
       if (!target || target.disabled) return;
       const action = target.dataset.mobile;
+      if (action === 'reset-count') {
+        const candidate = currentResetCandidate();
+        if (!candidate) { renderReset(); return; }
+        reviewedReset = candidate; el('reset-notice').textContent = ''; renderReset(); el('cancel-reset').focus(); return;
+      }
+      if (action === 'cancel-reset') {
+        closeReset(); renderReset(); el('reset-count').focus(); return;
+      }
+      if (action === 'confirm-reset') {
+        const candidate = currentResetCandidate();
+        if (!sameReviewedReset(candidate)) { renderReset(); return; }
+        const { expectedRunId, expectedCount, expectedResumeEpoch } = reviewedReset;
+        submittedResets.add(resetKey(candidate));
+        closeReset('Saving the counter reset…'); el('reset-notice').focus();
+        run(async token => {
+          try {
+            const result = await call('resetCount', { expectedRunId, expectedCount, expectedResumeEpoch }, token);
+            if (token === generation) el('reset-notice').textContent = result?.session?.status === 'idle' && result.session.count === 0 ? 'Hinge’s counter is now 0. The session has not started.' : '';
+          } catch (error) { if (token === generation) el('reset-notice').textContent = ''; throw error; }
+        });
+        return;
+      }
+      if (reviewedReset) { closeReset('Review the current session before resetting its counter.'); renderReset(); }
       if (action === 'review-skip') {
         const offer = currentSkipOffer();
         if (!offer || pending || state.busy) { renderSkip(); return; }

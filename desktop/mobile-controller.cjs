@@ -86,7 +86,39 @@ class MobileController{
   }else if(hasPendingAction&&!reason&&session.phase==='verifying previous action'){
    reason='The previous action is still being verified. No duplicate Like will be sent.';
   }
-  return {hasPendingAction,pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.resumeRevision,session,screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason};
+  return {hasPendingAction,canResetCount:!this.busy&&this.resetCountReady(),pendingSkipOffer:offer?{token:offer.token,name:offer.name,expiresAt:offer.expiresAt}:null,platform:this.platform,resumeEpoch:this.resumeRevision,session,screen:this.screen,config:this.config,draft:this.draft,selectedPhoto:this.selectedPhoto,selectedPrompt:this.selectedPrompt||null,busy:this.busy,openerArmed:this.openerArmed,reason};
+ }
+ resetCountReady(){
+  const {session,binding}=this;
+  return this.platform==='hinge'&&this.loaded&&typeof this.checkpointStore?.read==='function'&&typeof this.checkpointStore?.write==='function'&&
+   !this.storageError&&!this.rejectedPhoto&&!this.draft&&['idle','paused','error','complete'].includes(session.status)&&
+   typeof session.runId==='string'&&Boolean(session.runId.trim())&&Number.isSafeInteger(session.count)&&session.count>0&&
+   this.reservedCount===session.count&&typeof binding?.serial==='string'&&Boolean(binding.serial)&&binding.serial===this.android.serial;
+ }
+ assertResetCount(data,queued=false){
+  if(!data||typeof data!=='object'||Array.isArray(data)||typeof data.expectedRunId!=='string'||!data.expectedRunId.trim()||
+   !Number.isSafeInteger(data.expectedCount)||data.expectedCount<1||!Number.isSafeInteger(data.expectedResumeEpoch)||data.expectedResumeEpoch<0)
+   throw Error('A counter reset requires the observed run, count, and revision.');
+  if((!queued&&this.busy)||!this.resetCountReady()||data.expectedRunId!==this.session.runId||
+   data.expectedCount!==this.session.count||data.expectedResumeEpoch!==this.resumeRevision)
+   throw Error('The observed session changed or cannot safely reset. Read its current status before resetting.');
+ }
+ resetCount(data,t){
+  this.assert(t);this.assertResetCount(data,true);
+  const candidate=this.checkpoint(),fresh=new Session({});
+  fresh.restore({...candidate.session,status:'idle',count:0,runId:null,endsAt:null,config:{...this.config.swipe},
+   nextBreakAt:this.config.swipe.breakEvery,breakUntil:null,completionReason:''});
+  candidate.session=fresh.checkpoint();
+  // Commit the new counter before adopting it. A failed write leaves the old
+  // run and its pending Like intact; resetting never authorizes another input.
+  try{this.checkpointStore.write(candidate)}catch(error){
+   this.storageError=error.message;this.reason=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'});
+  }
+  this.session.restore(candidate.session);this.reservedCount=0;
+  this.epoch++;this.invalidateResume();this.abort.abort();this.abort=new AbortController();
+  this.openerArmed=false;this.skipOffer=null;this.selectedPhoto=null;this.selectedPrompt=null;this.reviewContext=null;this.heldPromptRefresh=null;
+  this.reason=this.lastAction?'Counter reset. The earlier Like is still unconfirmed and will not be repeated.':'Counter reset. Start a new session when ready.';
+  return this.snapshot();
  }
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,...(this.rejectedPhoto?{rejectedPhoto:this.rejectedPhoto}:{}),recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
  persist(){if(this.loaded&&this.checkpointStore){try{this.checkpointStore.write(this.checkpoint())}catch(error){this.storageError=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'})}}}
@@ -1493,6 +1525,10 @@ class MobileController{
  async request(action,data={}){
   if(action==='status'){await this.load();return this.snapshot()}
   if(action==='watch')return this.watch();
+  if(action==='resetCount'){
+   this.assertResetCount(data);
+   return this.enqueue(t=>this.resetCount(data,t));
+  }
   if(action==='pause'||action==='stop'){
    const stop=action==='stop',reason=stop?'Stopped.':'Paused.';
    // Abort pending work immediately. The first restore also applies this intent
