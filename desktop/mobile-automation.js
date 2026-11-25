@@ -37,7 +37,7 @@
       <p class="ma-hint">Background operation does not prevent computer sleep. Resume keeps your count and any end time.</p></details>
       <div class="ma-actions">${button('save', 'Save settings')}${button('start', 'Start session', true)}${button('resume', 'Resume session')}${button('pause', 'Pause')}${button('stop', 'Stop')}${button('reset-count', 'Reset counter')}</div><p data-mobile="session" class="ma-session" role="status" aria-live="polite"></p>
       <div data-mobile="reset-review" class="ma-held-card" role="group" aria-labelledby="ma-reset-title" aria-describedby="ma-reset-effect" hidden>
-        <strong data-mobile="reset-title" id="ma-reset-title"></strong><p id="ma-reset-effect">Your saved session limits stay the same. This resets the counter without starting a session. Any unconfirmed Like stays protected, and Hinge restrictions still apply.</p>
+        <strong data-mobile="reset-title" id="ma-reset-title"></strong><p id="ma-reset-effect">Your saved session limits stay the same. This resets the counter without starting a session. Any unconfirmed action stays protected, and account restrictions still apply.</p>
         <div class="ma-actions">${button('cancel-reset', 'Cancel')}${button('confirm-reset', 'Reset to 0')}</div>
       </div><p data-mobile="reset-notice" class="ma-reason" role="status" tabindex="-1"></p>
       <div data-mobile="held-card" class="ma-held-card" hidden>
@@ -118,14 +118,14 @@
       finally { if (token === generation) { pending = Math.max(0, pending - 1); render(); } }
     }
     const time = value => value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-    const resetKey = candidate => JSON.stringify([candidate.expectedRunId, candidate.expectedCount, candidate.expectedResumeEpoch]);
+    const resetKey = candidate => JSON.stringify([candidate.platform, candidate.expectedRunId, candidate.expectedCount, candidate.expectedResumeEpoch]);
     function currentResetCandidate() {
       const session = state.session;
-      if (!connected || !streamConnected || !resetSnapshotFresh || current !== 'hinge' || state.canResetCount !== true ||
+      if (!connected || !streamConnected || !resetSnapshotFresh || !['hinge', 'bumble'].includes(current) || state.canResetCount !== true ||
           pending || state.busy || !['paused', 'error', 'complete', 'idle'].includes(session?.status) ||
           typeof session.runId !== 'string' || !session.runId.trim() || !Number.isSafeInteger(session.count) || session.count <= 0 ||
           !Number.isSafeInteger(state.resumeEpoch) || state.resumeEpoch < 0) return null;
-      const candidate = { expectedRunId: session.runId, expectedCount: session.count, expectedResumeEpoch: state.resumeEpoch, status: session.status, phase: session.phase };
+      const candidate = { platform: current, expectedRunId: session.runId, expectedCount: session.count, expectedResumeEpoch: state.resumeEpoch, status: session.status, phase: session.phase };
       return submittedResets.has(resetKey(candidate)) ? null : candidate;
     }
     function sameReviewedReset(candidate) {
@@ -141,12 +141,12 @@
     function renderReset() {
       const candidate = currentResetCandidate();
       if (reviewedReset && !sameReviewedReset(candidate)) closeReset('The session changed. Review its current count before resetting.');
-      el('reset-count').hidden = current !== 'hinge';
+      el('reset-count').hidden = !['hinge', 'bumble'].includes(current);
       el('reset-count').disabled = !candidate || Boolean(reviewedReset);
       el('reset-review').hidden = !reviewedReset;
       el('cancel-reset').disabled = !reviewedReset;
       el('confirm-reset').disabled = !reviewedReset || !candidate;
-      el('reset-title').textContent = reviewedReset ? `Reset Hinge’s counter from ${reviewedReset.expectedCount} to 0?` : '';
+      el('reset-title').textContent = reviewedReset ? `Reset ${title()}’s counter from ${reviewedReset.expectedCount} to 0?` : '';
     }
     function forgetReset() {
       resetSnapshotFresh = false;
@@ -216,7 +216,7 @@
       el('photo').textContent = s ? state.selectedPrompt ? 'Selected visible text prompt: ready' : photo ? `Selected visible photo: ${photo.label || 'ready'}${photo.index !== undefined ? ` (position ${photo.index + 1})` : ''}` : `${s.photos?.length || 0} visible photo(s). Review selects a visible photo.` : '';
       el('reason').textContent = error || session.error || state.reason || (active && s?.kind === 'empty' ? 'Waiting for new profiles. The session will check again automatically.' : s?.reason) || '';
       const limit = session.limit === undefined || session.status === 'idle' ? field('maxSwipes').value : session.limit;
-      const actionLabel = state.hasPendingAction && (['complete', 'error'].includes(session.status) || (current === 'hinge' && ['idle', 'paused'].includes(session.status)))
+      const actionLabel = state.hasPendingAction && ['complete', 'error', 'idle', 'paused'].includes(session.status)
         ? 'recorded profile actions · Last action unconfirmed'
         : 'issued profile actions';
       const progress = `${session.count || 0}${limit ? ` / ${limit}` : ''} ${actionLabel}`;
@@ -281,7 +281,7 @@
         run(async token => {
           try {
             const result = await call('resetCount', { expectedRunId, expectedCount, expectedResumeEpoch }, token);
-            if (token === generation) el('reset-notice').textContent = result?.session?.status === 'idle' && result.session.count === 0 ? 'Hinge’s counter is now 0. The session has not started.' : '';
+            if (token === generation) el('reset-notice').textContent = result?.session?.status === 'idle' && result.session.count === 0 ? `${title()}’s counter is now 0. The session has not started.` : '';
           } catch (error) { if (token === generation) el('reset-notice').textContent = ''; throw error; }
         });
         return;

@@ -9,23 +9,24 @@ const Session=require('../shared/session.js');
 const turnLimit=()=>require('../desktop/mobile-screen.cjs').readScreen(require('./fixtures/hinge-your-turn-limit.cjs').yourTurnLimit(),{foreground:'co.hinge.app'});
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
 
-async function fixture(t){
+async function fixture(t,platform='hinge',{count=7,pending='like'}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mobile-reset-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
- const store=new Checkpoint(path.join(dir,'hinge.json'));
+ const store=new Checkpoint(path.join(dir,platform+'.json'));
  const config=Config.normalize({mode:'like',swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1}});
  const session=new Session({});session.config=config.swipe;
- const saved={version:1,platform:'hinge',session:{...session.checkpoint(),status:'paused',phase:'paused',runId:'previous-run',count:7,nextBreakAt:25,breakUntil:1234},config,
-  binding:{serial:'emulator-1',avd:'hinge-phone'},pendingAction:{kind:'like',identity:'old-card',name:'Previous',runId:'previous-run',sessionEndsAt:null},
+ const saved={version:1,platform,session:{...session.checkpoint(),status:'paused',phase:'paused',runId:'previous-run',count,nextBreakAt:25,breakUntil:1234},config,
+  binding:{serial:'emulator-1',avd:platform+'-phone'},pendingAction:pending?{kind:pending,identity:'old-card',name:'Previous',runId:'previous-run',sessionEndsAt:null}:null,
   recoveryAttempts:1,nextFeedRefreshAt:10000,nextFeedRetryAt:20000,nextHomeLaunchAt:30000,loadingFeedRelaunched:true};
  store.write(saved);
+ const screen=()=>platform==='hinge'?turnLimit():{platform:'bumble',kind:'profile',name:'Previous',identity:'old-card',screenKey:'previous',photos:[],controls:{},context:{name:'Previous'},reason:''};
  const calls=[],android={serial:'emulator-1',inputEpoch:0,
-  hierarchy:async()=>{calls.push('read');return {xml:turnLimit(),foreground:'co.hinge.app'}},
+  hierarchy:async()=>{calls.push('read');return {xml:screen(),foreground:platform==='hinge'?'co.hinge.app':'com.bumble.app'}},
   deviceIdentity:async()=>{calls.push('binding');return saved.binding},
   cancelInput:()=>assert.fail('Reset must not issue Android commands'),
   tapControl:()=>assert.fail('Reset must not dispatch a Like'),scrollProfile:()=>assert.fail('Reset must not navigate')};
- const service={request:async action=>{calls.push(action);if(action==='load')return {sidebarConsentGiven:true,mobileConfig:{hinge:config}};if(action==='record')return {};throw Error('Unexpected service action '+action)}};
- const make=()=>new Controller({android,service,platform:'hinge',checkpointStore:store,readScreen:xml=>xml});
- const c=make();await c.request('status');c.screen=turnLimit();calls.length=0;
+ const service={request:async action=>{calls.push(action);if(action==='load')return {sidebarConsentGiven:true,mobileConfig:{[platform]:config}};if(action==='record')return {};throw Error('Unexpected service action '+action)}};
+ const make=()=>new Controller({android,service,platform,checkpointStore:store,readScreen:xml=>xml,wait:()=>new Promise(()=>{})});
+ const c=make();await c.request('status');c.screen=screen();calls.length=0;
  const observed=()=>{const state=c.snapshot();return {expectedRunId:state.session.runId,expectedCount:state.session.count,expectedResumeEpoch:state.resumeEpoch}};
  return {c,store,android,service,calls,make,observed};
 }
@@ -54,8 +55,30 @@ test('Hinge resetCount durably resets the counter without releasing its pending 
  await assert.rejects(x.c.request('resetCount',expected),/reset|observed|changed/i);
 });
 
-test('Hinge resetCount writes the candidate before memory adoption and keeps the old run on write failure',async t=>{
- const x=await fixture(t),previous=x.store.read(),guard=x.c.lastAction,screen=x.c.screen;
+test('Bumble resetCount durably clears its counter while preserving any unresolved Like or Skip',async t=>{
+ for(const pending of [null,'like','pass']){
+  const x=await fixture(t,'bumble',{count:450,pending}),previous=x.store.read(),guard=x.c.lastAction,screen=x.c.screen;
+  const expected=x.observed();assert.equal(x.c.snapshot().canResetCount,true);
+  const reset=await x.c.request('resetCount',expected),saved=x.store.read();
+  assert.equal(reset.platform,'bumble');assert.equal(reset.session.status,'idle');assert.equal(reset.session.count,0);assert.equal(reset.session.limit,1000);
+  assert.equal(reset.session.runId,null);assert.equal(reset.session.endsAt,null);assert.equal(reset.session.nextActionAt,null);
+  assert.equal(reset.hasPendingAction,Boolean(pending));assert.equal(x.c.lastAction,guard);assert.equal(x.c.screen,screen);assert.equal(x.c.reservedCount,0);
+  if(pending)assert.match(reset.reason,/earlier action.*unconfirmed/);
+  assert.equal(saved.session.status,'idle');assert.equal(saved.session.count,0);assert.equal(saved.session.config.likeRatio,1);assert.equal(saved.session.config.maxSwipes,1000);
+  assert.equal(saved.session.config.sessionMinutes,null);assert.ok(reset.resumeEpoch>expected.expectedResumeEpoch);
+  const {session:oldSession,...oldState}=previous,{session:newSession,...newState}=saved;
+  assert.deepEqual(newState,oldState);assert.equal(oldSession.count,450);assert.equal(newSession.runId,null);
+  assert.deepEqual(x.calls,[]);
+  const reopened=x.make(),restored=await reopened.request('status');
+  assert.equal(restored.session.status,'idle');assert.equal(restored.session.count,0);assert.equal(restored.session.limit,1000);
+  assert.equal(restored.session.endsAt,null);assert.equal(restored.hasPendingAction,Boolean(pending));assert.deepEqual(reopened.lastAction,guard);
+  await assert.rejects(x.c.request('resetCount',expected),/reset|observed|changed/i);
+ }
+});
+
+for(const platform of ['hinge','bumble']){
+test(`${platform} resetCount writes the candidate before memory adoption and keeps the old run on write failure`,async t=>{
+ const x=await fixture(t,platform),previous=x.store.read(),guard=x.c.lastAction,screen=x.c.screen;
  const write=x.store.write.bind(x.store);let candidates=0;
  x.store.write=value=>{
   if(value.session.status==='idle'&&value.session.count===0){
@@ -71,8 +94,8 @@ test('Hinge resetCount writes the candidate before memory adoption and keeps the
  assert.match(x.c.snapshot().reason,/disk unavailable/);assert.deepEqual(x.calls,[]);
 });
 
-test('Hinge resetCount rejects missing, malformed, and stale observations without changing progress',async t=>{
- const x=await fixture(t),before=x.store.read(),correct=x.observed();
+test(`${platform} resetCount rejects missing, malformed, and stale observations without changing progress`,async t=>{
+ const x=await fixture(t,platform),before=x.store.read(),correct=x.observed();
  for(const data of [{},null,{...correct,expectedRunId:null},{...correct,expectedRunId:'other'},
   {...correct,expectedCount:6},{...correct,expectedCount:7.5},{...correct,expectedResumeEpoch:-1},
   {...correct,expectedResumeEpoch:correct.expectedResumeEpoch+1}]){
@@ -82,9 +105,9 @@ test('Hinge resetCount rejects missing, malformed, and stale observations withou
  assert.deepEqual(x.calls,[]);
 });
 
-test('Hinge resetCount is unavailable for active, unsettled, unbound, and protected review states',async t=>{
- const x=await fixture(t);
- const cases=[['platform','bumble'],['loaded',false],['checkpointStore',null],['storageError','Old storage failure'],
+test(`${platform} resetCount is unavailable for unknown platforms, active, unsettled, unbound, and protected review states`,async t=>{
+ const x=await fixture(t,platform);
+ const cases=[['platform','unknown'],['loaded',false],['checkpointStore',null],['storageError','Old storage failure'],
   ['binding',null],['binding',{serial:'another-phone'}],['rejectedPhoto',{attempted:true}],['draft',{text:'Unsent'}],['reservedCount',8],['busy',true]];
  for(const [key,value] of cases){
   const previous=x.c[key],data=x.observed();x.c[key]=value;
@@ -99,9 +122,9 @@ test('Hinge resetCount is unavailable for active, unsettled, unbound, and protec
  assert.equal(x.store.read().session.count,7);assert.deepEqual(x.calls,[]);
 });
 
-test('Hinge resetCount rechecks queued observations after config, count, and device changes',async t=>{
+test(`${platform} resetCount rechecks queued observations after config, count, and device changes`,async t=>{
  for(const change of ['config','count','device']){
-  const x=await fixture(t),gate=deferred();x.c.queue=gate.promise;
+  const x=await fixture(t,platform),gate=deferred();x.c.queue=gate.promise;
   const reset=x.c.request('resetCount',x.observed());
   if(change==='config')x.c.invalidateResume();
   if(change==='count')x.c.session.count=x.c.reservedCount=8;
@@ -112,8 +135,8 @@ test('Hinge resetCount rechecks queued observations after config, count, and dev
  }
 });
 
-test('Hinge resetCount cancels Start and Resume queued behind the old observed run',async t=>{
- const x=await fixture(t),expected=x.observed();
+test(`${platform} resetCount cancels Start and Resume queued behind the old observed run`,async t=>{
+ const x=await fixture(t,platform),expected=x.observed();
  const reset=x.c.request('resetCount',expected);
  const start=x.c.request('start');
  const resume=x.c.request('start',{resumeRunId:expected.expectedRunId,expectedResumeEpoch:expected.expectedResumeEpoch});
@@ -127,8 +150,8 @@ test('Hinge resetCount cancels Start and Resume queued behind the old observed r
  assert.deepEqual(x.calls,[]);
 });
 
-test('Hinge resetCount rejects an old worker commit after its queue has drained',async t=>{
- const x=await fixture(t),released=deferred(),entered=deferred();let commit;
+test(`${platform} resetCount rejects an old worker commit after its queue has drained`,async t=>{
+ const x=await fixture(t,platform),released=deferred(),entered=deferred();let commit;
  x.c.session.wait=async()=>{};x.c.session.act=async(_config,_valid,commitAction)=>{commit=commitAction;entered.resolve();await released.promise};
  x.c.session.controller=new AbortController();x.c.session.status='running';
  const oldRun=x.c.session.run(x.c.session.epoch);await entered.promise;
@@ -138,6 +161,7 @@ test('Hinge resetCount rejects an old worker commit after its queue has drained'
  assert.equal(x.c.session.count,0);assert.equal(x.c.session.runId,null);assert.equal(x.store.read().session.count,0);
  assert.equal(x.c.lastAction.identity,'old-card');assert.deepEqual(x.calls,[]);
 });
+}
 
 test('Hinge resetCount preserves an optional time limit without starting its deadline until a new session starts',async t=>{
  const x=await fixture(t),previous=x.store.read();

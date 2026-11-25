@@ -417,28 +417,31 @@ test('one-card review stays unavailable if the event stream dropped before mobil
   assert.equal(f.el('review-skip').disabled, false);
 });
 
-function resettableHinge(patch = {}) {
+function resettableMobile(platform = 'hinge', patch = {}) {
+  const hinge = platform === 'hinge';
   return snapshot({
+    platform,
     canResetCount: true, resumeEpoch: 14, hasPendingAction: true,
-    session: { status: 'paused', phase: 'paused', count: 1, limit: 1000, runId: 'hinge-old-run', endsAt: null, nextActionAt: null, error: '' },
-    screen: { kind: 'accountLimit', reason: 'Reply to waiting matches in Hinge before continuing.', controls: {}, context: {} },
+    session: { status: 'paused', phase: 'paused', count: hinge ? 1 : 450, limit: 1000, runId: platform + '-old-run', endsAt: null, nextActionAt: null, error: '' },
+    screen: hinge ? { kind: 'accountLimit', reason: 'Reply to waiting matches in Hinge before continuing.', controls: {}, context: {} } : snapshot().screen,
     config: { swipe: { maxSwipes: 1000, sessionMinutes: null, likeRatio: 1, allowBackground: true } },
-    reason: 'Reply to waiting matches in Hinge before continuing. The previous Like remains unconfirmed.',
+    reason: hinge ? 'Reply to waiting matches in Hinge before continuing. The previous Like remains unconfirmed.' : 'The previous action remains unconfirmed.',
     ...patch
   });
 }
 
-test('Hinge counter reset requires confirmation and sends only the reviewed reset request once', async t => {
+for (const platform of ['hinge', 'bumble']) {
+test(`${platform} counter reset requires confirmation and sends only the reviewed reset request once`, async t => {
   let preparations = 0;
-  const f = await fixture(t, { web: true, prepareStart: async () => { preparations++; } });
-  const s = resettableHinge(), gate = deferred();
+  const f = await fixture(t, { platform, web: true, prepareStart: async () => { preparations++; } });
+  const s = resettableMobile(platform), gate = deferred();
   f.ui.handleState(s);
-  assert.equal(f.el('reset-count')?.disabled, false, 'a saved nonrunning Hinge run can be reset');
+  assert.equal(f.el('reset-count')?.disabled, false, 'a saved nonrunning mobile run can be reset');
   f.input('maxSwipes', '25');
   f.input('sessionMinutes', '');
   await f.click('reset-count');
   assert.equal(f.el('reset-review').hidden, false);
-  assert.match(f.el('reset-review').textContent, /1.*0/);
+  assert.match(f.el('reset-title').textContent, new RegExp(`${platform === 'hinge' ? 'Hinge' : 'Bumble'}.*${s.session.count}.*0`));
   assert.match(f.el('reset-review').textContent, /saved.*limits/i);
   assert.match(f.el('reset-review').textContent, /unconfirmed/i);
   assert.equal(f.w.document.activeElement, f.el('cancel-reset'));
@@ -450,22 +453,23 @@ test('Hinge counter reset requires confirmation and sends only the reviewed rese
   f.respond(() => gate.promise);
   f.el('confirm-reset').click(); f.el('confirm-reset').click();
   assert.deepEqual(f.calls.map(c => c.action), ['status', 'resetCount']);
-  assert.deepEqual({ ...f.calls.at(-1).data }, { expectedRunId: 'hinge-old-run', expectedCount: 1, expectedResumeEpoch: 14 });
+  assert.deepEqual({ ...f.calls.at(-1).data }, { expectedRunId: platform + '-old-run', expectedCount: platform === 'hinge' ? 1 : 450, expectedResumeEpoch: 14 });
   assert.equal(preparations, 0);
-  gate.resolve(s); await tick();
+  const reset = { ...s, canResetCount: false, resumeEpoch: 16, session: { ...s.session, status: 'idle', phase: 'idle', count: 0, runId: null } };
+  gate.resolve(reset); await tick();
+  assert.match(f.el('reset-notice').textContent, new RegExp(`${platform === 'hinge' ? 'Hinge' : 'Bumble'}.*0.*not started`));
   f.ui.handleState(s); await f.click('reset-count'); await f.click('confirm-reset');
   assert.equal(f.calls.length, 2, 'a stale snapshot cannot re-arm an already submitted reset');
-  const reset = { ...s, canResetCount: false, resumeEpoch: 16, session: { ...s.session, status: 'idle', phase: 'idle', count: 0, runId: null } };
   f.ui.handleState(reset);
   assert.match(f.el('session').textContent, /idle.*0/);
   assert.match(f.el('session').textContent, /action unconfirmed/i);
-  assert.match(f.el('reason').textContent, /Reply to waiting matches/);
+  assert.equal(f.el('reason').textContent, s.reason);
   assert.equal(f.field('maxSwipes').value, '25', 'reset does not save or discard local form edits');
   assert.equal(f.field('sessionMinutes').value, '');
 });
 
-test('counter reset is available only for a ready connected nonrunning Hinge run', async t => {
-  const f = await fixture(t), s = resettableHinge();
+test(`${platform} counter reset is available only for a ready connected nonrunning run`, async t => {
+  const f = await fixture(t, { platform }), s = resettableMobile(platform);
   assert.ok(f.el('reset-count'), 'counter reset control exists');
   for (const patch of [
     { canResetCount: false }, { canResetCount: undefined }, { busy: true },
@@ -484,15 +488,15 @@ test('counter reset is available only for a ready connected nonrunning Hinge run
   assert.equal(f.el('reset-count').disabled, true, 'disconnected snapshots cannot become ready on reconnect');
   f.ui.handleState(s);
   assert.equal(f.el('reset-count').disabled, false);
-  f.ui.setPlatform('bumble'); await tick();
-  f.ui.handleState({ ...s, platform: 'bumble' });
+  f.ui.setPlatform('tinder'); await tick();
+  f.ui.handleState({ ...s, platform: 'tinder' });
   assert.equal(f.el('reset-count').hidden, true);
   assert.equal(f.el('reset-count').disabled, true);
   assert.equal(f.calls.some(c => c.action === 'resetCount'), false);
 });
 
-test('changed run state or settings permanently cancels the current reset confirmation', async t => {
-  const f = await fixture(t), s = resettableHinge();
+test(`${platform} changed run state or settings permanently cancels the current reset confirmation`, async t => {
+  const f = await fixture(t, { platform }), s = resettableMobile(platform);
   assert.ok(f.el('reset-count'), 'counter reset control exists');
   const changes = [
     () => f.ui.handleState({ ...s, resumeEpoch: 15 }),
@@ -511,11 +515,11 @@ test('changed run state or settings permanently cancels the current reset confir
   assert.equal(f.calls.some(c => c.action === 'resetCount'), false);
 });
 
-test('reset confirmation closes on device or platform changes, stream drops and leaving the page', async t => {
-  const f = await fixture(t, { web: true }), s = resettableHinge();
+test(`${platform} reset confirmation closes on device or platform changes, stream drops and leaving the page`, async t => {
+  const f = await fixture(t, { platform, web: true }), s = resettableMobile(platform);
   assert.ok(f.el('reset-count'), 'counter reset control exists');
   for (const leave of [
-    () => { f.ui.setPlatform('bumble'); f.ui.setPlatform('hinge'); },
+    () => { f.ui.setPlatform(platform === 'hinge' ? 'bumble' : 'hinge'); f.ui.setPlatform(platform); },
     () => { f.ui.setConnected(false); f.ui.handleState(s); f.ui.setConnected(true); },
     () => f.ui.invalidate(),
     () => f.w.dispatchEvent(new f.w.Event('spicy-mobile-stream-reset')),
@@ -531,8 +535,8 @@ test('reset confirmation closes on device or platform changes, stream drops and 
   assert.equal(f.calls.some(c => c.action === 'resetCount'), false);
 });
 
-test('reset after an event stream interruption requires a fresh connected snapshot and confirmation', async t => {
-  const f = await fixture(t, { web: true }, 'offline'), s = resettableHinge();
+test(`${platform} reset after an event stream interruption requires a fresh connected snapshot and confirmation`, async t => {
+  const f = await fixture(t, { platform, web: true }, 'offline'), s = resettableMobile(platform);
   f.ui.handleState(s);
   assert.equal(f.el('reset-count')?.disabled, true);
   f.events.dispatchEvent(new f.w.Event('open'));
@@ -549,13 +553,13 @@ test('reset after an event stream interruption requires a fresh connected snapsh
   assert.deepEqual(f.calls.map(c => c.action), ['status']);
 });
 
-test('reset failure keeps the original count and requires a new observed revision before another reset', async t => {
-  const f = await fixture(t), s = resettableHinge();
+test(`${platform} reset failure keeps the original count and requires a new observed revision before another reset`, async t => {
+  const f = await fixture(t, { platform }), s = resettableMobile(platform);
   f.ui.handleState(s);
   assert.equal(f.el('reset-count')?.disabled, false);
   f.respond(() => { throw Error('Could not save the reset.'); });
   await f.click('reset-count'); await f.click('confirm-reset');
-  assert.match(f.el('session').textContent, /1 \/ 1000/);
+  assert.match(f.el('session').textContent, new RegExp(`${s.session.count} / 1000`));
   assert.match(f.el('reason').textContent, /Could not save the reset/);
   assert.equal(f.el('reset-review').hidden, true);
   await f.click('reset-count'); await f.click('confirm-reset');
@@ -564,8 +568,10 @@ test('reset failure keeps the original count and requires a new observed revisio
   assert.equal(f.el('reset-count').disabled, false);
 });
 
+}
+
 test('a known Hinge account limit blocks Start and Resume before and after a counter reset', async t => {
-  const f = await fixture(t), s = resettableHinge();
+  const f = await fixture(t), s = resettableMobile();
   for (const status of ['paused', 'idle']) {
     f.ui.handleState({ ...s, session: { ...s.session, status } });
     assert.equal(f.el('start').disabled, true);
@@ -575,4 +581,27 @@ test('a known Hinge account limit blocks Start and Resume before and after a cou
   assert.deepEqual(f.calls.map(c => c.action), ['status']);
   f.ui.handleState({ ...s, screen: snapshot().screen });
   assert.equal(f.el('resume').disabled, false, 'a fresh screen can show the restriction is cleared');
+});
+
+
+test('mobile reset confirmations and submitted observations stay isolated across platforms', async t => {
+  const f = await fixture(t), hinge = resettableMobile();
+  const bumble = { ...hinge, platform: 'bumble', screen: snapshot().screen, reason: '' };
+  f.ui.handleState(hinge); await f.click('reset-count');
+  f.respond(() => bumble); f.ui.setPlatform('bumble'); await tick();
+  f.ui.handleState(bumble);
+  assert.equal(f.el('reset-review').hidden, true);
+  assert.equal(f.el('reset-count').disabled, false);
+  await f.click('confirm-reset');
+  assert.equal(f.calls.some(c => c.action === 'resetCount'), false);
+  await f.click('reset-count'); await f.click('confirm-reset');
+  assert.equal(f.calls.filter(c => c.action === 'resetCount').length, 1);
+  f.respond(() => hinge); f.ui.setPlatform('hinge'); await tick();
+  f.ui.handleState(hinge);
+  assert.equal(f.el('reset-count').disabled, false, 'another app cannot consume Hinge’s observed reset');
+  await f.click('reset-count'); await f.click('confirm-reset');
+  assert.equal(f.calls.filter(c => c.action === 'resetCount').length, 2);
+  f.respond(() => bumble); f.ui.setPlatform('bumble'); await tick();
+  f.ui.handleState(bumble);
+  assert.equal(f.el('reset-count').disabled, true, 'Bumble’s submitted observation still cannot be replayed');
 });

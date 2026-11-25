@@ -90,7 +90,7 @@ class MobileController{
  }
  resetCountReady(){
   const {session,binding}=this;
-  return this.platform==='hinge'&&this.loaded&&typeof this.checkpointStore?.read==='function'&&typeof this.checkpointStore?.write==='function'&&
+  return ['hinge','bumble'].includes(this.platform)&&this.loaded&&typeof this.checkpointStore?.read==='function'&&typeof this.checkpointStore?.write==='function'&&
    !this.storageError&&!this.rejectedPhoto&&!this.draft&&['idle','paused','error','complete'].includes(session.status)&&
    typeof session.runId==='string'&&Boolean(session.runId.trim())&&Number.isSafeInteger(session.count)&&session.count>0&&
    this.reservedCount===session.count&&typeof binding?.serial==='string'&&Boolean(binding.serial)&&binding.serial===this.android.serial;
@@ -110,14 +110,14 @@ class MobileController{
    nextBreakAt:this.config.swipe.breakEvery,breakUntil:null,completionReason:''});
   candidate.session=fresh.checkpoint();
   // Commit the new counter before adopting it. A failed write leaves the old
-  // run and its pending Like intact; resetting never authorizes another input.
+  // run and its pending action intact; resetting never authorizes another input.
   try{this.checkpointStore.write(candidate)}catch(error){
    this.storageError=error.message;this.reason=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'});
   }
   this.session.restore(candidate.session);this.reservedCount=0;
   this.epoch++;this.invalidateResume();this.abort.abort();this.abort=new AbortController();
   this.openerArmed=false;this.skipOffer=null;this.selectedPhoto=null;this.selectedPrompt=null;this.reviewContext=null;this.heldPromptRefresh=null;
-  this.reason=this.lastAction?'Counter reset. The earlier Like is still unconfirmed and will not be repeated.':'Counter reset. Start a new session when ready.';
+  this.reason=this.lastAction?'Counter reset. The earlier action is still unconfirmed and will not be repeated.':'Counter reset. Start a new session when ready.';
   return this.snapshot();
  }
  checkpoint(){const session=this.session.checkpoint();session.count=Math.max(session.count,this.reservedCount);return {version:1,platform:this.platform,session,config:this.config,binding:this.binding,pendingAction:this.lastAction,...(this.rejectedPhoto?{rejectedPhoto:this.rejectedPhoto}:{}),recoveryAttempts:this.recoveryAttempts,nextFeedRefreshAt:this.nextFeedRefreshAt||0,nextFeedRetryAt:this.nextFeedRetryAt||0,nextHomeLaunchAt:this.nextHomeLaunchAt,loadingFeedRelaunched:this.loadingFeedRelaunched}}
