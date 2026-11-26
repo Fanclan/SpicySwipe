@@ -4,6 +4,89 @@ const premiumBenefitOrder=new Map([
  ['Don’t forget to use your 2 Spotlights',1],['You have 2 new Spotlights to use',1],
  ['Don’t forget to use your 2 Compliments',2],['You have 2 new Compliments to use',2]
 ]);
+// This optional native promotion has two separate choices. Only the explicitly
+// labelled lower Dismiss choice is exposed; verification and sheet chrome are not.
+function idVerifyPromoDismiss(nodes,visible,{bounds,fullyVisible,label,control}){
+ if(nodes.length!==visible.length)return null;
+ const children=p=>visible.filter(n=>n.parent===p),known=new Set(),labels=new Set();
+ const accept=(n,type,count)=>{
+  if(n?.a.class!==type||children(n).length!==count)return false;
+  known.add(n);return true;
+ };
+ const description=(n,value)=>{
+  if(!accept(n,'android.view.View',0)||n.a['content-desc']!==value||n.a.text)return false;
+  labels.add(n);return true;
+ };
+ const text=(n,value)=>{
+  if(!accept(n,'android.widget.TextView',0)||n.a.text!==value||n.a['content-desc'])return false;
+  labels.add(n);return true;
+ };
+ let root=visible[0],overlay=root,contentRoot;
+ const ancestors=[];
+ for(const [index,[type,id]]of [['android.widget.FrameLayout',''],['android.widget.FrameLayout',''],
+  ['android.widget.FrameLayout','android:id/content'],['android.view.ViewGroup',''],
+  ['android.view.View',''],['android.view.View',''],['android.view.View','']].entries()){
+  if(!accept(overlay,type,index===6?2:1)||(overlay.a['resource-id']||'')!==id)return null;
+  ancestors.push(overlay);if(id)contentRoot=overlay;if(index!==6)overlay=children(overlay)[0];
+ }
+ if(root.parent?.tag!=='hierarchy')return null;
+ const [backdrop,outer]=children(overlay),sheet=children(outer)[0];
+ if(!description(backdrop,'Close sheet')||!accept(outer,'android.view.View',1)||!accept(sheet,'android.view.View',3))return null;
+ const [nav,scroll,actions]=children(sheet),[navLabel,close]=children(nav),[closeLabel,closeDecoration,closeButton]=children(close);
+ if(!accept(nav,'android.view.View',2)||!description(navLabel,'Navigation Bar')||!accept(close,'android.view.View',3)||
+    !description(closeLabel,'Close')||!accept(closeDecoration,'android.view.View',1)||
+    !accept(children(closeDecoration)[0],'android.view.View',0)||!accept(closeButton,'android.widget.Button',0)||
+    !accept(scroll,'android.widget.ScrollView',7)||!accept(actions,'android.view.View',2))return null;
+ const [badge,heading,subtitle,icon1,benefit1,icon2,benefit2]=children(scroll);
+ if(![badge,icon1,icon2].every(n=>accept(n,'android.view.View',0))||
+    !text(heading,'Want more matches and more eyes on you?')||!text(subtitle,'It’s time to ID Verify!')||
+    !text(benefit1,'ID Verified members get up to 30% more matches and are seen by more people')||
+    !text(benefit2,'It helps to show you’re real and build trust before the conversation even starts'))return null;
+ const [verify,dismiss]=children(actions),choiceLabels=[];
+ for(const [choice,caption]of [[verify,'Verify now'],[dismiss,'Dismiss']]){
+  const [name,background,glyph,button]=children(choice);
+  if(!accept(choice,'android.view.View',4)||!description(name,caption)||
+     !accept(background,'android.view.View',0)||!accept(glyph,'android.view.View',0)||!accept(button,'android.widget.Button',0)||
+     [name,background,button].some(n=>n.a.bounds!==choice.a.bounds))return null;
+  choiceLabels.push(name);
+ }
+ const clicks=new Set([backdrop,close,verify,dismiss]),focus=new Set([close,verify,dismiss]);
+ for(const n of visible){
+  if(!known.has(n)||n.a.package!=='com.bumble.app'||n.a.enabled!=='true'||!n.enabled||!fullyVisible(n)||
+     (label(n)&&!labels.has(n))||n.a.clickable!==(clicks.has(n)?'true':'false')||
+     n.a.focusable!==(focus.has(n)?'true':'false')||n.a.scrollable!=='false'||n.a.hint||
+     (n.a['resource-id']||'')!==(n===contentRoot?'android:id/content':'')||
+     ['focused','selected','checked','checkable','password','long-clickable','context-clickable','editable'].some(k=>n.a[k]==='true'))return null;
+ }
+ const b=bounds,same=(a,c)=>a.a.bounds===c.a.bounds,square=a=>a.width===a.height;
+ const middle=(a,c)=>Math.abs(a.x+a.width/2-c.x-c.width/2)<=1;
+ const display=b(root),frame=b(sheet),shade=b(backdrop),bar=b(nav),x=b(close),closeIcon=b(closeLabel),closeGlyph=b(children(closeDecoration)[0]);
+ const viewport=b(scroll),area=b(actions),first=b(verify),last=b(dismiss),art=b(badge),title=b(heading),sub=b(subtitle);
+ if(ancestors.some(n=>!same(n,root))||!same(outer,sheet)||frame.x!==display.x||frame.width!==display.width||
+    frame.y<=display.y||frame.y+frame.height!==display.y+display.height||shade.x!==display.x||shade.y!==display.y||
+    shade.width!==display.width||shade.y+shade.height!==frame.y||!same(nav,navLabel)||!same(close,closeDecoration)||
+    !same(closeLabel,closeButton)||!square(x)||!square(closeIcon)||!square(closeGlyph)||!middle(closeIcon,x)||!middle(closeGlyph,x)||
+    closeIcon.y+closeIcon.height/2!==x.y+x.height/2||closeGlyph.y+closeGlyph.height/2!==x.y+x.height/2||
+    closeIcon.width>=x.width||closeGlyph.width>=closeIcon.width||x.x+x.width!==bar.x+bar.width||
+    viewport.x!==frame.x||viewport.width!==frame.width||viewport.y<bar.y+bar.height||viewport.y+viewport.height>=area.y||
+    !square(art)||art.y!==viewport.y||art.y+art.height>=title.y||title.y+title.height>=sub.y||
+    area.x<=frame.x||area.x+area.width>=frame.x+frame.width||!middle(area,frame)||
+    first.x!==area.x||last.x!==area.x||first.width!==area.width||last.width!==area.width||first.height!==last.height||
+    first.y!==area.y||first.y+first.height>=last.y||last.y+last.height!==area.y+area.height||area.y+area.height>=frame.y+frame.height||
+    art.x!==area.x||title.x!==area.x||sub.x!==area.x||title.x+title.width!==area.x+area.width)return null;
+ for(const choice of [verify,dismiss]){
+  const glyph=b(children(choice)[2]),box=b(choice);
+  if(!middle(glyph,box)||glyph.y!==box.y||glyph.height!==box.height||glyph.width>=box.width)return null;
+ }
+ let bottom=sub.y+sub.height;
+ for(const [icon,copy]of [[icon1,benefit1],[icon2,benefit2]]){
+  const mark=b(icon),detail=b(copy);
+  if(!square(mark)||detail.y<bottom||mark.y<detail.y||mark.y+mark.height>detail.y+detail.height||
+     mark.x<area.x||mark.x+mark.width>=detail.x||detail.x+detail.width!==area.x+area.width)return null;
+  bottom=detail.y+detail.height;
+ }
+ return control(choiceLabels[1],true);
+}
 // Two self-contained Compose reminders. Their CTA is never an action target;
 // accept only the complete native sheet and the isolated top-right Close.
 function composeReminderDismiss(nodes,visible,kind,{bounds,fullyVisible,label,control}){
@@ -204,6 +287,12 @@ module.exports=function readBumble(xml,options,h){
  result.screenKey=hash(nodes.map(n=>n.a));
  if(!nodes.length||nodes.some(n=>n.a.package&&n.a.package!=='com.bumble.app'))return block('Another app or system overlay is visible. Return to Bumble.');
  const visible=nodes.filter(n=>n.visible),id=name=>visible.filter(n=>n.a['resource-id']==='com.bumble.app:id/'+name),find=text=>visible.filter(n=>label(n)===text);
+ const idVerifyPromo=['Want more matches and more eyes on you?','It’s time to ID Verify!'].some(s=>find(s).length);
+ if(idVerifyPromo){
+  const dismiss=idVerifyPromoDismiss(nodes,visible,h);
+  if(!dismiss)return block('The optional Bumble ID Verify promotion or its Dismiss control could not be verified.');
+  result.kind='promoOffer';result.controls.dismiss=dismiss;return result;
+ }
  const matchesReminder=['You’ve got matches waiting','Someone’s popular! Why not see where your matches lead?','See matches'].some(s=>find(s).length);
  const premiumReminder=['You’re shining with Premium+','Don’t forget to use your 2 Spotlights','Don’t forget to use your 2 Compliments','Get connecting'].some(s=>find(s).length);
  if(matchesReminder||premiumReminder){

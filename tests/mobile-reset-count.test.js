@@ -8,6 +8,10 @@ const Config=require('../desktop/mobile-config.cjs');
 const Session=require('../shared/session.js');
 const turnLimit=()=>require('../desktop/mobile-screen.cjs').readScreen(require('./fixtures/hinge-your-turn-limit.cjs').yourTurnLimit(),{foreground:'co.hinge.app'});
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
+const rejectedReview=()=>({nameDigest:'a'.repeat(64),visual:'123456789abcdef0',entryVisual:'123456789abcdef0',sourceIdentity:'rejected-source',entryIdentity:'rejected-source',
+ heldIdentity:'held-photo',heldRevision:'old-revision',attempted:true,runId:'previous-run',endsAt:null,count:7,serial:'emulator-1',avd:'hinge-phone',
+ promptScan:'spent',promptMovesRemaining:0,promptRecovery:{chromeKey:'b'.repeat(64),bound:true,opened:false},
+ backtrack:{chromeKey:'b'.repeat(64),originRevision:'older-revision',state:'spent',remaining:1}});
 
 async function fixture(t,platform='hinge',{count=7,pending='like'}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mobile-reset-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -76,6 +80,30 @@ test('Bumble resetCount durably clears its counter while preserving any unresolv
  }
 });
 
+test('an explicit fresh reset retires only the unsent review hold and preserves any pending final action',async t=>{
+ for(const pending of [null,'like']){
+  const x=await fixture(t,'hinge',{pending});x.c.rejectedPhoto=rejectedReview();x.c.persist();
+  const before=x.store.read(),guard=x.c.lastAction;assert.equal(x.c.snapshot().canResetCount,true);
+  const reset=await x.c.request('resetCount',x.observed()),saved=x.store.read();
+  assert.equal(reset.session.status,'idle');assert.equal(reset.session.count,0);assert.equal(reset.session.runId,null);
+  assert.equal(x.c.rejectedPhoto,null);assert.equal(Object.hasOwn(saved,'rejectedPhoto'),false);
+  assert.equal(x.c.lastAction,guard);assert.deepEqual(saved.pendingAction,before.pendingAction);
+  const {session:oldSession,rejectedPhoto:retired,...oldState}=before,{session:newSession,...newState}=saved;
+  assert.deepEqual(newState,oldState);assert.equal(oldSession.count,7);assert.equal(newSession.count,0);assert.equal(retired.promptRecovery.opened,false);
+  const reopened=x.make();await reopened.request('status');assert.equal(reopened.rejectedPhoto,null);assert.deepEqual(reopened.lastAction,guard);
+  assert.deepEqual(x.calls,['load']);
+ }
+});
+
+test('a failed fresh-reset write retains the unsent review hold and every charged allowance',async t=>{
+ const x=await fixture(t);x.c.rejectedPhoto=rejectedReview();x.c.persist();const before=x.store.read();
+ const write=x.store.write.bind(x.store);
+ x.store.write=value=>{if(value.session.status==='idle')throw Error('Reset checkpoint disk unavailable');write(value)};
+ await assert.rejects(x.c.request('resetCount',x.observed()),/disk unavailable/);
+ assert.deepEqual(x.store.read(),before);assert.deepEqual(x.c.rejectedPhoto,before.rejectedPhoto);
+ assert.equal(x.c.session.count,7);assert.deepEqual(x.c.lastAction,before.pendingAction);assert.deepEqual(x.calls,[]);
+});
+
 for(const platform of ['hinge','bumble']){
 test(`${platform} resetCount writes the candidate before memory adoption and keeps the old run on write failure`,async t=>{
  const x=await fixture(t,platform),previous=x.store.read(),guard=x.c.lastAction,screen=x.c.screen;
@@ -108,7 +136,7 @@ test(`${platform} resetCount rejects missing, malformed, and stale observations 
 test(`${platform} resetCount is unavailable for unknown platforms, active, unsettled, unbound, and protected review states`,async t=>{
  const x=await fixture(t,platform);
  const cases=[['platform','unknown'],['loaded',false],['checkpointStore',null],['storageError','Old storage failure'],
-  ['binding',null],['binding',{serial:'another-phone'}],['rejectedPhoto',{attempted:true}],['draft',{text:'Unsent'}],['reservedCount',8],['busy',true]];
+  ['binding',null],['binding',{serial:'another-phone'}],['draft',{text:'Unsent'}],['reservedCount',8],['busy',true]];
  for(const [key,value] of cases){
   const previous=x.c[key],data=x.observed();x.c[key]=value;
   assert.equal(x.c.snapshot().canResetCount,false,key);

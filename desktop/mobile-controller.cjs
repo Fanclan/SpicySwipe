@@ -91,7 +91,7 @@ class MobileController{
  resetCountReady(){
   const {session,binding}=this;
   return ['hinge','bumble'].includes(this.platform)&&this.loaded&&typeof this.checkpointStore?.read==='function'&&typeof this.checkpointStore?.write==='function'&&
-   !this.storageError&&!this.rejectedPhoto&&!this.draft&&['idle','paused','error','complete'].includes(session.status)&&
+   !this.storageError&&!this.draft&&['idle','paused','error','complete'].includes(session.status)&&
    typeof session.runId==='string'&&Boolean(session.runId.trim())&&Number.isSafeInteger(session.count)&&session.count>0&&
    this.reservedCount===session.count&&typeof binding?.serial==='string'&&Boolean(binding.serial)&&binding.serial===this.android.serial;
  }
@@ -109,12 +109,15 @@ class MobileController{
   fresh.restore({...candidate.session,status:'idle',count:0,runId:null,endsAt:null,config:{...this.config.swipe},
    nextBreakAt:this.config.swipe.breakEvery,breakUntil:null,completionReason:''});
   candidate.session=fresh.checkpoint();
+  // An explicit new run retires an unsent review, including its spent browsing
+  // allowances. A dispatched action has its separate pendingAction guard.
+  delete candidate.rejectedPhoto;
   // Commit the new counter before adopting it. A failed write leaves the old
   // run and its pending action intact; resetting never authorizes another input.
   try{this.checkpointStore.write(candidate)}catch(error){
    this.storageError=error.message;this.reason=error.message;throw Object.assign(error,{code:'MOBILE_STORAGE_FAILURE'});
   }
-  this.session.restore(candidate.session);this.reservedCount=0;
+  this.session.restore(candidate.session);this.reservedCount=0;this.rejectedPhoto=null;
   this.epoch++;this.invalidateResume();this.abort.abort();this.abort=new AbortController();
   this.openerArmed=false;this.skipOffer=null;this.selectedPhoto=null;this.selectedPrompt=null;this.reviewContext=null;this.heldPromptRefresh=null;
   this.reason=this.lastAction?'Counter reset. The earlier action is still unconfirmed and will not be repeated.':'Counter reset. Start a new session when ready.';
@@ -278,11 +281,22 @@ class MobileController{
   return Boolean(hint?.runId&&this.exhaustedReview(t)===hint&&this.binding?.avd&&this.isManagedPhone(this.binding)&&
    this.config.swipe.allowBackground&&this.session.config.allowBackground&&!this.config.autoOpeners&&!this.config.autoSend);
  }
+ heldPhotoSource(s,hint){
+  const photo=s.photos?.[0],like=photo?.like,area=photo?.bounds;
+  return this.observedForeground==='co.hinge.app'&&s.platform==='hinge'&&s.kind==='profile'&&Boolean(s.screenKey&&s.name&&hint.heldIdentity)&&
+   s.identity===hint.heldIdentity&&nameDigest(s.name)===hint.nameDigest&&s.controls?.skip?.label==='Skip '+s.name&&
+   /^[a-f0-9]{64}$/.test(s.recoveryChromeKey||'')&&s.recoveryChromeKey===hint.promptRecovery?.chromeKey&&
+   s.photos?.length===1&&!s.prompts?.length&&photoFingerprint(photo.visual)&&matchesFingerprint(photo,hint.visual,1)&&
+   !photo.revealDirection&&area?.width>=160&&area.height===area.width&&isDeepStrictEqual(s.reviewScrollSurface,area)&&
+   ['Like photo','Like photo prompt'].includes(like?.label)&&isDeepStrictEqual(s.controls.like,like)&&
+   !s.controls.composer&&!s.controls.comment&&!s.controls.sendLike&&!s.controls.sendMessage&&!s.composerText?.trim();
+ }
  refreshOnlyHeldScreen(s,hint,t){
   return this.refreshOnlyHeldOwner(hint,t)&&this.observedForeground==='co.hinge.app'&&s.platform==='hinge'&&s.kind==='profile'&&
    Boolean(s.screenKey&&s.name&&hint.heldIdentity)&&s.identity===hint.heldIdentity&&nameDigest(s.name)===hint.nameDigest&&
    /^[a-f0-9]{64}$/.test(s.recoveryChromeKey||'')&&s.controls?.skip?.label==='Skip '+s.name&&
-   s.photos?.length===1&&photoFingerprint(s.photos[0].visual)&&!s.photos[0].like&&!s.prompts?.length&&!s.controls?.like&&!s.controls?.sendLike&&
+   s.photos?.length===1&&photoFingerprint(s.photos[0].visual)&&!s.prompts?.length&&
+   ((!s.photos[0].like&&!s.controls?.like)||this.heldPhotoSource(s,hint))&&!s.controls?.sendLike&&
    !s.controls?.composer&&!s.composerText?.trim();
  }
  async checkHeldInventory(s,hint,t,valid,sleep,refreshOnly=false){
@@ -323,6 +337,11 @@ class MobileController{
    }
    return null;
   }
+  // A bound endpoint can drift by a photo-hash bit or native revision without
+  // becoming a new Like target. Its unused continuation still requires private
+  // stationary image proof, then observed motion to an independent text prompt.
+  if(r?.bound&&!r.opened&&!r.candidate&&this.heldPhotoSource(s,hint))
+   return this.continueSourcePrompt(s,hint,r,t,valid,commit,sleep,refresh,true);
   if(r&&!r.opened&&!r.bound&&!r.candidate&&acknowledged&&restored(s)&&s.recoveryChromeKey===r.chromeKey&&s.reviewScrollSurface)
    return this.continueSourcePrompt(s,hint,r,t,valid,commit,sleep,refresh);
   if(!r&&!hint.entryPromptScan&&acknowledged&&exactRejectedEntry(s,hint)&&s.reviewScrollSurface){
@@ -385,7 +404,7 @@ class MobileController{
   }
   return waiting;
  }
- async continueSourcePrompt(s,hint,recovery,t,valid,commit,sleep,refresh){
+ async continueSourcePrompt(s,hint,recovery,t,valid,commit,sleep,refresh,heldSource=false){
   const waiting={retryAfter:30000,phase:'waiting for another profile'},epoch=this.session.epoch;
   const owned=()=>valid()&&this.session.epoch===epoch&&this.exhaustedReview(t)===hint&&hint.promptRecovery===recovery&&
    this.isManagedPhone(this.binding)&&this.binding?.avd&&this.config.swipe.scrollProfile&&this.session.config.scrollProfile&&
@@ -397,8 +416,8 @@ class MobileController{
    ['x','y','width','height'].every(k=>Number.isInteger(card.reviewScrollSurface[k]))&&
    card.reviewScrollSurface.width>=96&&card.reviewScrollSurface.height>=120;
   const acknowledged=()=>this.heldPromptRefresh===refresh&&refresh.hint===hint&&refresh.epoch===epoch&&this.session.now()<refresh.until;
-  const first=card=>owned()&&acknowledged()&&official(card)&&exactRejectedSource(card,hint)&&route(card)&&
-   !recovery.opened&&!recovery.bound&&!recovery.candidate&&!recovery.continuation;
+  const first=card=>owned()&&official(card)&&route(card)&&!recovery.opened&&!recovery.candidate&&!recovery.continuation&&
+   (heldSource?recovery.bound&&this.heldPhotoSource(card,hint):acknowledged()&&!recovery.bound&&exactRejectedSource(card,hint));
   if(!first(s))return null;
   let continuation;
   const retire=card=>{

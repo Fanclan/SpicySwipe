@@ -2721,6 +2721,62 @@ async function sourceContinuationFixture(){
   {...x.form,photos:[],prompts:[x.prompt],controls:{sendLike:control('Send like')}}:screen({name:'Next',identity:'next'}))};
  return {...x,source,frame,taps,foreign:value=>{foreign=value},brightness:value=>{brightness=value},refreshes:()=>refreshes,moves:()=>moves};
 }
+async function boundPhotoContinuationFixture(){
+ const x=await sourceContinuationFixture(),cp=x.saved(),photoLike={...control('Like photo prompt'),bounds:{x:564,y:716,width:96,height:96}};
+ Object.assign(cp.session,{runId:'d'.repeat(32),count:166,endsAt:null,nextBreakAt:175,breakUntil:null});
+ for(const config of [cp.config.swipe,cp.session.config])Object.assign(config,{maxSwipes:1000,sessionMinutes:null,allowBackground:true});
+ Object.assign(cp.rejectedPhoto,{runId:cp.session.runId,count:166,endsAt:null,sourceIdentity:'old-source',entryIdentity:'old-source',
+  heldIdentity:'held-full-photo',heldRevision:'old-native-revision',promptRecovery:{chromeKey:x.source.recoveryChromeKey,bound:true,opened:false},
+  backtrack:{chromeKey:x.source.recoveryChromeKey,originRevision:'previous-endpoint',state:'spent',remaining:1}});
+ x.c.restoreCheckpoint(cp);x.c.session.status='running';
+ const source={...x.source,identity:'held-full-photo',screenKey:'drifted-native-revision',
+  photos:[{...x.source.photos[0],bounds:{x:40,y:192,width:640,height:640},like:photoLike}],
+  reviewScrollSurface:{x:40,y:192,width:640,height:640},controls:{...x.source.controls,like:photoLike}};
+ const frame=(index,prompt=false)=>{const card=x.frame(index,prompt),bounds={...card.photos[0].bounds,y:card.photos[0].bounds.y-259};
+  return {...card,photos:[{...card.photos[0],bounds}],reviewScrollSurface:bounds};};
+ x.set(source);const observed=await x.c.read(x.c.token()),visual=observed.photos[0].visual;
+ x.c.rejectedPhoto.visual=x.c.rejectedPhoto.entryVisual=visual.slice(0,-1)+(parseInt(visual.at(-1),16)^1).toString(16);x.c.persist();
+ let commits=0,moves=0;
+ x.android.scrollProfile=async(opts,valid)=>{assert.equal(valid(),true);assert.equal(opts.direction,'up');moves++;x.set(frame(moves,moves===2))};
+ const step=()=>{const epoch=x.c.session.epoch;return x.c.sessionStep(x.c.session.config,()=>x.c.session.valid(epoch),()=>{commits++;x.c.session.count++},async()=>true,x.c.token())};
+ return {...x,source,frame,step,commits:()=>commits,moves:()=>moves};
+}
+test('a drifted bound full photo can spend its unused continuation on an independently verified prompt',async()=>{
+ const x=await boundPhotoContinuationFixture(),old=x.saved();
+ x.android.refreshFeed=async()=>assert.fail('The independently re-read bound photo needs no relaunch');
+ await x.step();
+ assert.equal(x.moves(),2);assert.equal(x.commits(),1);assert.equal(x.c.session.count,167);assert.equal(x.c.session.runId,old.session.runId);
+ assert.deepEqual(x.taps,[x.prompt.like.bounds,box]);assert.equal(x.c.lastAction,null);assert.equal(x.c.rejectedPhoto,null);
+});
+test('bound-photo continuation rejects drifted ownership, nonordinary targets and missing private image evidence',async()=>{
+ for(const mode of ['identity','chrome','name','photo','photo-like','control-like','surface','draft','pending','opened','candidate','no-pixels','changed-pixels']){
+  const x=await boundPhotoContinuationFixture();let moves=0;const source=structuredClone(x.source);
+  if(mode==='identity')source.identity='different-held-photo';if(mode==='chrome')source.recoveryChromeKey='f'.repeat(64);
+  if(mode==='name')source.name='Different';if(mode==='photo')x.c.rejectedPhoto.visual='ffffffffffffffff';
+  if(mode==='photo-like')source.photos[0].like.label='Send a Rose';if(mode==='control-like')source.controls.like={...control('Like photo'),key:'other'};
+  if(mode==='surface')source.reviewScrollSurface={...source.reviewScrollSurface,height:500};
+  if(mode==='draft')x.c.draft={text:'Unsent'};if(mode==='pending')x.c.lastAction={kind:'like',name:source.name,identity:source.identity};
+  if(mode==='opened')x.c.rejectedPhoto.promptRecovery.opened=true;if(mode==='candidate')x.c.rejectedPhoto.promptRecovery.candidate='c'.repeat(64);
+  if(mode==='no-pixels')x.c.readEvidence=async()=>({hashes:[x.c.screen.photos[0].visual]});
+  if(mode==='changed-pixels'){const read=x.android.hierarchy;let reads=0;x.android.hierarchy=async()=>{if(++reads===2)x.foreign(true);return read()};}
+  x.set(source);x.android.scrollProfile=async()=>{moves++};x.android.refreshFeed=async()=>{};
+  x.c.review=async()=>{throw Object.assign(Error('Ordinary review is outside this recovery test'),{code:'MOBILE_ALTERNATE_UNAVAILABLE'})};
+  await x.step().catch(()=>{});assert.equal(moves,0,mode);assert.equal(x.commits(),0,mode);assert.deepEqual(x.taps,[],mode);
+ }
+});
+test('interrupted bound-photo continuation remains spent after restore while refresh-only recovery keeps its cooldown',async()=>{
+ const x=await boundPhotoContinuationFixture();let moves=0,captured,refreshes=0;
+ x.android.scrollProfile=async()=>{moves++;captured=x.saved();throw Object.assign(Error('Lost movement acknowledgement'),{code:'ANDROID_COMMAND_TIMEOUT'})};
+ await x.step();assert.equal(moves,1);assert.equal(captured.rejectedPhoto.promptRecovery.continuation.remaining,6);
+ x.c.restoreCheckpoint(captured);x.c.session.status='running';x.c.nextFeedRefreshAt=0;x.set(x.source);
+ x.android.scrollProfile=async()=>assert.fail('A spent continuation cannot replay');
+ x.android.refreshFeed=async(_p,valid,_wait,beforeStop)=>{assert.equal(valid(),true);await beforeStop();refreshes++};
+ await x.step();await x.step();await x.step();
+ assert.equal(refreshes,1);assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.state,'spent');
+ assert.equal(x.c.rejectedPhoto.promptRecovery.continuation.remaining,6);assert.equal(x.c.rejectedPhoto.promptMovesRemaining,0);
+ assert.equal(x.c.rejectedPhoto.backtrack.state,'spent');assert.equal(x.c.rejectedPhoto.backtrack.remaining,1);
+ assert.equal(x.commits(),0);assert.deepEqual(x.taps,[]);assert.equal(x.c.session.count,166);
+});
 test('an acknowledged exact source refresh permits one seven-move continuation of the same photo to an ordinary prompt',async()=>{
  const x=await sourceContinuationFixture(),old=x.saved();let moves=0;
  x.android.scrollProfile=async(opts,valid)=>{
