@@ -526,6 +526,38 @@ test('a clipped native video timer cannot interrupt fresh verification of a stat
  current=current.replace('Hiking &amp; coffee.','Books &amp; tea.');
  await assert.rejects(controller.fresh(after,token),{code:'MOBILE_SCREEN_CHANGED'});
 });
+test('the current rol video player keeps a stationary photo fresh while its lower timer advances',async()=>{
+ const xml=profile.replace('</hierarchy>',clippedVideoClock().replace('class="ycl"','class="rol"')+'</hierarchy>');
+ let current=xml;
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const controller=new Controller({platform:'hinge',service:{},android:{serial:'synthetic',inputEpoch:0,
+  hierarchy:async()=>({xml:current,foreground:'co.hinge.app'}),tapControl:async()=>assert.fail('Observation must not tap')}});
+ const token=controller.token(),before=await controller.read(token);
+ assert.equal(before.kind,'profile');assert.ok(before.controls.like);
+ current=xml.replace('13 seconds','0 seconds');
+ const after=await controller.fresh(before,token);
+ assert.equal(after.identity,before.identity);assert.deepEqual(after.photos,before.photos);assert.deepEqual(after.controls,before.controls);
+ current=current.replace('[875,1464][1001,1590]','[875,1465][1001,1591]');
+ await assert.rejects(controller.fresh(after,token),{code:'MOBILE_SCREEN_CHANGED'});
+});
+test('rol timer normalization keeps the exact inert native player and bounded clock requirements',()=>{
+ const xml=profile.replace('</hierarchy>',clippedVideoClock().replace('class="ycl"','class="rol"')+'</hierarchy>');
+ const mutate=(id,from,to)=>xml.replace(new RegExp('(<node resource-id="'+id+'"[^>]*?)'+from),(_,prefix)=>prefix+to);
+ for(const sample of [
+  xml.replace('class="rol"','class="UnknownPlayer"'),xml.replace('class="rol"','class="custom.rol"'),
+  mutate('clock-player','clickable="false"','clickable="true"'),mutate('clock-player','focusable="false"','focusable="true"'),
+  mutate('clock-texture','class="android.view.TextureView"','class="android.view.View"'),
+  mutate('clock-timer','clickable="false"','clickable="true"'),mutate('clock-timer','text=""','text="Other text"'),
+  mutate('clock-overlay','clickable="false"','clickable="true"'),xml.replace('[585,1063][648,1111]','[585,1063][700,1111]'),
+ ]){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,read(sample.replace('13 seconds','0 seconds')).screenKey);
+ }
+ const before=read(xml);
+ for(const sample of [xml.replace('[585,1063][648,1111]','[585,1062][648,1110]'),
+  xml.replace('Video prompt: Example activity','Video prompt: Different activity'),xml.replace('Hiking &amp; coffee.','Books &amp; tea.')]){
+  assert.notEqual(sample,xml);assert.notEqual(read(sample).screenKey,before.screenKey);
+ }
+});
 test('clipped video timer normalization requires the native player and inert bounded timer',()=>{
  const xml=profile.replace('</hierarchy>',clippedVideoClock()+'</hierarchy>');
  const mutate=(id,from,to)=>xml.replace(new RegExp('(<node resource-id="'+id+'"[^>]*?)'+from),(_,prefix)=>prefix+to);
@@ -1087,6 +1119,23 @@ test('native video review exposes only an inert scroll surface, never identity o
   assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
   assert.deepEqual(s.reviewScrollSurface,{x:40,y:top,width:640,height:1112-top});
   assert.deepEqual(s.scrollSurface,{x:40,y:top,width:640,height:1112-top});
+ }
+});
+test('the current rol video player supplies navigation evidence without identity or a Like target',()=>{
+ const {videoDiscover}=require('./fixtures/hinge-video-discover.cjs');
+ for(const top of [488,347]){
+  const xml=videoDiscover({top}).replace('class="ycl"','class="rol"'),s=read(xml);
+  assert.equal(s.kind,'profile');assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);
+  assert.ok(Object.values(s.controls).every(value=>value===null));
+  assert.deepEqual(s.reviewScrollSurface,{x:40,y:top,width:640,height:1112-top});
+  assert.deepEqual(s.scrollSurface,s.reviewScrollSurface);
+  for(const sample of [xml.replace('class="rol"','class="UnknownPlayer"'),
+   xml.replace(/<node[^>]*class="rol"[^>]*>/,tag=>tag.replace('clickable="false"','clickable="true"')),
+   xml.replace(/<node[^>]*class="rol"[^>]*>/,tag=>tag.replace('focusable="false"','focusable="true"')),
+   xml.replace('class="android.view.TextureView"','class="android.widget.EditText"'),
+   xml.replace(/(<node[^>]*class="rol"[^>]*bounds=")\[40,240\]\[680,1280\]/,'$1[40,500][680,1280]')]){
+   assert.notEqual(sample,xml);const bad=read(sample);assert.ok(!bad.scrollSurface);assert.ok(!bad.reviewScrollSurface);assert.equal(bad.controls.like,null);
+  }
  }
 });
 

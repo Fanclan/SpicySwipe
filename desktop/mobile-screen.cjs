@@ -324,7 +324,7 @@ function videoScrollMedia(visible,name,skip) {
  if(videos.length!==1||skip.a.class!=='android.widget.Button'||skip.a.clickable!=='true'||!skip.enabled||!fullyVisible(skip))return [];
  const [video]=videos,b=bounds(video),body=video.parent,parts=kids(body),player=parts.find(n=>n!==video);
  if(!inert(video)||!b||!fullyVisible(video)||kids(video).length||parts.length!==2||!inert(player)||label(player)||
-    !/^(?:[\w.]+\.)?ycl$/.test(player.a.class||''))return [];
+    !/^(?:(?:[\w.]+\.)?ycl|rol)$/.test(player.a.class||''))return [];
  const frames=kids(player),frame=frames[0],textures=frame?kids(frame):[],texture=textures[0],pb=bounds(player);
  if(frames.length!==1||frame.a.class!=='android.widget.FrameLayout'||!inert(frame)||label(frame)||
     textures.length!==1||texture.a.class!=='android.view.TextureView'||!inert(texture)||label(texture)||kids(texture).length||
@@ -509,7 +509,7 @@ function clippedVideoClockParents(nodes,photoCard=null,reviewVideo=null) {
   if(kids(card).length!==3||controls!==clock||body?.a.class!=='android.view.View'||!body.enabled||!body.visible||label(body)||
     body.a.clickable!=='true'||body.a.focusable!=='true'||['scrollable','long-clickable','focused','checkable','checked','selected','password'].some(k=>body.a[k]==='true')||
     !inert(overlay)||label(overlay)||kids(overlay).length||parts.length!==2||!inert(media)||kids(media).length||!/^Video prompt: \S/.test(label(media))||
-    !inert(player,'ycl')||label(player)||kids(player).length!==1||!inert(frame,'android.widget.FrameLayout')||label(frame)||kids(frame).length!==1||
+    !(inert(player,'ycl')||inert(player,'rol'))||label(player)||kids(player).length!==1||!inert(frame,'android.widget.FrameLayout')||label(frame)||kids(frame).length!==1||
     !inert(texture,'android.view.TextureView')||label(texture)||kids(texture).length)continue;
   const box=bounds(card),port=bounds(viewport),paint=bounds(player),cover=bounds(overlay),selected=photoCard&&bounds(photoCard);
   if(!box||!port||!paint||box.width<160||box.y+box.height!==port.y+port.height||port.height<=box.height||
