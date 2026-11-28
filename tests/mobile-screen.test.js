@@ -809,6 +809,53 @@ test('prompt confirmation rejects mismatched, detached or overlapping sibling co
 // The native app can leave just its Discover header and five tabs on screen.
 const blankDiscover = feedError.replace(/ <node class="android.widget.ScrollView"[\s\S]*?\n <\/node>/, '');
 const badgedDiscover=fs.readFileSync(path.join(__dirname,'fixtures/mobile/hinge-blank-matches-badge.xml'),'utf8');
+test('blank Discover loading recognizes Likes You and Matches badges without declaring an empty feed',()=>{
+ for(const base of [wrappedLoadingXml,badgedDiscover,blankDiscover])for(const count of ['1 new like','2 new likes','123 new likes']){
+  const xml=base.replace('content-desc="Likes You"','content-desc="Likes You, '+count+'"'),s=read(xml);
+  assert.notEqual(xml,base);assert.equal(s.kind,'feedLoading');assert.equal(s.identity,null);assert.equal(s.name,'');
+  assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);assert.ok(Object.values(s.controls).every(value=>value===null));
+ }
+ assert.equal(read(feedError.replace('content-desc="Likes You"','content-desc="Likes You, 1 new like"')).kind,'blocked');
+});
+test('loading Likes You badges retain native ownership and inert leaf requirements',()=>{
+ const xml=wrappedLoadingXml.replace('content-desc="Likes You"','content-desc="Likes You, 1 new like"');
+ const badge=xml.match(/<node[^>]*content-desc="Likes You, 1 new like"[^>]*\/>/)[0];
+ const mutate=(from,to)=>xml.replace(badge,badge.replace(from,to));
+ for(const sample of [
+  xml.replace(badge,badge+badge),xml.replace('1 new like','0 new likes'),xml.replace('1 new like','1 new likes'),
+  xml.replace('1 new like','2 new like'),xml.replace('1 new like','1 new like. Continue'),
+  xml.replace('Likes You, 1 new like','swap').replace('Standouts','Likes You, 1 new like').replace('swap','Standouts'),
+  mutate('clickable="false"','clickable="true"'),mutate('focusable="false"','focusable="true"'),
+  mutate('long-clickable="false"','long-clickable="true"'),mutate('enabled="true"','enabled="false"'),
+  mutate('text=""','text="Likes You, 1 new like"'),mutate('class="android.view.View"','class="android.widget.TextView"'),
+  mutate('bounds="[288,1112][432,1232]"','bounds="[300,1112][420,1232]"'),
+  mutate('/>','><node class="android.view.View" bounds="[288,1112][432,1232]"/></node>'),
+  xml.replace('class="rol"','class="unknown.wrapper"'),xml.replace('selected="true"','selected="false"'),
+ ]){
+  assert.notEqual(sample,xml);const s=read(sample);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(value=>value===null));
+ }
+ assert.equal(read(xml,{foreground:'other.app'}).kind,'blocked');
+});
+test('starting on a badged loading feed preserves an old pending Like at fresh zero',async()=>{
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const xml=wrappedLoadingXml.replace('content-desc="Likes You"','content-desc="Likes You, 1 new like"');
+ const guard={kind:'like',identity:'previous-card',name:'Previous',runId:'previous-run',sessionEndsAt:null};
+ let saved;
+ const controller=new Controller({platform:'hinge',wait:()=>new Promise(()=>{}),isManagedPhone:binding=>binding?.avd==='fixture-phone',
+  service:{request:async action=>{if(action==='load')return{sidebarConsentGiven:true,mobileConfig:{hinge:{mode:'like',swipe:{maxSwipes:1000,sessionMinutes:null,likeRatio:1,allowBackground:true}}}};assert.equal(action,'record');return{}}},
+  checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}},
+  android:{serial:'synthetic',inputEpoch:0,deviceIdentity:async()=>({serial:'synthetic',avd:'fixture-phone'}),
+   hierarchy:async()=>({xml,foreground:'co.hinge.app'}),tapControl:async()=>assert.fail('No Like or navigation tap'),
+   refreshFeed:async()=>assert.fail('The loading observation does not permit this refresh')}});
+ await controller.request('status');controller.lastAction=guard;controller.persist();
+ try{
+  const started=await controller.request('start');
+  assert.equal(started.session.status,'running');assert.equal(started.session.count,0);assert.equal(started.session.limit,1000);assert.equal(started.session.endsAt,null);
+  assert.ok(started.session.runId);assert.notEqual(started.session.runId,guard.runId);assert.equal(controller.lastAction,guard);
+  const waiting=await controller.sessionStep(controller.session.config,()=>true,()=>assert.fail('No new profile count'),async()=>false,controller.token());
+  assert.equal(waiting.phase,'waiting for Discover');assert.equal(controller.lastAction,guard);assert.deepEqual(saved.pendingAction,guard);assert.equal(saved.session.count,0);
+ }finally{controller.session.pause()}
+});
 test('blank Discover with a message count in the ordinary fourth native tab remains read-only',()=>{
  assert.equal(read(badgedDiscover.replace('Matches, 1 new message','Matches')).kind,'feedLoading');
  for(const count of ['1 new message','2 new messages','123 new messages']){

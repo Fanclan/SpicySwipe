@@ -419,6 +419,7 @@ function control(node, allowCompose = false) {
 }
 const discoverTabNames = ['Discover', 'Standouts', 'Likes You', 'Matches', 'Profile Hub'];
 const matchesMessageCount = /^Matches, (?:1 new message|(?:[2-9]|[1-9]\d+) new messages)$/;
+const likesLikeCount = /^Likes You, (?:1 new like|(?:[2-9]|[1-9]\d+) new likes)$/;
 // Both native Discover placeholders keep the same contiguous row of five tabs.
 function discoverNavigation(find, minY) {
  const tabs = [];
@@ -442,13 +443,18 @@ function blankDiscoverShell(visible, find) {
  if (discover.length !== 2) return false;
  const header = discover.find(n => n.a.class === 'android.widget.TextView');
  if (!header || header.a.clickable !== 'false' || !header.enabled || !fullyVisible(header)) return false;
- // The unread count replaces the Matches accessibility label on the blank shell.
+ // Unread counts replace only their corresponding native tab labels.
  // The Retry form still requires its separately verified navigation labels.
- const badge = visible.find(n => matchesMessageCount.test(label(n)));
- if (badge && (badge.a['content-desc'] !== label(badge) || clean(badge.a.text) || badge.a.focusable === 'true' ||
-     badge.a['long-clickable'] === 'true' || badge.a.checkable === 'true' || visible.some(n => n.parent === badge))) return false;
+ const badges=[['Likes You',likesLikeCount],['Matches',matchesMessageCount]]
+  .map(([name,pattern])=>({name,nodes:visible.filter(n=>pattern.test(label(n)))}));
+ if(badges.some(({nodes})=>nodes.length>1||nodes.some(badge=>
+  badge.a['content-desc']!==label(badge)||clean(badge.a.text)||badge.a.focusable==='true'||
+  badge.a['long-clickable']==='true'||badge.a.checkable==='true'||visible.some(n=>n.parent===badge))))return false;
  const box = bounds(header);
- const tabs = discoverNavigation(text => find(text === 'Matches' && badge ? label(badge) : text), box.y + box.height);
+ const tabs=discoverNavigation(text=>{
+  const badge=badges.find(item=>item.name===text)?.nodes[0];
+  return find(badge?label(badge):text);
+ },box.y+box.height);
  if (!tabs || visible.filter(n => label(n)).length !== 6) return false;
  // The current native build wraps the content and navigation in two `rol`
  // containers. Accept those observed inert roles, not arbitrary wrapper classes.
@@ -630,7 +636,7 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
   const labels=new Set([...required,'Discover','Standouts','Likes You','Matches','Profile Hub','Dating Preferences','Signals filter, Off','Age filter options','Height filter options','Dating intentions filter options']);
   // Likes and messages change independently of the exhausted Discover queue.
   // Each inert badge must belong to its own tab in the complete native row.
-  const badges=[['Likes You',/^Likes You, (?:1 new like|(?:[2-9]|[1-9]\d+) new likes)$/,2],['Matches',matchesMessageCount,3]]
+  const badges=[['Likes You',likesLikeCount,2],['Matches',matchesMessageCount,3]]
    .map(([name,pattern,index])=>({name,index,nodes:visible.filter(n=>pattern.test(label(n)))}));
   const tabRow=discoverNavigation(text=>{
    const badge=badges.find(item=>item.name===text);
