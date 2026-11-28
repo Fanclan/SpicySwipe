@@ -628,16 +628,19 @@ function readScreen(xml, { platform = 'hinge', foreground, photoIdentity, commen
  if(find(emptyTitle).length){
   const nav=find('Discover'),required=[emptyTitle,emptyBody,'Change filters','Review skipped profiles'];
   const labels=new Set([...required,'Discover','Standouts','Likes You','Matches','Profile Hub','Dating Preferences','Signals filter, Off','Age filter options','Height filter options','Dating intentions filter options']);
-  // Unread message counts change independently of the exhausted Discover queue.
-  // Accept that inert label only inside a sibling native navigation tab, never in an overlay.
-  const badges=visible.filter(n=>matchesMessageCount.test(label(n)));
+  // Likes and messages change independently of the exhausted Discover queue.
+  // Each inert badge must belong to its own tab in the complete native row.
+  const badges=[['Likes You',/^Likes You, (?:1 new like|(?:[2-9]|[1-9]\d+) new likes)$/,2],['Matches',matchesMessageCount,3]]
+   .map(([name,pattern,index])=>({name,index,nodes:visible.filter(n=>pattern.test(label(n)))}));
+  const tabRow=discoverNavigation(text=>{
+   const badge=badges.find(item=>item.name===text);
+   return find(badge?.nodes.length===1?label(badge.nodes[0]):text);
+  },0);
   const navigationBadge=n=>{
-   const discover=nav[0],tab=n.parent,discoverTab=discover?.parent,b=bounds(n),d=discover&&bounds(discover),t=tab&&bounds(tab);
-   return badges.length===1&&n===badges[0]&&nav.length===1&&n.a.class==='android.view.View'&&n.a.clickable==='false'&&
-    discover.a.class==='android.view.View'&&discoverTab?.a.class==='android.view.View'&&discoverTab.a.selected==='true'&&
-    tab?.a.class==='android.view.View'&&tab.a.clickable==='true'&&tab.parent===discoverTab.parent&&tab!==discoverTab&&
-    fullyVisible(n)&&fullyVisible(discover)&&b&&d&&t&&b.x===t.x&&b.y===t.y&&b.width===t.width&&b.height===t.height&&
-    b.y===d.y&&b.height===d.height&&b.x>=d.x+d.width;
+   const badge=badges.find(item=>item.nodes.includes(n));
+   return badge?.nodes.length===1&&tabRow?.[badge.index]===n.parent&&n.enabled&&n.a.class==='android.view.View'&&n.a.clickable==='false'&&
+    !['focusable','focused','checkable','checked','selected','long-clickable','scrollable','password'].some(key=>n.a[key]==='true')&&
+    !visible.some(child=>child.parent===n)&&!(clean(n.a.text)&&clean(n.a['content-desc'])&&clean(n.a.text)!==clean(n.a['content-desc']));
   };
   if(nav.length!==1||![nav[0],nav[0].parent].some(n=>n?.a.selected==='true')||required.some(text=>find(text).length!==1||!fullyVisible(find(text)[0]))||visible.some(n=>(label(n)&&!labels.has(label(n))&&!navigationBadge(n))||/EditText/.test(n.a.class||'')))return block('Empty Discover screen is not verified.');
   result.kind='empty';result.reason='Waiting for profiles. Your filters are unchanged.';return result;

@@ -607,14 +607,64 @@ test('empty queue rejects missing body, wrong navigation and extra controls',()=
 });
 
 // Synthetic navigation only: no captured messages or profile data belong in fixtures.
-function emptyWithMessageBadge(message='Matches, 1 new message') {
- const tabs=['Discover','Standouts','Likes You',message,'Profile Hub'];
+function emptyWithMessageBadge(message='Matches, 1 new message',likes='Likes You') {
+ const tabs=['Discover','Standouts',likes,message,'Profile Hub'];
  const navigation='<node class="android.view.View" bounds="[0,2179][1080,2400]">'+tabs.map((text,i)=>'<node class="android.view.View" clickable="'+(i!==0)+'" selected="'+(i===0)+'" bounds="['+(i*216)+',2179]['+((i+1)*216)+',2337]"><node class="android.view.View" text="'+text+'" clickable="false" bounds="['+(i*216)+',2179]['+((i+1)*216)+',2337]"/></node>').join('')+'</node>';
  return emptyQueue.replace(/<node[^>]*text="Discover"[^>]*\/>/,navigation);
 }
 test('empty Discover accepts changing native message counts only as a navigation badge',()=>{
  for(const text of ['Matches, 1 new message','Matches, 2 new messages','Matches, 123 new messages']) {
   const s=read(emptyWithMessageBadge(text));assert.equal(s.kind,'empty');assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);assert.ok(Object.values(s.controls).every(v=>v===null));
+ }
+});
+test('empty Discover recognizes independent Likes You and Matches counts in their native tabs',()=>{
+ for(const [likes,matches] of [
+  ['Likes You, 1 new like','Matches, 6 new messages'],['Likes You, 2 new likes','Matches'],
+  ['Likes You, 123 new likes','Matches, 1 new message'],
+ ]){
+  const s=read(emptyWithMessageBadge(matches,likes));
+  assert.equal(s.kind,'empty');assert.equal(s.identity,null);assert.deepEqual(s.photos,[]);assert.deepEqual(s.prompts,[]);
+  assert.ok(Object.values(s.controls).every(value=>value===null));
+ }
+});
+test('empty Discover rejects Likes You badge duplicates, false owners and interactive labels',()=>{
+ const xml=emptyWithMessageBadge('Matches, 6 new messages','Likes You, 1 new like');
+ const badge=xml.match(/<node class="android.view.View" text="Likes You, 1 new like"[^>]*\/>/)[0];
+ for(const sample of [
+  xml.replace(badge,badge+badge),xml.replace('Likes You, 1 new like','Likes You, 0 new likes'),
+  xml.replace('Likes You, 1 new like','Likes You, 1 new likes'),xml.replace('Likes You, 1 new like','Likes You, 2 new like'),
+  xml.replace('Likes You, 1 new like','Likes You, 1 new like. Continue'),
+  xml.replace(badge,badge.replace('clickable="false"','clickable="true"')),
+  xml.replace(badge,badge.replace('clickable="false"','clickable="false" focusable="true"')),
+  xml.replace(badge,badge.replace('clickable="false"','clickable="false" enabled="false"')),
+  xml.replace(badge,badge.replace('[432,2179][648,2337]','[432,400][648,558]')),
+  xml.replace('Likes You, 1 new like','swap').replace('Matches, 6 new messages','Likes You, 1 new like').replace('swap','Matches, 6 new messages'),
+  xml.replace(badge,'').replace('</hierarchy>',badge+'</hierarchy>'),
+  xml.replace('selected="true"','selected="false"'),
+  xml.replace('</hierarchy>','<node package="co.hinge.app" class="android.widget.EditText" bounds="[10,10][100,100]"/></hierarchy>'),
+  xml.replace('</hierarchy>','<node package="co.hinge.app" class="android.app.Dialog" bounds="[10,10][100,100]"/></hierarchy>'),
+ ]){
+  assert.notEqual(sample,xml);const s=read(sample);assert.equal(s.kind,'blocked');assert.ok(Object.values(s.controls).every(value=>value===null));
+ }
+});
+test('a pending Hinge Like resolves only after two independently verified badged empty feeds without input',async()=>{
+ const Controller=require('../desktop/mobile-controller.cjs');
+ const xml=emptyWithMessageBadge('Matches, 6 new messages','Likes You, 1 new like');
+ for(const verified of [true,false]){
+  let reads=0,saved;
+  const guard={kind:'like',identity:'previous-card',name:'Previous',runId:'previous-run',sessionEndsAt:null};
+  const controller=new Controller({platform:'hinge',wait:async()=>{},
+   service:{request:async action=>{assert.equal(action,'load');return {sidebarConsentGiven:true}}},
+   checkpointStore:{read:()=>null,write:value=>{saved=structuredClone(value)}},
+   android:{serial:'synthetic',inputEpoch:0,hierarchy:async()=>{
+    reads++;assert.equal(controller.lastAction,guard,'the first observation cannot release the pending action');
+    return {foreground:'co.hinge.app',xml:reads===2&&!verified?xml.replace('Likes You, 1 new like','Unknown overlay'):xml};
+   },tapControl:async()=>assert.fail('Do not repeat the Like'),refreshFeed:async()=>assert.fail('Observation must not restart the app')}});
+  await controller.request('status');controller.lastAction=guard;controller.session.count=20;controller.reservedCount=20;
+  const result=await controller.reconcilePending(guard,controller.token(),()=>true);
+  assert.equal(reads,2);assert.equal(result,verified);assert.equal(controller.session.count,20);
+  assert.equal(controller.lastAction,verified?null:guard);
+  if(verified){assert.equal(saved.pendingAction,null);assert.equal(saved.session.count,20);}
  }
 });
 test('empty Discover rejects badge-like text outside the native navigation structure',()=>{
